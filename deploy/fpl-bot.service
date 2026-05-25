@@ -1,0 +1,16 @@
+[Unit]
+Description=FPL Bot — autonomous GW decision and submission
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/linus/Projects/FPL-26-27-bot
+ExecStart=/home/linus/.local/bin/uv run python scripts/run_agent.py
+EnvironmentFile=/home/linus/Projects/FPL-26-27-bot/.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fpl-bot
+
+[Install]
+WantedBy=default.target

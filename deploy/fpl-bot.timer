@@ -1,0 +1,14 @@
+[Unit]
+Description=FPL Bot — weekly timer (Friday 06:00, Saturday 06:00, Sunday 06:00)
+
+[Timer]
+# FPL deadlines are typically Friday 11:00 or Saturday 11:30 BST.
+# Run at 06:00 on Fri/Sat/Sun to have plenty of time before deadline.
+OnCalendar=Fri *-*-* 06:00:00
+OnCalendar=Sat *-*-* 06:00:00
+OnCalendar=Sun *-*-* 06:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
