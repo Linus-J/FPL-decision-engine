@@ -31,6 +31,8 @@ dependencies = [
     # Utilities
     "tenacity>=8.3.0",
     "rich>=13.7.0",
+    "matplotlib>=3.10.9",
+    "seaborn>=0.13.2",
 ]
 
 [project.optional-dependencies]

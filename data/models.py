@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -77,6 +78,10 @@ class Player(Base):
 
     chance_of_playing_next_round: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chance_of_playing_this_round: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    transfers_in_event: Mapped[int] = mapped_column(Integer, default=0)
+    transfers_out_event: Mapped[int] = mapped_column(Integer, default=0)
+    injury_severity: Mapped[int] = mapped_column(Integer, default=0)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -198,12 +203,38 @@ class PlayerProjection(Base):
     player: Mapped["Player"] = relationship("Player", back_populates="projections")
 
 
+class PlayerSetPieceRole(Base):
+    __tablename__ = "player_setpiece_roles"
+    __table_args__ = (UniqueConstraint("player_id", "season", name="uq_setpiece_player_season"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.id"), nullable=False)
+    season: Mapped[str] = mapped_column(String(7), nullable=False)
+    is_penalty_taker: Mapped[bool] = mapped_column(Boolean, default=False)
+    penalty_xg_per_game: Mapped[float] = mapped_column(Float, default=0.0)
+    is_set_piece_taker: Mapped[bool] = mapped_column(Boolean, default=False)
+    key_passes_per_game: Mapped[float] = mapped_column(Float, default=0.0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PlayerPressSignal(Base):
+    __tablename__ = "player_press_signals"
+    __table_args__ = (UniqueConstraint("player_id", "scraped_date", name="uq_press_player_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.id"), nullable=False)
+    scraped_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    sentiment: Mapped[float] = mapped_column(Float, default=0.0)
+    raw_quote: Mapped[str] = mapped_column(Text, default="")
+    source_url: Mapped[str] = mapped_column(String, default="")
+
+
 class DecisionLog(Base):
     __tablename__ = "decision_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     gameweek: Mapped[int] = mapped_column(Integer, nullable=False)
-    decision_type: Mapped[str] = mapped_column(String, nullable=False)  # "transfer" | "captain" | "chip" | "lineup"
+    decision_type: Mapped[str] = mapped_column(String, nullable=False)
     details: Mapped[str] = mapped_column(String, nullable=False)
     projected_gain: Mapped[float] = mapped_column(Float, default=0.0)
     actual_outcome: Mapped[float | None] = mapped_column(Float, nullable=True)

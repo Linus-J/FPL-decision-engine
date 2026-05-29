@@ -14,12 +14,19 @@ from sqlalchemy import text
 
 from config.strategy import OPTIMISER
 from data.db import get_session
+from projection.features import (
+    ENRICHMENT_FEATURE_COLS,
+    FDR_FEATURE_COLS,
+    add_enrichment_features,
+    add_fdr_features,
+    load_fixture_difficulty,
+    load_player_enrichment,
+)
 
 logger = logging.getLogger(__name__)
 
 MODEL_PATH = Path("models/minutes_model.pkl")
 
-# Threshold: 60+ minutes = "started and played full game" for FPL point purposes
 FULL_GAME_MINUTES = 60
 
 
@@ -66,7 +73,6 @@ def _load_training_data() -> pd.DataFrame:
 def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["player_id", "season", "gameweek"]).copy()
 
-    # Rolling form features — last N GWs within the same player+season
     for window in [3, 5]:
         grp = df.groupby(["player_id", "season"])
         df[f"avg_minutes_{window}gw"] = (
@@ -81,29 +87,42 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
             )
         )
 
-    # Season-to-date average minutes (proxy for rotation risk)
     df["season_avg_minutes"] = (
         df.groupby(["player_id", "season"])["minutes"]
         .transform(lambda x: x.shift(1).expanding().mean())
     )
 
-    # Position one-hot
+    global_grp = df.groupby("player_id")
+    df["avg_minutes_5gw_global"] = global_grp["minutes"].transform(
+        lambda x: x.shift(1).rolling(5, min_periods=1).mean()
+    )
+    career_avg_min = global_grp["minutes"].transform("mean")
+    df["minutes_decay_ratio"] = (df["avg_minutes_3gw"] / (career_avg_min + 1)).clip(0.0, 2.0)
+
     df = pd.get_dummies(df, columns=["position"], prefix="pos", dtype=float)
     for pos in ["pos_GKP", "pos_DEF", "pos_MID", "pos_FWD"]:
         if pos not in df.columns:
             df[pos] = 0.0
 
-    # Availability signal from current status
     df["is_available"] = (df["status"] == "a").astype(float)
     df["cop_next"] = df["chance_of_playing_next_round"].fillna(100) / 100.0
 
     df = df.dropna(subset=["avg_minutes_5gw", "season_avg_minutes"])
+
+    fdr = load_fixture_difficulty()
+    df = add_fdr_features(df, fdr)
+
+    enrichment = load_player_enrichment()
+    df = add_enrichment_features(df, enrichment)
+
     return df
 
 
 FEATURE_COLS = [
     "avg_minutes_3gw",
     "avg_minutes_5gw",
+    "avg_minutes_5gw_global",
+    "minutes_decay_ratio",
     "avg_points_3gw",
     "avg_points_5gw",
     "starts_rate_3gw",
@@ -119,6 +138,8 @@ FEATURE_COLS = [
     "pos_DEF",
     "pos_MID",
     "pos_FWD",
+    *FDR_FEATURE_COLS,
+    *ENRICHMENT_FEATURE_COLS,
 ]
 
 
@@ -196,3 +217,18 @@ def predict_start_probabilities(
     X = df[FEATURE_COLS].astype(float)
     probs = model.predict_proba(X)[:, 1]
     return pd.Series(probs, index=df.index, name="start_prob")
+
+
+def predict_batch(
+    all_stats: pd.DataFrame,
+    model: Pipeline | None = None,
+) -> dict[int, float]:
+    if model is None:
+        model = load()
+
+    df = _build_features(all_stats)
+    X = df[FEATURE_COLS].astype(float)
+    probs = model.predict_proba(X)[:, 1]
+    df = df.copy()
+    df["_prob"] = probs
+    return df.groupby("player_id")["_prob"].last().to_dict()

@@ -13,6 +13,14 @@ from sqlalchemy import text
 
 from config.strategy import SCORING
 from data.db import get_session
+from projection.features import (
+    ENRICHMENT_FEATURE_COLS,
+    FDR_FEATURE_COLS,
+    add_enrichment_features,
+    add_fdr_features,
+    load_fixture_difficulty,
+    load_player_enrichment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -137,12 +145,26 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
             grp["goals_conceded"].transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
         )
 
+    global_grp = df.groupby("player_id")
+    df["avg_pts_5gw_global"] = global_grp["total_points"].transform(
+        lambda x: x.shift(1).rolling(5, min_periods=1).mean()
+    )
+    career_avg = global_grp["total_points"].transform("mean")
+    df["form_decay_ratio"] = (df["avg_pts_3gw"] / (career_avg + 0.1)).clip(-3.0, 3.0)
+
     df = pd.get_dummies(df, columns=["position"], prefix="pos", dtype=float)
     for pos in ["pos_GKP", "pos_DEF", "pos_MID", "pos_FWD"]:
         if pos not in df.columns:
             df[pos] = 0.0
 
     df = df.dropna(subset=["avg_xg_5gw", "avg_pts_5gw"])
+
+    fdr = load_fixture_difficulty()
+    df = add_fdr_features(df, fdr)
+
+    enrichment = load_player_enrichment()
+    df = add_enrichment_features(df, enrichment)
+
     return df
 
 
@@ -150,6 +172,7 @@ FEATURE_COLS = [
     "avg_xg_3gw", "avg_xg_5gw",
     "avg_xa_3gw", "avg_xa_5gw",
     "avg_pts_3gw", "avg_pts_5gw",
+    "avg_pts_5gw_global", "form_decay_ratio",
     "avg_goals_3gw", "avg_goals_5gw",
     "avg_assists_3gw", "avg_assists_5gw",
     "avg_cs_3gw", "avg_cs_5gw",
@@ -159,6 +182,8 @@ FEATURE_COLS = [
     "ict_index", "influence", "creativity", "threat",
     "form", "now_cost", "selected_by_percent",
     "pos_GKP", "pos_DEF", "pos_MID", "pos_FWD",
+    *FDR_FEATURE_COLS,
+    *ENRICHMENT_FEATURE_COLS,
 ]
 
 
@@ -227,3 +252,18 @@ def predict_points(
     X = df[FEATURE_COLS].astype(float)
     preds = model.predict(X)
     return pd.Series(np.clip(preds, 0, None), index=df.index, name="xpts")
+
+
+def predict_batch(
+    all_stats: pd.DataFrame,
+    model: Pipeline | None = None,
+) -> dict[int, float]:
+    if model is None:
+        model = load()
+
+    df = _build_features(all_stats)
+    X = df[FEATURE_COLS].astype(float)
+    preds = np.clip(model.predict(X), 0, None)
+    df = df.copy()
+    df["_xpts"] = preds
+    return df.groupby("player_id")["_xpts"].last().to_dict()

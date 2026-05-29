@@ -142,6 +142,15 @@ def optimise_squad(
     squad_df["is_captain"] = squad_df["id"] == captain_id
     squad_df["is_vice_captain"] = squad_df["id"] == vice_id
 
+    bench = squad_df[~squad_df["is_starting"]].copy()
+    bench = bench.sort_values(
+        ["position", "xpts_total"],
+        key=lambda s: s.map({"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}) if s.name == "position" else -s,
+        ascending=[True, True],
+    )
+    bench_order = {pid: i for i, pid in enumerate(bench["id"])}
+    squad_df["bench_order"] = squad_df["id"].map(bench_order).fillna(-1).astype(int)
+
     starting_xi = squad_df[squad_df["is_starting"]].copy()
 
     if current_squad_ids:
@@ -217,10 +226,19 @@ def optimise_starting_xi(squad: pd.DataFrame, projections: pd.DataFrame, gw: int
     captain_id = next(player_ids[i] for i in range(n) if pulp.value(captain[i]) > 0.5)
     vice_id = next(player_ids[i] for i in range(n) if pulp.value(vice[i]) > 0.5)
 
-    squad_out = squad.copy()
+    squad_out = df.copy()
     squad_out["is_starting"] = squad_out["id"].isin(starting_ids)
     squad_out["is_captain"] = squad_out["id"] == captain_id
     squad_out["is_vice_captain"] = squad_out["id"] == vice_id
+
+    bench = squad_out[~squad_out["is_starting"]].copy()
+    bench = bench.sort_values(
+        ["position", "xpts"],
+        key=lambda s: s.map({"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}) if s.name == "position" else -s,
+        ascending=[True, True],
+    )
+    bench_order = {pid: i for i, pid in enumerate(bench["id"])}
+    squad_out["bench_order"] = squad_out["id"].map(bench_order).fillna(-1).astype(int)
 
     return SquadSolution(
         squad=squad_out,

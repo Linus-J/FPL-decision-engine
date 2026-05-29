@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import argparse
+import asyncio
 import json
 import logging
 import sys
@@ -17,6 +18,9 @@ from config.settings import settings
 from optimiser.chips import Chip
 from agent import decision_engine, fpl_client, notifier
 from data.ingestors.odds_api import ingest_odds_sync
+from data.ingestors.understat import run_understat_ingest
+from data.ingestors.injury_parser import run_injury_parser
+from data.ingestors.press_conference import ingest_press_signals_sync
 
 
 def _parse_args() -> argparse.Namespace:
@@ -46,7 +50,25 @@ def main() -> None:
         args.season, dry_run, force_chip,
     )
 
-    ingest_odds_sync()
+    try:
+        ingest_odds_sync()
+    except Exception as exc:
+        logging.getLogger().warning("Odds ingest skipped: %s", exc)
+
+    try:
+        asyncio.run(run_understat_ingest([args.season]))
+    except Exception as exc:
+        logging.getLogger().warning("Understat ingest skipped: %s", exc)
+
+    try:
+        run_injury_parser()
+    except Exception as exc:
+        logging.getLogger().warning("Injury parser skipped: %s", exc)
+
+    try:
+        ingest_press_signals_sync()
+    except Exception as exc:
+        logging.getLogger().warning("Press signal ingest skipped: %s", exc)
 
     decision = decision_engine.run(
         season=args.season,

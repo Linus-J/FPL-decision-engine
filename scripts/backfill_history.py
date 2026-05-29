@@ -1,30 +1,27 @@
-"""
-Pulls 3 seasons of historical FPL GW data from vaastav/Fantasy-Premier-League.
-
-Run once before training the projection models:
-    python -m scripts.backfill_history
-
-Data lands in player_gw_stats table, tagged with the correct season string.
-"""
-
+#!/usr/bin/env python
 import asyncio
 import io
 import logging
+import sys
+from pathlib import Path
 
-import pandas as pd
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
 import httpx
+import pandas as pd
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session, init_db
-from data.models import PlayerGameweekStats, Player
+from data.models import PlayerGameweekStats
 
 logger = logging.getLogger(__name__)
 
-VAASTAV_BASE = (
-    "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
-)
+VAASTAV_BASE = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
 
 SEASONS = [
+    ("2021-22", "2021-22"),
     ("2022-23", "2022-23"),
     ("2023-24", "2023-24"),
     ("2024-25", "2024-25"),
@@ -43,45 +40,38 @@ async def _fetch_csv(client: httpx.AsyncClient, url: str) -> pd.DataFrame | None
         return None
 
 
-def _build_player_name_map() -> dict[str, int]:
+def _build_fpl_id_map() -> dict[int, int]:
     db = get_session()
     try:
-        players = db.query(Player).all()
-        name_map: dict[str, int] = {}
-        for p in players:
-            full = f"{p.first_name} {p.second_name}".lower()
-            web = p.web_name.lower()
-            name_map[full] = p.id
-            name_map[web] = p.id
-        return name_map
+        from sqlalchemy import text
+        rows = db.execute(text("SELECT id, fpl_id FROM players")).fetchall()
+        return {int(fpl_id): int(db_id) for db_id, fpl_id in rows}
     finally:
         db.close()
 
 
-def _fuzzy_match(name: str, name_map: dict[str, int]) -> int | None:
-    normalised = name.strip().lower()
-    if normalised in name_map:
-        return name_map[normalised]
+def _ingest_dataframe(df: pd.DataFrame, season: str, fpl_id_map: dict[int, int]) -> tuple[int, int]:
+    df = df.rename(columns={"round": "GW"}) if "GW" not in df.columns else df
 
-    for key, player_id in name_map.items():
-        if normalised in key or key in normalised:
-            return player_id
+    required = {"element", "GW", "minutes", "total_points"}
+    if not required.issubset(df.columns):
+        missing = required - set(df.columns)
+        logger.warning("Season %s CSV missing columns: %s — skipping", season, missing)
+        return 0, 0
 
-    return None
-
-
-def _ingest_dataframe(df: pd.DataFrame, season: str, name_map: dict[str, int]) -> int:
     db = get_session()
-    inserted = 0
+    inserted = skipped = 0
     try:
         for _, row in df.iterrows():
-            player_name = str(row.get("name", ""))
-            player_id = _fuzzy_match(player_name, name_map)
+            fpl_id = int(row.get("element", 0) or 0)
+            player_id = fpl_id_map.get(fpl_id)
             if not player_id:
+                skipped += 1
                 continue
 
-            gw = int(row.get("GW", 0))
+            gw = int(row.get("GW", 0) or 0)
             if not gw:
+                skipped += 1
                 continue
 
             stmt = (
@@ -115,13 +105,13 @@ def _ingest_dataframe(df: pd.DataFrame, season: str, name_map: dict[str, int]) -
     finally:
         db.close()
 
-    return inserted
+    return inserted, skipped
 
 
 async def backfill() -> None:
     init_db()
-    name_map = _build_player_name_map()
-    logger.info("Built name map with %d player entries", len(name_map))
+    fpl_id_map = _build_fpl_id_map()
+    logger.info("FPL ID map: %d players in DB", len(fpl_id_map))
 
     async with httpx.AsyncClient() as client:
         for vaastav_season, db_season in SEASONS:
@@ -132,14 +122,18 @@ async def backfill() -> None:
                 logger.warning("Skipping season %s — no data", vaastav_season)
                 continue
 
-            count = _ingest_dataframe(df, db_season, name_map)
-            logger.info("Season %s: inserted %d GW rows", db_season, count)
+            total_rows = len(df)
+            inserted, skipped = _ingest_dataframe(df, db_season, fpl_id_map)
+            match_rate = inserted / total_rows * 100 if total_rows else 0
+            logger.info(
+                "Season %s: %d rows → %d inserted (%.0f%% match rate), %d unmatched",
+                db_season, total_rows, inserted, match_rate, skipped,
+            )
 
     logger.info("Historical backfill complete")
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     asyncio.run(backfill())
 
 

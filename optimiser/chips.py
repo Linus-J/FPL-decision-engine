@@ -1,13 +1,28 @@
 import logging
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 
 import pandas as pd
+from sqlalchemy import text
 
 from config.strategy import CHIP_TIMING, CHIPS, SQUAD
+from data.db import get_session
 from optimiser.squad import optimise_squad
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _get_wc_half_boundary() -> int:
+    db = get_session()
+    try:
+        total = db.execute(text("SELECT COUNT(*) FROM gameweeks")).scalar() or 38
+        return total // 2
+    except Exception:
+        return CHIPS.wildcard_first_half_deadline_gw
+    finally:
+        db.close()
 
 
 class Chip(str, Enum):
@@ -33,7 +48,7 @@ def chips_used_this_season(decision_log: pd.DataFrame) -> set[Chip]:
 
 def _wildcards_remaining(used: set[Chip], current_gw: int) -> int:
     wc_uses = sum(1 for c in used if c == Chip.WILDCARD)
-    half_boundary = CHIPS.wildcard_first_half_deadline_gw
+    half_boundary = _get_wc_half_boundary()
     if current_gw <= half_boundary:
         available = 1
     else:

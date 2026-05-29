@@ -162,6 +162,8 @@ def upsert_players(bootstrap: dict) -> None:
                     threat=float(p.get("threat", 0) or 0),
                     chance_of_playing_next_round=p.get("chance_of_playing_next_round"),
                     chance_of_playing_this_round=p.get("chance_of_playing_this_round"),
+                    transfers_in_event=p.get("transfers_in_event", 0),
+                    transfers_out_event=p.get("transfers_out_event", 0),
                     updated_at=datetime.utcnow(),
                 )
                 .on_conflict_do_update(
@@ -195,6 +197,8 @@ def upsert_players(bootstrap: dict) -> None:
                         "threat": float(p.get("threat", 0) or 0),
                         "chance_of_playing_next_round": p.get("chance_of_playing_next_round"),
                         "chance_of_playing_this_round": p.get("chance_of_playing_this_round"),
+                        "transfers_in_event": p.get("transfers_in_event", 0),
+                        "transfers_out_event": p.get("transfers_out_event", 0),
                         "updated_at": datetime.utcnow(),
                     },
                 )

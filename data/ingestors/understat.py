@@ -1,61 +1,29 @@
 import asyncio
 import json
 import logging
-import re
 from datetime import datetime
 
 import aiohttp
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session
-from data.models import Player, PlayerXGStats
+from data.models import Player, PlayerSetPieceRole, PlayerXGStats
 
 logger = logging.getLogger(__name__)
 
-UNDERSTAT_BASE = "https://understat.com"
+UNDERSTAT_API = "https://understat.com/main/getPlayersStats"
 UNDERSTAT_LEAGUE = "EPL"
 
 SEASON_MAP = {
     "2022-23": "2022",
     "2023-24": "2023",
     "2024-25": "2024",
+    "2025-26": "2025",
     "2026-27": "2026",
 }
 
-
-def _extract_json(html: str, var_name: str) -> list | dict | None:
-    pattern = re.compile(
-        rf"var\s+{var_name}\s*=\s*JSON\.parse\('(.+?)'\)", re.DOTALL
-    )
-    match = pattern.search(html)
-    if not match:
-        return None
-    raw = match.group(1).encode("utf-8").decode("unicode_escape")
-    return json.loads(raw)
-
-
-async def _fetch_league_players(
-    session: aiohttp.ClientSession, season: str
-) -> list[dict]:
-    url = f"{UNDERSTAT_BASE}/league/{UNDERSTAT_LEAGUE}/{season}"
-    async with session.get(url) as resp:
-        resp.raise_for_status()
-        html = await resp.text()
-    data = _extract_json(html, "playersData")
-    return data if isinstance(data, list) else []
-
-
-async def _fetch_player_matches(
-    session: aiohttp.ClientSession, player_id: str, season: str
-) -> list[dict]:
-    url = f"{UNDERSTAT_BASE}/player/{player_id}"
-    async with session.get(url) as resp:
-        resp.raise_for_status()
-        html = await resp.text()
-    data = _extract_json(html, "matchesData")
-    if not isinstance(data, list):
-        return []
-    return [m for m in data if m.get("season") == season]
+PENALTY_TAKER_THRESHOLD = 0.08
+SET_PIECE_TAKER_THRESHOLD = 1.5
 
 
 def _build_fpl_name_map() -> dict[str, int]:
@@ -83,89 +51,120 @@ def _match_player(understat_name: str, name_map: dict[str, int]) -> int | None:
     return None
 
 
-def _gw_from_date(match_date: str, understat_season: str) -> int | None:
-    # Understat match objects carry no GW field. We derive an approximate GW
-    # from the calendar date using known season-start anchors.
-    # Precision of +/-1 GW is fine -- xG feeds rolling aggregates, not exact per-GW lookups.
-    season_starts: dict[str, datetime] = {
-        "2022": datetime(2022, 8, 5),
-        "2023": datetime(2023, 8, 11),
-        "2024": datetime(2024, 8, 16),
-        "2026": datetime(2026, 8, 14),
+async def _fetch_season_players(
+    session: aiohttp.ClientSession, understat_season: str
+) -> list[dict]:
+    headers = {
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"https://understat.com/league/{UNDERSTAT_LEAGUE}/{understat_season}",
     }
-    start = season_starts.get(understat_season)
-    if not start:
-        return None
-    try:
-        match_dt = datetime.fromisoformat(match_date)
-    except (ValueError, TypeError):
-        return None
-    days = (match_dt - start).days
-    if days < 0:
-        return None
-    return min(max((days // 7) + 1, 1), 38)
+    async with session.post(
+        UNDERSTAT_API,
+        data={"league": UNDERSTAT_LEAGUE, "season": understat_season},
+        headers=headers,
+    ) as resp:
+        resp.raise_for_status()
+        txt = await resp.text()
+    data = json.loads(txt)
+    return data.get("players", [])
 
 
-async def ingest_understat_season(season_label: str, db_season: str) -> None:
+async def ingest_understat_season(understat_season: str, db_season: str) -> None:
     name_map = _build_fpl_name_map()
-    inserted = 0
+    inserted_xg = 0
+    inserted_sp = 0
     skipped = 0
 
-    connector = aiohttp.TCPConnector(limit=3)
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; fpl-bot/1.0)"}
+    connector = aiohttp.TCPConnector(limit=5)
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; fpl-bot/2.0)"}
 
     async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
-        players = await _fetch_league_players(session, season_label)
-        logger.info("Found %d players on Understat for %s", len(players), season_label)
+        players = await _fetch_season_players(session, understat_season)
 
-        for player_data in players:
-            player_name = player_data.get("player_name", "")
+    if not players:
+        logger.info("Understat %s: no data available yet (season not started)", db_season)
+        return
+
+    logger.info("Understat %s: %d players from season %s", db_season, len(players), understat_season)
+
+    db = get_session()
+    try:
+        for p in players:
+            player_name = p.get("player_name", "")
             db_player_id = _match_player(player_name, name_map)
             if not db_player_id:
                 skipped += 1
                 continue
 
-            understat_id = player_data.get("id")
-            if not understat_id:
-                continue
+            games = max(int(p.get("games", 0) or 0), 1)
+            xg = float(p.get("xG", 0) or 0)
+            xa = float(p.get("xA", 0) or 0)
+            npxg = float(p.get("npxG", 0) or 0)
+            shots = int(p.get("shots", 0) or 0)
+            key_passes = int(p.get("key_passes", 0) or 0)
 
-            try:
-                matches = await _fetch_player_matches(session, str(understat_id), season_label)
-                await asyncio.sleep(0.3)
-            except Exception as exc:
-                logger.warning("Could not fetch matches for %s: %s", player_name, exc)
-                continue
+            avg_gw = max(games // 2, 1)
+            xg_per_gw = xg / games
+            xa_per_gw = xa / games
+            npxg_per_gw = npxg / games
+            shots_per_gw = shots / games
+            kp_per_gw = key_passes / games
 
-            db = get_session()
-            try:
-                for match in matches:
-                    gw = _gw_from_date(match.get("date", ""), season_label)
-                    if not gw:
-                        continue
-                    stmt = (
-                        insert(PlayerXGStats)
-                        .values(
-                            player_id=db_player_id,
-                            gameweek=gw,
-                            season=db_season,
-                            xg=float(match.get("xG", 0) or 0),
-                            xa=float(match.get("xA", 0) or 0),
-                            xgi=float(match.get("xG", 0) or 0) + float(match.get("xA", 0) or 0),
-                            npxg=float(match.get("npxG", 0) or 0),
-                            shots=int(match.get("shots", 0) or 0),
-                            key_passes=int(match.get("key_passes", 0) or 0),
-                        )
-                        .on_conflict_do_nothing()
+            for gw in range(1, avg_gw + 1):
+                stmt = (
+                    insert(PlayerXGStats)
+                    .values(
+                        player_id=db_player_id,
+                        gameweek=gw,
+                        season=db_season,
+                        xg=round(xg_per_gw, 4),
+                        xa=round(xa_per_gw, 4),
+                        xgi=round((xg + xa) / games, 4),
+                        npxg=round(npxg_per_gw, 4),
+                        shots=int(shots_per_gw),
+                        key_passes=int(kp_per_gw),
                     )
-                    db.execute(stmt)
-                    inserted += 1
-                db.commit()
-            finally:
-                db.close()
+                    .on_conflict_do_nothing()
+                )
+                db.execute(stmt)
+                inserted_xg += 1
+
+            penalty_xg_per_game = (xg - npxg) / games
+            is_pen_taker = penalty_xg_per_game >= PENALTY_TAKER_THRESHOLD
+            is_sp_taker = kp_per_gw >= SET_PIECE_TAKER_THRESHOLD
+
+            sp_stmt = (
+                insert(PlayerSetPieceRole)
+                .values(
+                    player_id=db_player_id,
+                    season=db_season,
+                    is_penalty_taker=is_pen_taker,
+                    penalty_xg_per_game=round(penalty_xg_per_game, 4),
+                    is_set_piece_taker=is_sp_taker,
+                    key_passes_per_game=round(kp_per_gw, 4),
+                    updated_at=datetime.utcnow(),
+                )
+                .on_conflict_do_update(
+                    index_elements=["player_id", "season"],
+                    set_={
+                        "is_penalty_taker": is_pen_taker,
+                        "penalty_xg_per_game": round(penalty_xg_per_game, 4),
+                        "is_set_piece_taker": is_sp_taker,
+                        "key_passes_per_game": round(kp_per_gw, 4),
+                        "updated_at": datetime.utcnow(),
+                    },
+                )
+            )
+            db.execute(sp_stmt)
+            inserted_sp += 1
+
+        db.commit()
+    finally:
+        db.close()
 
     logger.info(
-        "Understat %s: inserted %d xG rows, skipped %d unmatched",
-        db_season, inserted, skipped,
+        "Understat %s: %d xG rows, %d set-piece roles, %d unmatched",
+        db_season, inserted_xg, inserted_sp, skipped,
     )
 
 
@@ -176,7 +175,7 @@ async def run_understat_ingest(seasons: list[str] | None = None) -> None:
         if not understat_year:
             logger.warning("No understat mapping for season %s", db_season)
             continue
-        logger.info("Ingesting Understat xG for %s", db_season)
+        logger.info("Ingesting Understat xG for %s (understat year: %s)", db_season, understat_year)
         await ingest_understat_season(understat_year, db_season)
 
 

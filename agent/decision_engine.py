@@ -212,7 +212,7 @@ def run(
         "transfers_out": transfer_plan.transfers_out,
         "hits_taken": transfer_plan.hits_taken,
         "net_xpts_gain": round(transfer_plan.net_xpts_gain, 2),
-        "squad": squad_solution.squad[["id", "web_name", "position", "now_cost", "is_starting", "is_captain", "is_vice_captain"]].to_dict("records"),
+        "squad": squad_solution.squad[["id", "web_name", "position", "now_cost", "is_starting", "is_captain", "is_vice_captain", "bench_order"]].to_dict("records"),
         "captain_id": xi_solution.captain_id,
         "vice_captain_id": xi_solution.vice_captain_id,
         "total_xpts": round(xi_solution.total_xpts, 2),

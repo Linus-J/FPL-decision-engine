@@ -94,6 +94,15 @@ def format_decision_message(decision: dict) -> str:
             lines.append(f"  {pos}: {', '.join(by_pos[pos])}")
     lines.append("")
 
+    bench = sorted(
+        [p for p in squad if not p.get("is_starting")],
+        key=lambda p: p.get("bench_order", 99),
+    )
+    if bench:
+        bench_names = ", ".join(p["web_name"] for p in bench)
+        lines.append(f"<b>Bench:</b> {bench_names}")
+        lines.append("")
+
     lines.append(f"💰 Squad cost: £{total_cost}m")
     lines.append(f"📐 Projected xPts: <b>{total_xpts:.1f}</b>")
     if dgw_coverage:
