@@ -85,9 +85,10 @@ class ChipRules:
 @dataclass(frozen=True)
 class TransferRules:
     free_transfers_per_gw: int = 1
-    max_banked_free_transfers: int = 2   # cap on accumulated FTs
-    hit_cost_points: int = -4            # points deducted per extra transfer
-    max_hits_per_gw: int = 1            # bot will never exceed this in normal play
+    max_banked_free_transfers: int = 5
+    hit_cost_points: int = -4
+    max_hits_per_gw: int = 2
+    ft_terminal_value: float = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -153,20 +154,14 @@ class DGWStrategy:
 
 @dataclass(frozen=True)
 class ChipTimingThresholds:
-    # Wildcard: trigger if optimal squad beats current squad by this many
-    # pts over a WILDCARD_EVAL_HORIZON_GWS rolling window
-    wildcard_pts_gain_threshold: float = 15.0
+    wildcard_pts_gain_threshold: float = 25.0
     wildcard_eval_horizon_gws: int = 5
+    wildcard_min_managed_gws: int = 6
 
-    # Free Hit: use when free hit squad beats current squad by this many pts
-    # in a single GW (useful for blank GWs where your squad has many missing)
     free_hit_single_gw_gain_threshold: float = 12.0
 
-    # Bench Boost: use when bench is projected to score this many pts in a DGW
     bench_boost_min_bench_xpts: float = 20.0
 
-    # Triple Captain: use when best TC candidate scores this many more pts
-    # than the standard captain (net gain after accounting for 2x vs 3x)
     triple_captain_min_gain: float = 6.0
 
 
@@ -178,13 +173,17 @@ class ChipTimingThresholds:
 @dataclass(frozen=True)
 class OptimiserConfig:
     # Number of GWs to project ahead for transfer decisions
-    transfer_planning_horizon_gws: int = 5
+    transfer_planning_horizon_gws: int = 3
 
     # Rolling window for recent form (xG, xA, minutes)
     form_window_gws: int = 5
 
     # Minimum P(starts) threshold — players below this are excluded
     min_start_probability: float = 0.4
+
+    # Extra points gain required above the raw hit cost to justify taking a hit.
+    # With hit_cost=-4 and buffer=2, we only hit when net gain >= 6 over horizon.
+    hit_min_gain_buffer: float = 2.0
 
     # Ownership differential cap — how far to deviate from template
     # (higher = more contrarian, lower = safer template-following)

@@ -2,11 +2,15 @@ import logging
 from dataclasses import dataclass
 
 import pandas as pd
+import pulp
 
-from config.strategy import DGW, OPTIMISER, TRANSFERS
-from optimiser.squad import SquadSolution, optimise_squad
+from config.strategy import OPTIMISER, SQUAD, TRANSFERS
 
 logger = logging.getLogger(__name__)
+
+SQUAD_COUNTS = {"GKP": 2, "DEF": 5, "MID": 5, "FWD": 3}
+STARTING_MIN = {"GKP": 1, "DEF": 3, "MID": 2, "FWD": 1}
+STARTING_MAX = {"GKP": 1, "DEF": 5, "MID": 5, "FWD": 3}
 
 
 @dataclass
@@ -18,27 +22,17 @@ class TransferPlan:
     net_xpts_gain: float
 
 
-def _current_squad_df(current_squad_ids: list[int], players: pd.DataFrame) -> pd.DataFrame:
-    return players[players["id"].isin(current_squad_ids)].copy()
-
-
 def _squad_xpts(squad_ids: list[int], projections: pd.DataFrame, horizon: int) -> float:
     gws = sorted(projections["gameweek"].unique())[:horizon]
     subset = projections[
         projections["gameweek"].isin(gws) & projections["player_id"].isin(squad_ids)
     ]
-    return float(subset["xpts"].sum())
-
-
-def _xpts_with_transfers(
-    solution: SquadSolution,
-    projections: pd.DataFrame,
-    horizon: int,
-    hits: int,
-) -> float:
-    squad_ids = solution.squad["id"].tolist()
-    raw = _squad_xpts(squad_ids, projections, horizon)
-    return raw + hits * TRANSFERS.hit_cost_points
+    total = 0.0
+    for gw in gws:
+        gw_xpts = subset[subset["gameweek"] == gw]["xpts"].nlargest(11)
+        captain_bonus = float(gw_xpts.max()) if len(gw_xpts) > 0 else 0.0
+        total += float(gw_xpts.sum()) + captain_bonus
+    return total
 
 
 def evaluate_transfers(
@@ -49,103 +43,177 @@ def evaluate_transfers(
     available_budget: float | None = None,
     wildcard_active: bool = False,
     dgw_gws: set[int] | None = None,
+    solver_time_limit: int | None = None,
 ) -> TransferPlan:
-    dgw_gws = dgw_gws or set()
     horizon = OPTIMISER.transfer_planning_horizon_gws
+    current_squad = players[players["id"].isin(current_squad_ids)].copy()
+    budget = available_budget or float(current_squad["now_cost"].sum())
 
-    current_squad = _current_squad_df(current_squad_ids, players)
-    budget = available_budget or current_squad["now_cost"].sum()
+    gws = sorted(projections["gameweek"].unique())[:horizon]
+    H = len(gws)
+    if H == 0:
+        return TransferPlan([], [], 0, 0.0, 0.0)
 
-    current_xpts = _squad_xpts(current_squad_ids, projections, horizon)
+    candidate_pids = set(current_squad_ids)
+    if "start_probability" in projections.columns:
+        candidate_pids |= set(
+            projections[projections["start_probability"] >= OPTIMISER.min_start_probability]["player_id"]
+        )
+    else:
+        candidate_pids |= set(projections["player_id"].unique())
 
-    best_plan: TransferPlan | None = None
-    max_hits = TRANSFERS.max_hits_per_gw if not wildcard_active else 15
+    df = players[players["id"].isin(candidate_pids)].copy()
+    df = df[df["status"].isin(["a", "d"])]
+    df = df.reset_index(drop=True)
+
+    pid_list = df["id"].tolist()
+    pid_set = set(pid_list)
+    N = len(pid_list)
+    pid_to_i = {pid: i for i, pid in enumerate(pid_list)}
+
+    costs = df["now_cost"].tolist()
+    positions = df["position"].tolist()
+    teams = df["team_id"].tolist()
+    in_current = [1 if pid in set(current_squad_ids) else 0 for pid in pid_list]
+
+    xpts_pw: dict[tuple[int, int], float] = {}
+    for w, gw in enumerate(gws):
+        gw_proj = projections[projections["gameweek"] == gw].set_index("player_id")["xpts"]
+        for pid in pid_list:
+            xpts_pw[(pid, w)] = float(gw_proj.get(pid, 0.0))
+
+    prob = pulp.LpProblem("mp_transfers", pulp.LpMaximize)
+
+    squad = {
+        (pid, w): pulp.LpVariable(f"sq_{pid}_{w}", cat="Binary")
+        for pid in pid_list for w in range(H)
+    }
+    starting = {
+        (pid, w): pulp.LpVariable(f"st_{pid}_{w}", cat="Binary")
+        for pid in pid_list for w in range(H)
+    }
+    tin = {
+        (pid, w): pulp.LpVariable(f"ti_{pid}_{w}", cat="Binary")
+        for pid in pid_list for w in range(H)
+    }
+    tout = {
+        (pid, w): pulp.LpVariable(f"to_{pid}_{w}", cat="Binary")
+        for pid in pid_list for w in range(H)
+    }
+    captain = {
+        (pid, w): pulp.LpVariable(f"cp_{pid}_{w}", cat="Binary")
+        for pid in pid_list for w in range(H)
+    }
+    ft = {w: pulp.LpVariable(f"ft_{w}", lowBound=1, upBound=5, cat="Integer") for w in range(H + 1)}
+    hit = {w: pulp.LpVariable(f"hit_{w}", lowBound=0, upBound=15, cat="Integer") for w in range(H)}
+    n_trans = {w: pulp.LpVariable(f"nt_{w}", lowBound=0, upBound=15, cat="Integer") for w in range(H)}
 
     if wildcard_active:
-        hit_range = [0]
+        prob += ft[0] == 15
     else:
-        hit_range = range(0, max_hits + 1)
+        prob += ft[0] == free_transfers
 
-    for extra_hits in hit_range:
-        effective_ft = free_transfers + extra_hits * 0 if wildcard_active else free_transfers
-        transfers_allowed = effective_ft + extra_hits if not wildcard_active else 15
+    for w in range(H):
+        for i, pid in enumerate(pid_list):
+            if w == 0:
+                prob += squad[(pid, w)] == in_current[i] + tin[(pid, w)] - tout[(pid, w)]
+            else:
+                prob += squad[(pid, w)] == squad[(pid, w - 1)] + tin[(pid, w)] - tout[(pid, w)]
 
-        solution = optimise_squad(
-            projections=projections,
-            players=players,
-            budget=budget,
-            horizon=horizon,
-            current_squad_ids=current_squad_ids,
-            free_transfers=effective_ft,
-        )
+            prob += tin[(pid, w)] + tout[(pid, w)] <= 1
 
-        new_squad_ids = solution.squad["id"].tolist()
-        incoming = [pid for pid in new_squad_ids if pid not in set(current_squad_ids)]
-        outgoing = [pid for pid in current_squad_ids if pid not in set(new_squad_ids)]
+            if in_current[i] == 0 and w == 0:
+                prob += tout[(pid, w)] == 0
+            if in_current[i] == 1 and w == 0:
+                prob += tin[(pid, w)] == 0
 
-        actual_hits = max(0, len(incoming) - free_transfers)
-        if actual_hits > max_hits and not wildcard_active:
-            continue
+            prob += captain[(pid, w)] <= starting[(pid, w)]
+            prob += starting[(pid, w)] <= squad[(pid, w)]
 
-        net_gain = _xpts_with_transfers(solution, projections, horizon, actual_hits) - current_xpts
+        prob += pulp.lpSum(squad[(pid, w)] for pid in pid_list) == SQUAD.squad_size
+        prob += pulp.lpSum(starting[(pid, w)] for pid in pid_list) == 11
+        prob += pulp.lpSum(costs[i] * squad[(pid_list[i], w)] for i in range(N)) <= budget
 
-        if best_plan is None or net_gain > best_plan.net_xpts_gain:
-            best_plan = TransferPlan(
-                transfers_in=[
-                    {
-                        "player_id": pid,
-                        "web_name": players.loc[players["id"] == pid, "web_name"].values[0]
-                        if pid in players["id"].values else str(pid),
-                        "cost": players.loc[players["id"] == pid, "now_cost"].values[0]
-                        if pid in players["id"].values else 0.0,
-                    }
-                    for pid in incoming
-                ],
-                transfers_out=[
-                    {
-                        "player_id": pid,
-                        "web_name": players.loc[players["id"] == pid, "web_name"].values[0]
-                        if pid in players["id"].values else str(pid),
-                        "cost": players.loc[players["id"] == pid, "now_cost"].values[0]
-                        if pid in players["id"].values else 0.0,
-                    }
-                    for pid in outgoing
-                ],
-                hits_taken=actual_hits,
-                xpts_gain=solution.total_xpts - current_xpts,
-                net_xpts_gain=net_gain,
-            )
+        for pos, count in SQUAD_COUNTS.items():
+            pos_pids = [pid for pid, p in zip(pid_list, positions) if p == pos]
+            prob += pulp.lpSum(squad[(pid, w)] for pid in pos_pids) == count
+            prob += pulp.lpSum(starting[(pid, w)] for pid in pos_pids) >= STARTING_MIN[pos]
+            prob += pulp.lpSum(starting[(pid, w)] for pid in pos_pids) <= STARTING_MAX[pos]
 
-    if best_plan is None:
-        best_plan = TransferPlan(
-            transfers_in=[],
-            transfers_out=[],
-            hits_taken=0,
-            xpts_gain=0.0,
-            net_xpts_gain=0.0,
-        )
+        team_ids = list(set(teams))
+        for tid in team_ids:
+            tid_pids = [pid for pid, t in zip(pid_list, teams) if t == tid]
+            prob += pulp.lpSum(squad[(pid, w)] for pid in tid_pids) <= SQUAD.max_players_per_club
+
+        prob += pulp.lpSum(tin[(pid, w)] for pid in pid_list) == pulp.lpSum(tout[(pid, w)] for pid in pid_list)
+        prob += n_trans[w] == pulp.lpSum(tin[(pid, w)] for pid in pid_list)
+        prob += pulp.lpSum(captain[(pid, w)] for pid in pid_list) == 1
+
+        prob += hit[w] >= n_trans[w] - ft[w]
+
+        if wildcard_active and w == 0:
+            prob += hit[0] == 0
+        else:
+            prob += hit[w] <= TRANSFERS.max_hits_per_gw
+
+        prob += ft[w + 1] <= ft[w] - n_trans[w] + 1
+        prob += ft[w + 1] <= TRANSFERS.max_banked_free_transfers
+        prob += ft[w + 1] >= 1
+
+    prob += pulp.lpSum(
+        xpts_pw[(pid, w)] * starting[(pid, w)]
+        + xpts_pw[(pid, w)] * captain[(pid, w)]
+        - hit[w] * abs(TRANSFERS.hit_cost_points)
+        for pid in pid_list
+        for w in range(H)
+    ) + TRANSFERS.ft_terminal_value * ft[H]
+
+    solver_args = {"msg": False}
+    if solver_time_limit:
+        solver_args["timeLimit"] = solver_time_limit
+    prob.solve(pulp.PULP_CBC_CMD(**solver_args))
+
+    status = pulp.LpStatus[prob.status]
+    if status not in ("Optimal", "Not Solved"):
+        logger.warning("Multi-period ILP status: %s — returning no transfers", status)
+        return TransferPlan([], [], 0, 0.0, 0.0)
+
+    gw0_in = [pid for pid in pid_list if (pulp.value(tin[(pid, 0)]) or 0) > 0.5]
+    gw0_out = [pid for pid in pid_list if (pulp.value(tout[(pid, 0)]) or 0) > 0.5]
+
+    actual_hits = max(0, len(gw0_in) - (free_transfers if not wildcard_active else 15))
+
+    new_squad_ids = [pid for pid in current_squad_ids if pid not in set(gw0_out)] + gw0_in
+    xpts_after = _squad_xpts(new_squad_ids, projections, horizon)
+    xpts_before = _squad_xpts(current_squad_ids, projections, horizon)
+    xpts_gain = xpts_after - xpts_before
+    net_xpts_gain = xpts_gain + actual_hits * TRANSFERS.hit_cost_points
+
+    def _player_info(pid: int) -> dict:
+        row = players[players["id"] == pid]
+        return {
+            "player_id": pid,
+            "web_name": row["web_name"].values[0] if len(row) else str(pid),
+            "cost": float(row["now_cost"].values[0]) if len(row) else 0.0,
+        }
+
+    plan = TransferPlan(
+        transfers_in=[_player_info(pid) for pid in gw0_in],
+        transfers_out=[_player_info(pid) for pid in gw0_out],
+        hits_taken=actual_hits,
+        xpts_gain=xpts_gain,
+        net_xpts_gain=net_xpts_gain,
+    )
 
     logger.info(
-        "Transfer plan: %d in / %d out, %d hits, net gain %.2f xPts",
-        len(best_plan.transfers_in),
-        len(best_plan.transfers_out),
-        best_plan.hits_taken,
-        best_plan.net_xpts_gain,
+        "Transfer plan: %d in / %d out, %d hits, net gain %.2f xPts [ILP status: %s]",
+        len(plan.transfers_in), len(plan.transfers_out),
+        plan.hits_taken, plan.net_xpts_gain, status,
     )
-    return best_plan
+    return plan
 
 
 def should_take_hit(plan: TransferPlan) -> bool:
     if plan.hits_taken == 0:
         return False
-    breakeven = abs(TRANSFERS.hit_cost_points) * plan.hits_taken
-    return plan.xpts_gain >= breakeven
-
-
-def get_dgw_coverage(squad_ids: list[int], players: pd.DataFrame, dgw_gws: set[int], projections: pd.DataFrame) -> int:
-    if not dgw_gws:
-        return 0
-    dgw_proj = projections[projections["gameweek"].isin(dgw_gws)]
-    dgw_players = dgw_proj[dgw_proj["player_id"].isin(squad_ids)]
-    eligible = dgw_players[dgw_players["xpts"] > 0]["player_id"].nunique()
-    return int(eligible)
+    return plan.net_xpts_gain > 0

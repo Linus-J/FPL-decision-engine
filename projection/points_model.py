@@ -16,9 +16,12 @@ from data.db import get_session
 from projection.features import (
     ENRICHMENT_FEATURE_COLS,
     FDR_FEATURE_COLS,
+    ODDS_FEATURE_COLS,
     add_enrichment_features,
     add_fdr_features,
+    add_odds_features,
     load_fixture_difficulty,
+    load_fixture_odds,
     load_player_enrichment,
 )
 
@@ -46,10 +49,9 @@ def _load_training_data() -> pd.DataFrame:
                 s.red_cards,
                 s.bonus,
                 s.bps,
-                s.value,
+                s.value AS now_cost,
                 p.position,
                 p.team_id,
-                p.now_cost,
                 p.ict_index,
                 p.influence,
                 p.creativity,
@@ -123,6 +125,12 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
         df[f"avg_xa_{window}gw"] = (
             grp["xa"].transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
         )
+        df[f"avg_npxg_{window}gw"] = (
+            grp["npxg"].transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+        )
+        df[f"avg_shots_{window}gw"] = (
+            grp["shots"].transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+        )
         df[f"avg_pts_{window}gw"] = (
             grp["total_points"].transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
         )
@@ -149,7 +157,9 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["avg_pts_5gw_global"] = global_grp["total_points"].transform(
         lambda x: x.shift(1).rolling(5, min_periods=1).mean()
     )
-    career_avg = global_grp["total_points"].transform("mean")
+    career_avg = global_grp["total_points"].transform(
+        lambda x: x.shift(1).expanding(min_periods=1).mean()
+    )
     df["form_decay_ratio"] = (df["avg_pts_3gw"] / (career_avg + 0.1)).clip(-3.0, 3.0)
 
     df = pd.get_dummies(df, columns=["position"], prefix="pos", dtype=float)
@@ -165,12 +175,17 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     enrichment = load_player_enrichment()
     df = add_enrichment_features(df, enrichment)
 
+    odds = load_fixture_odds()
+    df = add_odds_features(df, odds)
+
     return df
 
 
 FEATURE_COLS = [
     "avg_xg_3gw", "avg_xg_5gw",
     "avg_xa_3gw", "avg_xa_5gw",
+    "avg_npxg_3gw", "avg_npxg_5gw",
+    "avg_shots_3gw", "avg_shots_5gw",
     "avg_pts_3gw", "avg_pts_5gw",
     "avg_pts_5gw_global", "form_decay_ratio",
     "avg_goals_3gw", "avg_goals_5gw",
@@ -183,6 +198,7 @@ FEATURE_COLS = [
     "form", "now_cost", "selected_by_percent",
     "pos_GKP", "pos_DEF", "pos_MID", "pos_FWD",
     *FDR_FEATURE_COLS,
+    *ODDS_FEATURE_COLS,
     *ENRICHMENT_FEATURE_COLS,
 ]
 

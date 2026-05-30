@@ -68,6 +68,7 @@ def recommend_chip(
     bench_xpts: float | None = None,
     dgw_gws: set[int] | None = None,
     bgw_affected_count: int = 0,
+    squad_age_gws: int = 99,
 ) -> ChipRecommendation:
     dgw_gws = dgw_gws or set()
     horizon = CHIP_TIMING.wildcard_eval_horizon_gws
@@ -121,7 +122,7 @@ def recommend_chip(
             return ChipRecommendation(Chip.FREE_HIT, f"BGW free hit gain {gain:.1f} xPts", gain)
 
     wc_remaining = _wildcards_remaining(chips_used, current_gw)
-    if wc_remaining > 0:
+    if wc_remaining > 0 and squad_age_gws >= CHIP_TIMING.wildcard_min_managed_gws:
         wc_solution = optimise_squad(
             projections=projections,
             players=players,

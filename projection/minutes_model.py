@@ -17,9 +17,12 @@ from data.db import get_session
 from projection.features import (
     ENRICHMENT_FEATURE_COLS,
     FDR_FEATURE_COLS,
+    ODDS_FEATURE_COLS,
     add_enrichment_features,
     add_fdr_features,
+    add_odds_features,
     load_fixture_difficulty,
+    load_fixture_odds,
     load_player_enrichment,
 )
 
@@ -51,11 +54,10 @@ def _load_training_data() -> pd.DataFrame:
                 s.selected,
                 s.transfers_in,
                 s.transfers_out,
-                s.value,
+                s.value AS now_cost,
                 p.position,
                 p.status,
                 p.chance_of_playing_next_round,
-                p.now_cost,
                 p.selected_by_percent,
                 p.form,
                 p.ict_index,
@@ -96,7 +98,9 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["avg_minutes_5gw_global"] = global_grp["minutes"].transform(
         lambda x: x.shift(1).rolling(5, min_periods=1).mean()
     )
-    career_avg_min = global_grp["minutes"].transform("mean")
+    career_avg_min = global_grp["minutes"].transform(
+        lambda x: x.shift(1).expanding(min_periods=1).mean()
+    )
     df["minutes_decay_ratio"] = (df["avg_minutes_3gw"] / (career_avg_min + 1)).clip(0.0, 2.0)
 
     df = pd.get_dummies(df, columns=["position"], prefix="pos", dtype=float)
@@ -114,6 +118,9 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     enrichment = load_player_enrichment()
     df = add_enrichment_features(df, enrichment)
+
+    odds = load_fixture_odds()
+    df = add_odds_features(df, odds)
 
     return df
 
@@ -139,6 +146,7 @@ FEATURE_COLS = [
     "pos_MID",
     "pos_FWD",
     *FDR_FEATURE_COLS,
+    *ODDS_FEATURE_COLS,
     *ENRICHMENT_FEATURE_COLS,
 ]
 

@@ -56,6 +56,7 @@ def optimise_squad(
     horizon: int | None = None,
     current_squad_ids: list[int] | None = None,
     free_transfers: int = 1,
+    max_transfers: int | None = None,
     force_include_ids: list[int] | None = None,
     force_exclude_ids: list[int] | None = None,
 ) -> SquadSolution:
@@ -127,7 +128,53 @@ def optimise_squad(
         if pid in idx:
             prob += selected[idx[pid]] == 1
 
+    if current_squad_ids and max_transfers is not None:
+        new_player = [pulp.LpVariable(f"new_{i}", cat="Binary") for i in range(n)]
+        for i, pid in enumerate(player_ids):
+            if pid in in_squad:
+                prob += new_player[i] == 0
+            else:
+                prob += new_player[i] == selected[i]
+        prob += pulp.lpSum(new_player) <= max_transfers
+
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
+
+    if pulp.LpStatus[prob.status] != "Optimal" and current_squad_ids and max_transfers is not None:
+        prob2 = pulp.LpProblem("fpl_squad_fallback", pulp.LpMaximize)
+        selected2 = [pulp.LpVariable(f"sel2_{i}", cat="Binary") for i in range(n)]
+        starting2 = [pulp.LpVariable(f"sta2_{i}", cat="Binary") for i in range(n)]
+        captain2 = [pulp.LpVariable(f"cap2_{i}", cat="Binary") for i in range(n)]
+        vice2 = [pulp.LpVariable(f"vic2_{i}", cat="Binary") for i in range(n)]
+        prob2 += pulp.lpSum(xpts[i] * (starting2[i] + captain2[i]) for i in range(n))
+        prob2 += pulp.lpSum(selected2) == SQUAD.squad_size
+        prob2 += pulp.lpSum(costs[i] * selected2[i] for i in range(n)) <= budget
+        prob2 += pulp.lpSum(starting2) == 11
+        prob2 += pulp.lpSum(captain2) == 1
+        prob2 += pulp.lpSum(vice2) == 1
+        for pos in POSITIONS:
+            pos_idx = [i for i, p in enumerate(positions) if p == pos]
+            prob2 += pulp.lpSum(selected2[i] for i in pos_idx) == SQUAD_COUNTS[pos]
+            prob2 += pulp.lpSum(starting2[i] for i in pos_idx) >= STARTING_MIN[pos]
+            prob2 += pulp.lpSum(starting2[i] for i in pos_idx) <= STARTING_MAX[pos]
+        for tid in list(set(teams)):
+            team_idx = [i for i, t in enumerate(teams) if t == tid]
+            prob2 += pulp.lpSum(selected2[i] for i in team_idx) <= SQUAD.max_players_per_club
+        for i in range(n):
+            prob2 += starting2[i] <= selected2[i]
+            prob2 += captain2[i] <= starting2[i]
+            prob2 += vice2[i] <= starting2[i]
+            prob2 += captain2[i] + vice2[i] <= 1
+        for pid in force_include_ids:
+            if pid in idx:
+                prob2 += selected2[idx[pid]] == 1
+        prob2.solve(pulp.PULP_CBC_CMD(msg=False))
+        if pulp.LpStatus[prob2.status] == "Optimal":
+            logger.warning("max_transfers=%d infeasible; falling back to unconstrained squad", max_transfers)
+            selected = selected2
+            starting = starting2
+            captain = captain2
+            vice = vice2
+            prob = prob2
 
     if pulp.LpStatus[prob.status] != "Optimal":
         raise RuntimeError(f"ILP solver did not find optimal solution: {pulp.LpStatus[prob.status]}")
