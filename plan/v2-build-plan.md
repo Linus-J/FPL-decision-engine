@@ -146,9 +146,38 @@ Reuse the `optimiser/transfers.py` multi-period ILP; **change the objective and 
 
 Replace regex/sentiment with the design-spec §5 contract. LLM **reads and scores credibility**; numeric fusion into models is **deterministic code**, never LLM-edited xPts.
 
-Typed signals (all timestamped, source-URL'd, point-in-time): `start_probability_override`, `injury_flag`, `new_signing_prior`, `set_piece_change`, `transfer_rumour`, `manager_change`. Primary injection point is the minutes model's start-prob override.
+Typed signals (all timestamped, source-URL'd, point-in-time): `start_probability_override`, `injury_flag`, `new_signing_prior`, `set_piece_change`, `transfer_rumour`, `departure_risk`, `manager_change`. Primary injection point is the minutes model's start-prob override.
 
 **Shadow-mode A/B from GW1:** log decisions-with-news vs decisions-without; measure counterfactual points delta. Promote the layer only once it demonstrates positive value. Historical replay only where archives are inherently timestamped (FFS archive, press-conf dates, Wayback).
+
+**Exception — `departure_risk` is live from GW1, not shadow.** Its confirmed tier is FPL ground-truth (`status='u'` / element removed), not model inference, and the cost of picking a rumoured leaver into the initial 15 is asymmetric. See §6.5.
+
+---
+
+## 6.5 Transfer windows & departure risk (squad-construction gate)
+
+**Problem.** xPts and the optimiser assume a player stays a PL player for the whole planning horizon. A player sold out of the league (summer window through GW1; January window) scores 0 after departure, and picking a rumoured leaver into the **initial 15** is a high-cost mistake no in-season transfer fully recovers. The §6 news layer *observes* `transfer_rumour`/`new_signing_prior` but is shadow-mode at GW1 — as specified it would not prevent the pick. This section closes that gap.
+
+**Ground truth (free).** Confirmed departures are authoritative in the FPL bootstrap: a departed player drops out of `elements` or flips to `status='u'`. Phase-1 snapshots already capture `status`/`news`, so the spine carries the confirmed signal with **no schema change**. Only *pre-confirmation rumours* need the §6 LLM layer (Ollama over free transfer-news RSS).
+
+**`departure_risk` signal.** A typed §6 signal (point-in-time, source-URL'd) carrying `p_leave ∈ [0,1]` per player, fused deterministically:
+- FPL `status='u'` or element removed → `p_leave = 1.0` (confirmed).
+- Ollama over free transfer-news RSS → graded `p_leave` for rumours, decayed by source credibility and staleness.
+
+**Graduated handling (resolved 2026-07-22).**
+- **Confirmed / near-confirmed** — `p_leave ≥ 0.7`, or FPL `status='u'` / dropped from `elements` → **hard-exclude** from the candidate pool (initial-15 and every transfer step).
+- **Rumoured** — `0.2 ≤ p_leave < 0.7` → multiply each remaining horizon GW's xPts by `P(stays) = 1 − p_leave` (mechanically identical to the DGW/BGW multipliers in `DGWStrategy`).
+- **`p_leave < 0.2`** → no effect.
+
+**Promotion exception.** The departure gate is **live (acted on) from the initial-15 build**, unlike the general news A/B (§6). The confirmed tier is FPL ground-truth; the rumour tier's calibration still feeds the shadow A/B so its discount can be tuned before being trusted more heavily.
+
+**January window as a re-plan trigger.** Treat the January window (config'd GW range) as a mini-preseason: (a) refresh the candidate pool so **incoming** PL signings enter with `new_signing_prior` (cold-start, no PL history); (b) apply the departure gate to shed/avoid **outgoing** players; (c) let the chip/transfer planner spend accumulated FTs / a wildcard against the refreshed pool.
+
+**Config (Phase 3, `strategy.py::DepartureRiskRules`).** `hard_exclude_p_leave=0.7`, `rumour_floor_p_leave=0.2`, `january_window_start_gw`, `january_window_end_gw`. Season-tunable, hence co-located with the other strategy params.
+
+**Gates.** (i) a confirmed leaver (`status='u'`) never appears in a constructed squad (candidate-filter unit test); (ii) the rumour discount reduces horizon xPts monotonically in `p_leave` (unit test); (iii) the January re-plan admits a synthetic incoming signing into the pool (integration test).
+
+**Phase-1 impact: none.** The spine already carries `status`/`news`; the `departure_risk` signal table and the optimiser gate are Phase 3–4 work. Recorded here so T3/T4 proceed unblocked.
 
 ---
 
@@ -170,9 +199,9 @@ Typed signals (all timestamped, source-URL'd, point-in-time): `start_probability
 | **1. Data spine** | Snapshot tables (§3.1–3.5); ingest writes snapshots not updates; backfill; 26/27 BPS recompute; leakage-free backtest reads | Re-run v1 backtest leakage-free; record the *honest* v1 baseline (expect it to drop from ~50). |
 | **2. xPts engine** | Minutes 3-way → components → BPS sim → distributional output; per-GW fixture projection | ≥57 pts/GW naive baseline + component calibration. |
 | **3. Decision layer** | EO ingest; λ/μ objective → scenario objective; captaincy/chips in-framework | Beats template + v1 on rank distribution walk-forward. |
-| **4. News + live ops** | Typed-signal pipeline; deterministic fusion; shadow A/B; digest §9; deadline automation | Shadow-mode positive counterfactual; live digest dry-run before GW1. |
+| **4. News + live ops** | Typed-signal pipeline; deterministic fusion; shadow A/B; **live `departure_risk` gate (§6.5)**; digest §9; deadline automation | Shadow-mode positive counterfactual; departure-gate unit/integration tests green; live digest dry-run before GW1. |
 
-**Sequencing note:** Phases 1–3 are the GW1 must-haves (~mid-Aug 2026). News layer goes live in shadow mode at GW1, promoted once it proves out.
+**Sequencing note:** Phases 1–3 are the GW1 must-haves (~mid-Aug 2026). News layer goes live in shadow mode at GW1, promoted once it proves out — **except the `departure_risk` gate (§6.5), which is live from the initial-15 build**. The January window is a first-class re-plan trigger (§6.5).
 
 **Open decisions:**
 1. **Rewrite strategy:** in-place on a `v2` branch, module-by-module (recommended), vs. parallel `v2/` package. Recommend branch + in-place given the skeleton is being kept. — *OPEN*
@@ -185,6 +214,7 @@ Typed signals (all timestamped, source-URL'd, point-in-time): `start_probability
    - **FFS subscription:** **skipped.** DIY reproduces rotation (FBref), news (§6 layer), set-piece/penalty roles (already have). Only real gap = pre-season friendly minutes / expert lineups for GW1–3 cold-start, which decays fast. Cheap late add (~$38/yr) if shadow testing shows weak early-GW minutes.
 3. **BPS formula source of truth:** ✅ **RESOLVED (2026-07-22).** Confirmed against [official PL BPS article](https://www.premierleague.com/en/news/4679946/whats-new-in-202627-fantasy-changes-to-bonus-points-system). Full tables in **Appendix A**. Config bugs found: `points_cs_gk`/`points_cs_def` = 6 must be **4**; DefCon missing entirely; BPS metric weights missing entirely.
 4. **LLM for news layer:** ✅ **RESOLVED (2026-07-22).** **Local Ollama** (free). News layer is shadow-mode A/B from GW1 (§6) — measure counterfactual value, swap to Anthropic Haiku 4.5 (~$10–25/season) only if local extraction proves to be the bottleneck.
+5. **Transfer-window / departure risk:** ✅ **RESOLVED (2026-07-22).** Graduated gate (§6.5): hard-exclude confirmed/near-confirmed departures (`p_leave ≥ 0.7` or FPL `status='u'`/removed), soft-discount rumours (`0.2 ≤ p_leave < 0.7`) via `P(stays)` xPts multiplier. Live from the initial-15 build; January window is a first-class re-plan trigger. Free data (FPL bootstrap ground-truth + Ollama rumour grading); no Phase-1 schema change.
 
 ---
 
