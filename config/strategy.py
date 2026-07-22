@@ -5,8 +5,7 @@ When FPL announces 26/27 rule changes, this is the ONLY file you should need
 to edit for scoring, chip, and structural rule changes.
 """
 
-from dataclasses import dataclass, field
-
+from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
 # SCORING RULES
@@ -31,8 +30,8 @@ class ScoringRules:
     points_assist: int = 3
 
     # --- Clean sheets ---
-    points_cs_gk: int = 6
-    points_cs_def: int = 6
+    points_cs_gk: int = 4                 # official FPL standard (was wrongly 6)
+    points_cs_def: int = 4                # official FPL standard (was wrongly 6)
     points_cs_mid: int = 1               # mid CS bonus (was 0 pre-2019)
     points_cs_fwd: int = 0
 
@@ -52,10 +51,91 @@ class ScoringRules:
     points_yellow_card: int = -1
     points_red_card: int = -3
 
-    # --- Bonus points ---
+    # --- Bonus points (final award — see BPSWeights for the metric table) ---
     points_bps_first: int = 3
     points_bps_second: int = 2
     points_bps_third: int = 1
+
+
+# ---------------------------------------------------------------------------
+# DEFENSIVE CONTRIBUTION (DefCon) — introduced 25/26, unchanged in 26/27.
+# Awards real FPL points (not BPS). Capped per match. See plan Appendix A.2.
+# DEF counts CBIT (clearances+blocks+interceptions+tackles); MID/FWD count
+# CBIRT (adds recoveries) and need a higher threshold.
+# NOTE: the full-back DefCon threshold was flagged "under review" for 26/27;
+# treat 10 as current until FPL confirms otherwise.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class DefConRules:
+    def_threshold: int = 10              # DEF: CBIT count for the award
+    mid_fwd_threshold: int = 12          # MID/FWD: CBIRT count for the award
+    points: int = 2                      # points granted when threshold met
+    cap_per_match: int = 2               # max DefCon points per player per match
+
+
+# ---------------------------------------------------------------------------
+# BONUS POINTS SYSTEM (BPS) — 26/27 metric weights. Source of truth for the
+# BPS simulator (plan §4.7 / Appendix A.3). These are the per-action BPS
+# contributions; the top-3 BPS totals in a match receive 3/2/1 bonus points.
+# 26/27 deltas vs 25/26 are called out inline.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class BPSWeights:
+    # --- Appearance ---
+    play_1_to_60: int = 3
+    play_over_60: int = 6
+
+    # --- Goals (by position) ---
+    goal_gk: int = 12
+    goal_def: int = 12
+    goal_mid: int = 18
+    goal_fwd: int = 24
+    winning_goal: int = 3
+
+    # --- Attacking contribution ---
+    assist: int = 9
+    big_chance_created: int = 3
+    key_pass: int = 1
+    open_play_cross: int = 1
+    successful_dribble: int = 1
+
+    # --- Clean sheet / goalkeeping ---
+    clean_sheet_gk_def: int = 12
+    save: int = 2                        # 26/27: flat +2 for ANY save (out-of-box metric removed)
+    save_inside_box_extra: int = 1       # additional +1 when the save is from inside the box
+    big_chance_saved: int = 1            # 26/27: NEW
+    # 26/27: penalty-save BPS dropped 8->7; a penalty is a big chance, so
+    # big_chance_saved (+1) stacks to net 8. Exact stacking of `save`/inside-box
+    # on penalties is UNVERIFIED-STACKING — validate vs early-season observed BPS.
+    penalty_saved: int = 7
+
+    # --- Defensive actions ---
+    successful_tackle: int = 2
+    cbi_per_point: int = 3               # 26/27: +1 per 3 CBI (was per 2) to de-overlap with DefCon
+    recoveries_per_point: int = 3        # +1 per 3 recoveries
+
+    # --- Passing accuracy (requires 30+ passes) ---
+    pass_completion_min_passes: int = 30
+    pass_completion_70_79: int = 2
+    pass_completion_80_89: int = 4
+    pass_completion_90_plus: int = 6
+
+    # --- Negative ---
+    # 26/27: "being tackled" penalty REMOVED (was -1) so dribblers aren't punished.
+    being_tackled: int = 0
+    conceding_penalty: int = -3
+    missing_penalty: int = -6
+    yellow_card: int = -3
+    red_card: int = -9
+    own_goal: int = -6
+    missing_big_chance: int = -3
+    error_leading_to_goal: int = -3
+    error_leading_to_shot: int = -1
+    conceding_foul: int = -1
+    caught_offside: int = -1
+    shot_off_target: int = -1
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +282,8 @@ class OptimiserConfig:
 # ---------------------------------------------------------------------------
 
 SCORING = ScoringRules()
+DEFCON = DefConRules()
+BPS_WEIGHTS = BPSWeights()
 CHIPS = ChipRules()
 TRANSFERS = TransferRules()
 SQUAD = SquadRules()
