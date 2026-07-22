@@ -46,6 +46,9 @@ class Player(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     fpl_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
+    # FPL's cross-season-stable player code (fpl_id/element is reassigned each
+    # season). Join key for multi-season backfill (Phase-1 finding M3).
+    code: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
     first_name: Mapped[str] = mapped_column(String, nullable=False)
     second_name: Mapped[str] = mapped_column(String, nullable=False)
     web_name: Mapped[str] = mapped_column(String, nullable=False)
@@ -94,9 +97,16 @@ class Player(Base):
 
 class Fixture(Base):
     __tablename__ = "fixtures"
+    # season disambiguates fixtures across seasons; FPL fpl_id repeats yearly
+    # (Phase-1 finding M2). Feature JOINs key on (season, gameweek).
+    __table_args__ = (
+        UniqueConstraint("season", "fpl_id", name="uq_fixture_season_fpl"),
+        Index("ix_fixture_season_gameweek", "season", "gameweek"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    fpl_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
+    fpl_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    season: Mapped[str] = mapped_column(String(7), nullable=False, default="2026-27")
     gameweek: Mapped[int | None] = mapped_column(Integer, nullable=True)
     team_h_id: Mapped[int] = mapped_column(Integer, ForeignKey("teams.id"), nullable=False)
     team_a_id: Mapped[int] = mapped_column(Integer, ForeignKey("teams.id"), nullable=False)
@@ -114,7 +124,11 @@ class Fixture(Base):
 class Gameweek(Base):
     __tablename__ = "gameweeks"
 
+    # Composite key (season, id): id is the GW number, which repeats every
+    # season. Without season, deadline(gw) would resolve to the wrong season's
+    # calendar in a historical backtest (Phase-1 finding M1).
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    season: Mapped[str] = mapped_column(String(7), primary_key=True, default="2026-27")
     name: Mapped[str] = mapped_column(String, nullable=False)
     deadline_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     finished: Mapped[bool] = mapped_column(Boolean, default=False)

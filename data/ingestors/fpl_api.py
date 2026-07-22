@@ -91,7 +91,7 @@ def upsert_teams(bootstrap: dict) -> None:
         db.close()
 
 
-def upsert_gameweeks(bootstrap: dict) -> None:
+def upsert_gameweeks(bootstrap: dict, season: str = "2026-27") -> None:
     db = get_session()
     try:
         for gw in bootstrap["events"]:
@@ -100,6 +100,7 @@ def upsert_gameweeks(bootstrap: dict) -> None:
                 insert(Gameweek)
                 .values(
                     id=gw["id"],
+                    season=season,
                     name=gw["name"],
                     deadline_time=deadline,
                     finished=gw["finished"],
@@ -111,7 +112,7 @@ def upsert_gameweeks(bootstrap: dict) -> None:
                     is_bgw=False,
                 )
                 .on_conflict_do_update(
-                    index_elements=["id"],
+                    index_elements=["id", "season"],
                     set_={
                         "finished": gw["finished"],
                         "is_current": gw["is_current"],
@@ -140,6 +141,7 @@ def upsert_players(bootstrap: dict) -> None:
                 insert(Player)
                 .values(
                     fpl_id=p["id"],
+                    code=p.get("code"),
                     first_name=p["first_name"],
                     second_name=p["second_name"],
                     web_name=p["web_name"],
@@ -176,6 +178,7 @@ def upsert_players(bootstrap: dict) -> None:
                 .on_conflict_do_update(
                     index_elements=["fpl_id"],
                     set_={
+                        "code": p.get("code"),
                         "first_name": p["first_name"],
                         "second_name": p["second_name"],
                         "web_name": p["web_name"],
@@ -315,6 +318,7 @@ def upsert_fixtures(raw_fixtures: list, season: str = "2026-27") -> None:
                 insert(Fixture)
                 .values(
                     fpl_id=f["id"],
+                    season=season,
                     gameweek=gw,
                     team_h_id=f["team_h"],
                     team_a_id=f["team_a"],
@@ -325,7 +329,7 @@ def upsert_fixtures(raw_fixtures: list, season: str = "2026-27") -> None:
                     is_dgw=is_dgw,
                 )
                 .on_conflict_do_update(
-                    index_elements=["fpl_id"],
+                    index_elements=["season", "fpl_id"],
                     set_={
                         "gameweek": gw,
                         "team_h_score": f.get("team_h_score"),
@@ -340,9 +344,13 @@ def upsert_fixtures(raw_fixtures: list, season: str = "2026-27") -> None:
 
         for gw_id, count in gw_fixture_counts.items():
             if count > 10:
-                db.query(Gameweek).filter(Gameweek.id == gw_id).update({"is_dgw": True})
+                db.query(Gameweek).filter(
+                    Gameweek.id == gw_id, Gameweek.season == season
+                ).update({"is_dgw": True})
             elif count < 10:
-                db.query(Gameweek).filter(Gameweek.id == gw_id).update({"is_bgw": True})
+                db.query(Gameweek).filter(
+                    Gameweek.id == gw_id, Gameweek.season == season
+                ).update({"is_bgw": True})
 
         db.commit()
         logger.info("Upserted %d fixtures", len(raw_fixtures))
@@ -414,7 +422,7 @@ async def run_full_ingest(season: str = "2026-27") -> None:
 
     bootstrap = await fetch_bootstrap()
     upsert_teams(bootstrap)
-    upsert_gameweeks(bootstrap)
+    upsert_gameweeks(bootstrap, season)
     upsert_players(bootstrap)
     # Append-only point-in-time capture (source of truth for leakage-free reads).
     write_player_snapshots(bootstrap, datetime.utcnow(), season)

@@ -25,13 +25,28 @@ def _get_current_and_next_gw() -> tuple[int, int]:
         db.close()
 
 
+def _get_current_season(default: str = "2026-27") -> str:
+    """Season of the live gameweek. Needed to scope (season, gw)-keyed reads
+    now that gameweeks/fixtures are keyed per season (Phase-1 finding M1)."""
+    db = get_session()
+    try:
+        current = db.query(Gameweek).filter(Gameweek.is_current.is_(True)).first()
+        if current is None:
+            current = db.query(Gameweek).filter(Gameweek.is_next.is_(True)).first()
+        return current.season if current else default
+    finally:
+        db.close()
+
+
 def _get_dgw_gameweeks(lookahead: int) -> set[int]:
     db = get_session()
     try:
         _, next_gw = _get_current_and_next_gw()
+        season = _get_current_season()
         dgw_gws = (
             db.query(Gameweek.id)
             .filter(
+                Gameweek.season == season,
                 Gameweek.id >= next_gw,
                 Gameweek.id < next_gw + lookahead,
                 Gameweek.is_dgw == True,
@@ -47,9 +62,11 @@ def _get_bgw_gameweeks(lookahead: int) -> set[int]:
     db = get_session()
     try:
         _, next_gw = _get_current_and_next_gw()
+        season = _get_current_season()
         bgw_gws = (
             db.query(Gameweek.id)
             .filter(
+                Gameweek.season == season,
                 Gameweek.id >= next_gw,
                 Gameweek.id < next_gw + lookahead,
                 Gameweek.is_bgw == True,
