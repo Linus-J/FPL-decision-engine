@@ -97,7 +97,25 @@ ScoringRules clean-sheet fix (6→4), DefConRules, BPSWeights (Appendix A.3), si
 
 ---
 
-## T4 — Leakage-free reads + REAL pass/fail exit gate (REVISED; fixes L1–L3, M4)
+## T4 — Leakage-free reads + honest baseline ✅ DONE (fixes L1–L3, M4, M5)
+
+**HONEST BASELINE (2026-07-22, `results/backtest_2526_v1_leakfree.csv`):** leakage-free walk-forward on **2025-26**, GW6–38 → **43.0 actual pts/GW** (total 1420), predicted xPts **41.4** ≈ actual (well-calibrated, no look-ahead inflation). The old **leaky** v1 baseline was **~50 pts/GW** → removing the leak dropped it **~7 pts/GW**, exactly the predicted direction. **Exit gate met:** leakfree < leaky.
+
+**Delivered:**
+- `backtest.py::_load_all_stats` / `_load_players_snapshot` read dynamic columns from `player_state_snapshots` as-of `deadline(season, gw)`; static (position/team) from `players`. Call-site simplified.
+- `features.py::load_player_enrichment` as-of per (player, gw, season) from snapshots (L3 killed); `add_enrichment_features` re-keyed; `add_fdr_features` fill made robust to all-NaN (no historical fixtures yet → constant default, not a leak).
+- `minutes_model`/`points_model` `_load_training_data` sourced from snapshots too.
+- `tests/test_no_leakage.py`: grep guard (4 files, incl. L3 cols per M4) + as-of canary + numpy-int regression guard.
+
+**Findings surfaced during the live run (all fixed):**
+- **M5** — `PlayerGameweekStats` unique was `(player_id, gameweek)` (no season) → multi-season backfill collided, dropping ~70% of recent-season actuals. Fixed to `(player_id, gameweek, season)` + both conflict targets; DB rebuilt → 2025-26 now 100% coverage (29,338 rows).
+- **numpy-int** — `available_gws` are numpy int64; SQLite silently matched no `gameweeks.id` → every GW skipped. Cast to `int` in the as-of read; regression-guarded.
+- **FDR all-NaN fill** — `add_fdr_features` median-fill was a no-op when every row is NaN (no historical fixtures) → `NaN in X` at model fit. Falls back to the constant default.
+
+*(Original T4 spec retained below.)*
+
+### T4 (original spec)
+Leakage-free reads + REAL pass/fail exit gate (REVISED; fixes L1–L3, M4)
 
 **Scope**
 - Rewrite `backtest.py::_load_players_snapshot` + `_load_all_stats` to source the dynamic `p.*` columns from `player_state_snapshots`, latest row with `snapshot_ts < deadline(season, gw)` (deadline resolved via T2.5's `(season, gw)`).

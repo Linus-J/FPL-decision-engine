@@ -142,7 +142,11 @@ class Gameweek(Base):
 
 class PlayerGameweekStats(Base):
     __tablename__ = "player_gw_stats"
-    __table_args__ = (UniqueConstraint("player_id", "gameweek", name="uq_player_gw"),)
+    # season in the key: (player_id, gameweek) repeats every season, so without
+    # it multi-season backfill collides and drops rows (Phase-1 finding M5).
+    __table_args__ = (
+        UniqueConstraint("player_id", "gameweek", "season", name="uq_player_gw_season"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.id"), nullable=False)

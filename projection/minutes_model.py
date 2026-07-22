@@ -56,14 +56,22 @@ def _load_training_data() -> pd.DataFrame:
                 s.transfers_out,
                 s.value AS now_cost,
                 p.position,
-                p.status,
-                p.chance_of_playing_next_round,
-                p.selected_by_percent,
-                p.form,
-                p.ict_index,
+                COALESCE(ps.status, 'a') AS status,
+                ps.chance_of_playing_next_round AS chance_of_playing_next_round,
+                COALESCE(ps.selected_by_percent, 0) AS selected_by_percent,
+                COALESCE(ps.form, 0) AS form,
+                COALESCE(ps.ict_index, 0) AS ict_index,
                 p.team_id
             FROM player_gw_stats s
             JOIN players p ON p.id = s.player_id
+            JOIN gameweeks g ON g.id = s.gameweek AND g.season = s.season
+            LEFT JOIN player_state_snapshots ps ON ps.id = (
+                SELECT ps2.id FROM player_state_snapshots ps2
+                WHERE ps2.player_id = s.player_id
+                    AND ps2.season = s.season
+                    AND ps2.snapshot_ts < g.deadline_time
+                ORDER BY ps2.snapshot_ts DESC LIMIT 1
+            )
             WHERE s.minutes IS NOT NULL
         """)
         df = pd.read_sql(query, db.bind)

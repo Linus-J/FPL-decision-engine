@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 def _load_all_stats(season: str) -> pd.DataFrame:
     db = get_session()
     try:
+        # Dynamic player attributes (ict/influence/creativity/threat/form/
+        # selected_by_percent/status/chance) come from the point-in-time
+        # snapshot as-of the gameweek deadline — NOT the mutable players.*
+        # columns, which would leak the latest value into historical training
+        # rows (Phase-1 leaks L1/L2). player_gw_stats/xg_stats stay as-is
+        # (already point-in-time). Static columns (position, team_id) come from
+        # players.
         query = text("""
             SELECT
                 s.player_id, s.gameweek, s.season,
@@ -39,14 +46,27 @@ def _load_all_stats(season: str) -> pd.DataFrame:
                 s.yellow_cards, s.red_cards, s.bonus, s.bps,
                 s.value AS now_cost,
                 p.position, p.team_id,
-                p.ict_index, p.influence, p.creativity, p.threat,
-                p.form, p.selected_by_percent, p.status,
-                p.chance_of_playing_next_round,
+                COALESCE(ps.ict_index, 0) AS ict_index,
+                COALESCE(ps.influence, 0) AS influence,
+                COALESCE(ps.creativity, 0) AS creativity,
+                COALESCE(ps.threat, 0) AS threat,
+                COALESCE(ps.form, 0) AS form,
+                COALESCE(ps.selected_by_percent, 0) AS selected_by_percent,
+                COALESCE(ps.status, 'a') AS status,
+                ps.chance_of_playing_next_round AS chance_of_playing_next_round,
                 COALESCE(x.xg, 0) AS xg, COALESCE(x.xa, 0) AS xa,
                 COALESCE(x.xgi, 0) AS xgi, COALESCE(x.npxg, 0) AS npxg,
                 COALESCE(x.shots, 0) AS shots, COALESCE(x.key_passes, 0) AS key_passes
             FROM player_gw_stats s
             JOIN players p ON p.id = s.player_id
+            JOIN gameweeks g ON g.id = s.gameweek AND g.season = s.season
+            LEFT JOIN player_state_snapshots ps ON ps.id = (
+                SELECT ps2.id FROM player_state_snapshots ps2
+                WHERE ps2.player_id = s.player_id
+                    AND ps2.season = s.season
+                    AND ps2.snapshot_ts < g.deadline_time
+                ORDER BY ps2.snapshot_ts DESC LIMIT 1
+            )
             LEFT JOIN player_xg_stats x
                 ON x.player_id = s.player_id
                 AND x.gameweek = s.gameweek
@@ -59,27 +79,33 @@ def _load_all_stats(season: str) -> pd.DataFrame:
         db.close()
 
 
-def _load_players_snapshot(season: str, as_of_gw: int) -> pd.DataFrame:
+def _load_players_snapshot(season: str, target_gw: int) -> pd.DataFrame:
+    """Player state available when deciding for `target_gw`: the latest snapshot
+    per player with snapshot_ts < deadline(season, target_gw). All dynamic
+    columns (cost/status/ownership/form/ICT) are as-of — no leak of the current
+    players.* row (Phase-1 leak L1)."""
     db = get_session()
     try:
-        for gw in range(as_of_gw, as_of_gw - 5, -1):
-            if gw < 1:
-                break
-            query = text("""
-                SELECT DISTINCT
-                    p.id, p.fpl_id, p.web_name, p.position, p.team_id,
-                    s.value AS now_cost,
-                    p.status, p.chance_of_playing_next_round,
-                    p.selected_by_percent, p.form,
-                    p.ict_index, p.influence, p.creativity, p.threat
-                FROM players p
-                JOIN player_gw_stats s ON s.player_id = p.id
-                WHERE s.season = :season AND s.gameweek = :gw
-            """)
-            df = pd.read_sql(query, db.bind, params={"season": season, "gw": gw})
-            if not df.empty:
-                return df
-        return pd.DataFrame()
+        query = text("""
+            SELECT
+                p.id, p.fpl_id, p.web_name, p.position, p.team_id,
+                ps.now_cost,
+                ps.status, ps.chance_of_playing_next_round,
+                ps.selected_by_percent, ps.form,
+                ps.ict_index, ps.influence, ps.creativity, ps.threat
+            FROM players p
+            JOIN gameweeks g ON g.id = :gw AND g.season = :season
+            JOIN player_state_snapshots ps ON ps.id = (
+                SELECT ps2.id FROM player_state_snapshots ps2
+                WHERE ps2.player_id = p.id
+                    AND ps2.season = :season
+                    AND ps2.snapshot_ts < g.deadline_time
+                ORDER BY ps2.snapshot_ts DESC LIMIT 1
+            )
+        """)
+        # int(): available_gws come from numpy (int64); SQLite won't match a
+        # numpy int against gameweeks.id, silently returning no rows.
+        return pd.read_sql(query, db.bind, params={"season": season, "gw": int(target_gw)})
     finally:
         db.close()
 
@@ -172,9 +198,9 @@ def run_backtest(
             logger.info("GW%d: not enough history, skipping", gw)
             continue
 
-        players = _load_players_snapshot(season, gw - 1)
-        if players.empty:
-            players = _load_players_snapshot(season, gw)
+        # State as-of the target GW's deadline (snapshot for GW g is stamped
+        # deadline(g) − ε, so it carries cumulative-through-(g-1) stats).
+        players = _load_players_snapshot(season, gw)
         if players.empty:
             logger.warning("GW%d: no player snapshot, skipping", gw)
             continue

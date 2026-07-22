@@ -391,7 +391,7 @@ async def ingest_player_history(
                     value=gw_entry.get("value", 0) / 10.0,
                 )
                 .on_conflict_do_update(
-                    index_elements=["player_id", "gameweek"],
+                    index_elements=["player_id", "gameweek", "season"],
                     set_={
                         "total_points": gw_entry.get("total_points", 0),
                         "minutes": gw_entry.get("minutes", 0),

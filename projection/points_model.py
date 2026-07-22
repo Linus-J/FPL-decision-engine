@@ -52,12 +52,12 @@ def _load_training_data() -> pd.DataFrame:
                 s.value AS now_cost,
                 p.position,
                 p.team_id,
-                p.ict_index,
-                p.influence,
-                p.creativity,
-                p.threat,
-                p.form,
-                p.selected_by_percent,
+                COALESCE(ps.ict_index, 0) AS ict_index,
+                COALESCE(ps.influence, 0) AS influence,
+                COALESCE(ps.creativity, 0) AS creativity,
+                COALESCE(ps.threat, 0) AS threat,
+                COALESCE(ps.form, 0) AS form,
+                COALESCE(ps.selected_by_percent, 0) AS selected_by_percent,
                 COALESCE(x.xg, 0) AS xg,
                 COALESCE(x.xa, 0) AS xa,
                 COALESCE(x.xgi, 0) AS xgi,
@@ -66,6 +66,14 @@ def _load_training_data() -> pd.DataFrame:
                 COALESCE(x.key_passes, 0) AS key_passes
             FROM player_gw_stats s
             JOIN players p ON p.id = s.player_id
+            JOIN gameweeks g ON g.id = s.gameweek AND g.season = s.season
+            LEFT JOIN player_state_snapshots ps ON ps.id = (
+                SELECT ps2.id FROM player_state_snapshots ps2
+                WHERE ps2.player_id = s.player_id
+                    AND ps2.season = s.season
+                    AND ps2.snapshot_ts < g.deadline_time
+                ORDER BY ps2.snapshot_ts DESC LIMIT 1
+            )
             LEFT JOIN player_xg_stats x
                 ON x.player_id = s.player_id
                 AND x.gameweek = s.gameweek

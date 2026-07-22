@@ -26,6 +26,7 @@ SEASONS = [
     ("2022-23", "2022-23"),
     ("2023-24", "2023-24"),
     ("2024-25", "2024-25"),
+    ("2025-26", "2025-26"),
 ]
 
 GW_CSV_URL = "{base}/{season}/gws/merged_gw.csv"
@@ -323,7 +324,9 @@ def _ingest_dataframe(
                     transfers_out=int(row.get("transfers_out", 0) or 0),
                     value=float(row.get("value", 0) or 0) / 10.0,
                 )
-                .on_conflict_do_nothing()
+                .on_conflict_do_nothing(
+                    index_elements=["player_id", "gameweek", "season"]
+                )
             )
             db.execute(stmt)
             inserted += 1

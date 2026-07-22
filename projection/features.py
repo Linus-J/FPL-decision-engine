@@ -97,10 +97,15 @@ def add_fdr_features(df: pd.DataFrame, fdr: pd.DataFrame) -> pd.DataFrame:
         "next_3gw_avg_opp_defence", "next_3gw_avg_opp_attack",
     }
     for col in flag_cols | strength_cols:
+        default = 0.0 if col in flag_cols else 1200.0
         if col not in merged.columns:
-            merged[col] = 0.0 if col in flag_cols else 1200.0
+            merged[col] = default
         else:
             fill = 0.0 if col in flag_cols else merged[col].median()
+            # median() is NaN when every row is NaN (e.g. no historical
+            # fixtures backfilled yet) — fall back to the constant default.
+            if pd.isna(fill):
+                fill = default
             merged[col] = merged[col].fillna(fill)
 
     merged["attack_vs_defence"] = (
@@ -113,37 +118,47 @@ def add_fdr_features(df: pd.DataFrame, fdr: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
-def load_player_enrichment() -> pd.DataFrame:
+def load_player_enrichment(season: str | None = None) -> pd.DataFrame:
+    """Per (player_id, gameweek, season) enrichment, point-in-time.
+
+    The dynamic fields (transfers/ownership → price_momentum, transfer_velocity)
+    are read from the snapshot as-of the gameweek deadline, NOT the mutable
+    players.* row broadcast onto every historical row (Phase-1 leak L3). The
+    set-piece role fields are per-(player, season) and safe. injury_severity and
+    press_sentiment are not point-in-time-recoverable historically → 0.
+    """
     db = get_session()
     try:
-        query = text("""
+        season_filter = "AND s.season = :season" if season else ""
+        params = {"season": season} if season else {}
+        query = text(f"""
             SELECT
-                p.id AS player_id,
+                s.player_id,
+                s.gameweek,
+                s.season,
                 COALESCE(sp.is_penalty_taker, 0) AS is_penalty_taker,
                 COALESCE(sp.penalty_xg_per_game, 0.0) AS penalty_xg_per_game,
                 COALESCE(sp.is_set_piece_taker, 0) AS is_set_piece_taker,
                 COALESCE(sp.key_passes_per_game, 0.0) AS key_passes_per_game,
-                COALESCE(p.injury_severity, 0) AS injury_severity,
-                COALESCE(p.transfers_in_event, 0) AS transfers_in_event,
-                COALESCE(p.transfers_out_event, 0) AS transfers_out_event,
-                COALESCE(p.selected_by_percent, 0.0) AS selected_by_percent_enrich,
-                COALESCE(ps.sentiment, 0.0) AS press_sentiment
-            FROM players p
+                0 AS injury_severity,
+                COALESCE(ps.transfers_in_event, 0) AS transfers_in_event,
+                COALESCE(ps.transfers_out_event, 0) AS transfers_out_event,
+                COALESCE(ps.selected_by_percent, 0.0) AS selected_by_percent_enrich,
+                0.0 AS press_sentiment
+            FROM player_gw_stats s
+            JOIN gameweeks g ON g.id = s.gameweek AND g.season = s.season
+            LEFT JOIN player_state_snapshots ps ON ps.id = (
+                SELECT ps2.id FROM player_state_snapshots ps2
+                WHERE ps2.player_id = s.player_id
+                    AND ps2.season = s.season
+                    AND ps2.snapshot_ts < g.deadline_time
+                ORDER BY ps2.snapshot_ts DESC LIMIT 1
+            )
             LEFT JOIN player_setpiece_roles sp
-                ON sp.player_id = p.id
-                AND sp.season = (
-                    SELECT season FROM player_gw_stats
-                    WHERE player_id = p.id
-                    ORDER BY gameweek DESC LIMIT 1
-                )
-            LEFT JOIN (
-                SELECT player_id, AVG(sentiment) AS sentiment
-                FROM player_press_signals
-                WHERE scraped_date >= date('now', '-7 days')
-                GROUP BY player_id
-            ) ps ON ps.player_id = p.id
+                ON sp.player_id = s.player_id AND sp.season = s.season
+            WHERE 1 = 1 {season_filter}
         """)
-        df = pd.read_sql(query, db.bind)
+        df = pd.read_sql(query, db.bind, params=params)
         df["price_momentum"] = (
             (df["transfers_in_event"] - df["transfers_out_event"])
             / (df["selected_by_percent_enrich"].clip(lower=0.1) * 1000)
@@ -157,16 +172,27 @@ def load_player_enrichment() -> pd.DataFrame:
 
 
 def add_enrichment_features(df: pd.DataFrame, enrichment: pd.DataFrame) -> pd.DataFrame:
-    cols = [
-        "player_id", "is_penalty_taker", "penalty_xg_per_game",
-        "is_set_piece_taker", "key_passes_per_game",
-        "injury_severity", "press_sentiment", "price_momentum",
-        "transfer_velocity",
+    dynamic = [
+        "is_penalty_taker", "penalty_xg_per_game", "is_set_piece_taker",
+        "key_passes_per_game", "injury_severity", "press_sentiment",
+        "price_momentum", "transfer_velocity",
     ]
-    available = [c for c in cols if c in enrichment.columns]
-    merged = df.merge(enrichment[available], on="player_id", how="left")
-    for col in available[1:]:
-        merged[col] = merged[col].fillna(0.0)
+    keys = ["player_id", "gameweek", "season"]
+    if all(k in enrichment.columns for k in keys) and {"gameweek", "season"}.issubset(df.columns):
+        available = [c for c in dynamic if c in enrichment.columns]
+        enr = enrichment[keys + available].drop_duplicates(subset=keys)
+        merged = df.merge(enr, on=keys, how="left")
+    else:
+        # Fallback (single-row predict without gameweek/season): take each
+        # player's latest enrichment row and broadcast on player_id.
+        available = [c for c in dynamic if c in enrichment.columns]
+        enr = enrichment.sort_values("gameweek").drop_duplicates(
+            subset=["player_id"], keep="last"
+        ) if "gameweek" in enrichment.columns else enrichment
+        merged = df.merge(enr[["player_id", *available]], on="player_id", how="left")
+    for col in available:
+        if col in merged.columns:
+            merged[col] = merged[col].fillna(0.0)
     return merged
 
 
