@@ -132,7 +132,17 @@ Leakage-free reads + REAL pass/fail exit gate (REVISED; fixes L1–L3, M4)
 
 ## T5 — Event data + 26/27 BPS recompute (§3.3–3.4) — unblocks Phase 2
 
-*Larger; starts once T2.5 lands. Full scope retained (Monte-Carlo BPS sim kept — decision 2026-07-22).*
+**Split during execution:** T5a (BPS simulator — pure, done) + T5b (FBref event ingest + `recomputed_bonus` — pending, needs `soccerdata`/network).
+
+### T5a — 26/27 BPS simulator ✅ DONE (`projection/bps_sim.py`)
+- `compute_player_bps(ev, w=BPS_WEIGHTS)`: deterministic per-player BPS from an event row using the committed 26/27 weights (BPS `cbi` = clearances+blocks+interceptions; tackles scored separately).
+- `award_bonus(bps_by_player)`: 3/2/1 with correct FPL tie rules (tied players take their group's starting rank).
+- `compute_fixture_bonus`, `compute_defcon_points` (DefCon = real points, DEF CBIT≥10 / MID-FWD CBIRT≥12, GK none — no term shared with BPS).
+- **Gate:** `tests/test_bps_sim.py` (11) — locked arithmetic, **26/27-vs-old-rules delta sanity harness** (synthetic, via `dataclasses.replace`), tie cases, DefCon/BPS independence. Suite 55/55.
+- *Real-data sanity (reproduce old-rules awarded bonus within tolerance on actual events) moves to T5b once FBref events exist.*
+
+### T5b — FBref event ingest + recomputed_bonus (pending)
+*Larger; needs `soccerdata` dep. Full scope retained (Monte-Carlo BPS sim kept — decision 2026-07-22).*
 
 **Scope**
 - `data/ingestors/fbref.py` (new) via `soccerdata` → `player_match_events` (shots, shots_in_box, CBI, tackles, recoveries, saves, saves_in_box, key_passes, npxg, xa …). Rate-limited, cached.
