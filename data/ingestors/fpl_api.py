@@ -6,7 +6,14 @@ import aiohttp
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session
-from data.models import Fixture, Gameweek, Player, PlayerGameweekStats, Team
+from data.models import (
+    Fixture,
+    Gameweek,
+    Player,
+    PlayerGameweekStats,
+    PlayerStateSnapshot,
+    Team,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +217,83 @@ def upsert_players(bootstrap: dict) -> None:
         db.close()
 
 
+def _snapshot_gameweek_context(bootstrap: dict) -> int | None:
+    """The GW this snapshot informs — the upcoming (is_next) GW, else current."""
+    events = bootstrap.get("events", [])
+    for ev in events:
+        if ev.get("is_next"):
+            return ev["id"]
+    for ev in events:
+        if ev.get("is_current"):
+            return ev["id"]
+    return None
+
+
+def write_player_snapshots(
+    bootstrap: dict,
+    snapshot_ts: datetime,
+    season: str = "2026-27",
+) -> int:
+    """Append one point-in-time PlayerStateSnapshot per player (never UPDATE).
+
+    This is the source of truth for leakage-free feature reads. Idempotent on
+    the (player_id, snapshot_ts) unique key: re-running with the same timestamp
+    inserts nothing. ``upsert_players`` must have run first so the FPL-id -> DB-id
+    map is populated.
+    """
+    db = get_session()
+    try:
+        id_map = {p.fpl_id: p.id for p in db.query(Player.fpl_id, Player.id).all()}
+        gw_context = _snapshot_gameweek_context(bootstrap)
+        written = 0
+        for p in bootstrap["elements"]:
+            player_db_id = id_map.get(p["id"])
+            if player_db_id is None:
+                logger.warning("Snapshot skipped — no DB row for FPL id %d", p["id"])
+                continue
+
+            news_added = None
+            if p.get("news_added"):
+                news_added = datetime.fromisoformat(p["news_added"].replace("Z", "+00:00"))
+
+            stmt = (
+                insert(PlayerStateSnapshot)
+                .values(
+                    player_id=player_db_id,
+                    snapshot_ts=snapshot_ts,
+                    season=season,
+                    gameweek_context=gw_context,
+                    now_cost=p["now_cost"] / 10.0,
+                    status=p.get("status", "a"),
+                    chance_of_playing_this_round=p.get("chance_of_playing_this_round"),
+                    chance_of_playing_next_round=p.get("chance_of_playing_next_round"),
+                    selected_by_percent=float(p.get("selected_by_percent", 0) or 0),
+                    form=float(p.get("form", 0) or 0),
+                    ict_index=float(p.get("ict_index", 0) or 0),
+                    influence=float(p.get("influence", 0) or 0),
+                    creativity=float(p.get("creativity", 0) or 0),
+                    threat=float(p.get("threat", 0) or 0),
+                    news=p.get("news", ""),
+                    news_added=news_added,
+                    transfers_in_event=p.get("transfers_in_event", 0),
+                    transfers_out_event=p.get("transfers_out_event", 0),
+                )
+                .on_conflict_do_nothing(index_elements=["player_id", "snapshot_ts"])
+            )
+            result = db.execute(stmt)
+            written += result.rowcount or 0
+        db.commit()
+        logger.info(
+            "Wrote %d player snapshots at %s (gw_context=%s)",
+            written,
+            snapshot_ts.isoformat(),
+            gw_context,
+        )
+        return written
+    finally:
+        db.close()
+
+
 def upsert_fixtures(raw_fixtures: list, season: str = "2026-27") -> None:
     db = get_session()
     try:
@@ -266,7 +350,9 @@ def upsert_fixtures(raw_fixtures: list, season: str = "2026-27") -> None:
         db.close()
 
 
-async def ingest_player_history(player_fpl_id: int, player_db_id: int, season: str = "2026-27") -> None:
+async def ingest_player_history(
+    player_fpl_id: int, player_db_id: int, season: str = "2026-27"
+) -> None:
     db = get_session()
     try:
         data = await fetch_player_summary(player_fpl_id)
@@ -330,6 +416,8 @@ async def run_full_ingest(season: str = "2026-27") -> None:
     upsert_teams(bootstrap)
     upsert_gameweeks(bootstrap)
     upsert_players(bootstrap)
+    # Append-only point-in-time capture (source of truth for leakage-free reads).
+    write_player_snapshots(bootstrap, datetime.utcnow(), season)
 
     raw_fixtures = await fetch_fixtures()
     upsert_fixtures(raw_fixtures, season)
