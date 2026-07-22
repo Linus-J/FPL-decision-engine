@@ -70,7 +70,15 @@ ScoringRules clean-sheet fix (6→4), DefConRules, BPSWeights (Appendix A.3), si
 
 ---
 
-## T3 — Snapshot backfill, reconciled semantics + parity test (REVISED; fixes C1, M3)
+## T3 — Snapshot backfill, reconciled semantics + parity test ✅ DONE (fixes C1, M3)
+
+**Delivered (`scripts/backfill_history.py`):** `compute_snapshot_rows(df, deadlines)` (pure) + `write_snapshot_rows(...)`, wired into `backfill()`. For a snapshot informing GW g (stamped `deadline(g) − 1min`): ICT/influence/creativity/threat = **cumulative through GW g-1** (matches bootstrap after g-1 GWs; DGWs summed per GW); `now_cost`/transfers from the GW-g row; `selected_by_percent = selected / (Σselected/15) × 100`; `form` = prior-window mean points. Mapped element→code→players.id (M3); departed players skipped.
+
+**Gate:** `tests/test_snapshot_backfill.py` (8) — incl. the **C1 parity test** (snapshot GW g ICT == Σ per-GW ICT over GWs < g), DGW aggregation, ownership scale, idempotent writes. Suite 34/34.
+
+**⚠️ Residual train/serve skew (documented, Phase-2 to close):** `status`, `chance_of_playing_*`, `news` are not recoverable from `merged_gw` → backfill defaults them (`'a'`/None/`''`) while live has real values. `form` is a prior-window proxy, not the exact bootstrap 30-day form. Parity test asserts only the *exactly* reconcilable features (ICT cumulative, ownership). Phase 2 should move `form`/ICT to rate features computed identically on both paths, and source a historical availability signal if one becomes free.
+
+### T3 (original spec retained below for reference)
 
 **Scope**
 - `backfill_history.py`: emit `PlayerStateSnapshot` rows from `merged_gw.csv`, **reconciled to the live bootstrap semantics** (C1):
