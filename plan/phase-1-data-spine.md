@@ -53,17 +53,20 @@ ScoringRules clean-sheet fix (6→4), DefConRules, BPSWeights (Appendix A.3), si
 
 ---
 
-## T3a — Historical fixtures + per-season deadlines backfill (NEW; fixes M2) — precondition for T3/T4/T6
+## T3a — Per-season deadlines + code crosswalk ✅ DONE (fixes M1-boundary, M3) — precondition for T3/T4
 
-**Scope**
-- `scripts/backfill_history.py`: add `_ingest_fixtures(season)` sourcing `{VAASTAV_BASE}/{season}/fixtures.csv` → `Fixture` rows (`season`, `gameweek`, `team_h/a`, `kickoff_time`, scores, `finished`).
-- Populate `Gameweek` per season: `deadline_time = first kickoff of (season, gw) − 90 min` (FPL deadline proxy; documented). Use real archived deadlines where available, else the 90-min proxy.
-- Build a per-season `element → code` crosswalk from `{VAASTAV_BASE}/{season}/players_raw.csv` (has both `id` and `code`) for T3/M3.
+**Delivered (`scripts/backfill_history.py`)**
+- `compute_gw_deadlines(fixtures_df)` + `upsert_gameweek_deadlines(season, …)`: populate `Gameweek` per season with `deadline_time = first kickoff of (season, gw) − 90 min` from `{VAASTAV_BASE}/{season}/fixtures.csv`. **Team-agnostic** (only needs `event` + `kickoff_time`) — this is all the T3/T4 as-of boundary requires.
+- `element_code_map(players_raw_df)` + `build_code_to_dbid_map()` + `resolve_player_id(…)`: map vaastav `element → code → players.id` via `players_raw.csv`. Rewired `_ingest_dataframe` off the season-unstable `fpl_id` (fixes M3 in the *existing* stats backfill too). Players who left the league (no current `players.code`) are skipped, not misjoined.
 
-**Acceptance gate**
-- ≥95% of `player_gw_stats` (season, gw) rows resolve to a `Fixture` for that player's team.
-- `deadline(season, gw)` monotonic within a season; spot-check 3 GWs vs known 25/26 deadlines (±1 day for the proxy).
-- `load_fixture_difficulty`/`load_fixture_odds` JOINs return non-default rows for a backfilled season (proves M2 closed).
+**Gate:** `tests/test_backfill_deadlines.py` (7, synthetic + temp DB) — deadline math, code mapping, season-scoped idempotent writes. *(Live-run coverage verification is folded into T3's run, which needs network + the live DB.)*
+
+**⚠️ Scope split discovered during T3a — deferred to T3b (a T6 dependency, NOT on the T4 critical path):** full historical `Fixture` rows with correct `team_h/team_a`. vaastav fixture team ids are per-season, but `teams` is single-season (current bootstrap) and `Fixture.team_h_id` is an FK to it; relegated teams don't exist in the current table. Storing historical fixtures correctly needs **season-aware `teams`** (add `season` + stable `code`, per-season backfill from `teams.csv`, and a season-aware fixture→team reference) — a T2.5-sized change. Only FDR/odds JOIN *quality* for past seasons depends on it; the honest baseline (a leaky-vs-leakfree comparison) does not.
+
+## T3b — Season-aware teams + historical fixtures (NEW; the deferred M2 remainder) — gates T6 odds JOINs
+- `Team`: add `season` + stable `code`; per-season backfill from `{season}/teams.csv`.
+- Historical `Fixture` rows with `(season, team refs, kickoff, difficulty)` resolved via the team crosswalk; `load_fixture_difficulty`/`load_fixture_odds` JOIN on `(season, gameweek)` return non-default rows.
+- **Gate:** ≥95% of `player_gw_stats` (season, gw) rows resolve to a `Fixture` for the player's team; FDR/odds non-default for a backfilled season.
 
 ---
 
@@ -148,10 +151,10 @@ ScoringRules clean-sheet fix (6→4), DefConRules, BPSWeights (Appendix A.3), si
 
 ## Dependency order (revised)
 ```
-T0 ✅ ─ T1 ✅ ─ T2 ✅ ─ T2.5 ─┬─ T3a ─ T3 ─ T4  ► EXIT GATE (honest, consistent baseline)
-                              ├─ T5 (parallel, gates Phase 2)
-                              ├─ T6 (needs T3a deadlines)
-                              └─ T7 (needs T3 + Player.code; gates GW1 deliverable)
+T0 ✅ ─ T1 ✅ ─ T2 ✅ ─ T2.5 ✅ ─ T3a ✅ ─┬─ T3 ─ T4  ► EXIT GATE (honest, consistent baseline)
+                                          ├─ T5  (parallel, gates Phase 2)
+                                          ├─ T3b ─ T6  (season-aware teams → odds JOINs)
+                                          └─ T7  (needs T3 + Player.code; gates GW1 deliverable)
 ```
 
 ## Deferred-to-Phase-2 notes (raised by critic, not Phase-1 blocking)
