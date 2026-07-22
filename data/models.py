@@ -5,6 +5,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -151,6 +152,46 @@ class PlayerGameweekStats(Base):
     value: Mapped[float] = mapped_column(Float, default=0.0)
 
     player: Mapped["Player"] = relationship("Player", back_populates="gw_stats")
+
+
+class PlayerStateSnapshot(Base):
+    """Point-in-time snapshot of a player's dynamic FPL attributes.
+
+    Append-only: one row per capture (daily + pre-deadline). Never UPDATE.
+    Feature reads take the latest row with ``snapshot_ts < deadline(gw)``, which
+    is what kills the v1 backtest leakage (plan §1/§3.1). The mutable ``players``
+    table stays for current-state convenience, but this is the source of truth
+    for any leakage-free training/backtest read.
+    """
+
+    __tablename__ = "player_state_snapshots"
+    __table_args__ = (
+        UniqueConstraint("player_id", "snapshot_ts", name="uq_player_snapshot"),
+        Index("ix_player_state_snapshot_ts", "snapshot_ts"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.id"), nullable=False)
+    snapshot_ts: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    season: Mapped[str] = mapped_column(String(7), nullable=False)
+    gameweek_context: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    now_cost: Mapped[float] = mapped_column(Float, default=0.0)  # £m
+    status: Mapped[str] = mapped_column(String(1), default="a")
+    chance_of_playing_this_round: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    chance_of_playing_next_round: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    selected_by_percent: Mapped[float] = mapped_column(Float, default=0.0)
+    form: Mapped[float] = mapped_column(Float, default=0.0)
+    ict_index: Mapped[float] = mapped_column(Float, default=0.0)
+    influence: Mapped[float] = mapped_column(Float, default=0.0)
+    creativity: Mapped[float] = mapped_column(Float, default=0.0)
+    threat: Mapped[float] = mapped_column(Float, default=0.0)
+
+    news: Mapped[str] = mapped_column(String, default="")
+    news_added: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    transfers_in_event: Mapped[int] = mapped_column(Integer, default=0)
+    transfers_out_event: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class PlayerXGStats(Base):
