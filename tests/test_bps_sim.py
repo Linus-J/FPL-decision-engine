@@ -7,9 +7,7 @@ bonus awarding, and DefCon/BPS independence.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
-from config.strategy import BPS_WEIGHTS, DEFCON
+from config.strategy import BPS_WEIGHTS, BPS_WEIGHTS_2526, DEFCON
 from projection.bps_sim import (
     award_bonus,
     compute_defcon_points,
@@ -17,14 +15,9 @@ from projection.bps_sim import (
     compute_player_bps,
 )
 
-# 25/26 (old) weights: the four numeric BPS changes for 26/27.
-OLD_WEIGHTS = replace(
-    BPS_WEIGHTS,
-    being_tackled=-1,   # 26/27: removed (0)
-    cbi_per_point=2,    # 26/27: 1 per 3 (was per 2)
-    penalty_saved=8,    # 26/27: 7
-    big_chance_saved=0,  # 26/27: +1 (new)
-)
+# 25/26 (old) weights — the shared source of truth (config.strategy), also used
+# by the T5b sanity harness.
+OLD_WEIGHTS = BPS_WEIGHTS_2526
 
 
 def test_locked_bps_arithmetic():

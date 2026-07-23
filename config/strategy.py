@@ -5,7 +5,7 @@ When FPL announces 26/27 rule changes, this is the ONLY file you should need
 to edit for scoring, chip, and structural rule changes.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # ---------------------------------------------------------------------------
 # SCORING RULES
@@ -136,6 +136,13 @@ class BPSWeights:
     conceding_foul: int = -1
     caught_offside: int = -1
     shot_off_target: int = -1
+
+
+# 25/26 ("old-rules") BPS weights: the four numeric changes 26/27 made vs the
+# prior season, reconstructed from the inline deltas above. This is the source
+# of truth for the T5b sanity harness (recompute historical bonus under the
+# rules that were actually in force, then compare to FPL's awarded bonus).
+# Built below the singletons via dataclasses.replace — see BPS_WEIGHTS_2526.
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +291,17 @@ class OptimiserConfig:
 SCORING = ScoringRules()
 DEFCON = DefConRules()
 BPS_WEIGHTS = BPSWeights()
+
+# The four numeric BPS changes 26/27 made vs 25/26 (see inline deltas above).
+# Used only by the T5b sanity harness to recompute historical bonus under the
+# rules in force at the time before trusting the 26/27 recompute.
+BPS_WEIGHTS_2526 = replace(
+    BPS_WEIGHTS,
+    being_tackled=-1,    # 26/27: removed (0)
+    cbi_per_point=2,     # 26/27: 1 per 3 CBI (was per 2)
+    penalty_saved=8,     # 26/27: 7
+    big_chance_saved=0,  # 26/27: +1 (new metric)
+)
 CHIPS = ChipRules()
 TRANSFERS = TransferRules()
 SQUAD = SquadRules()

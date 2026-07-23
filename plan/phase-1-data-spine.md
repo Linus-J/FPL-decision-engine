@@ -150,7 +150,22 @@ Leakage-free reads + REAL pass/fail exit gate (REVISED; fixes L1–L3, M4)
 - **Gate:** `tests/test_bps_sim.py` (11) — locked arithmetic, **26/27-vs-old-rules delta sanity harness** (synthetic, via `dataclasses.replace`), tie cases, DefCon/BPS independence. Suite 55/55.
 - *Real-data sanity (reproduce old-rules awarded bonus within tolerance on actual events) moves to T5b once FBref events exist.*
 
-### T5b — FBref event ingest + recomputed_bonus (pending)
+### T5b — FBref event ingest + recomputed_bonus ✅ DONE (pure core + optional adapter)
+
+**Approach decision (2026-07-23):** `soccerdata` 1.9 pulls a full SeleniumBase/Chrome stack (FBref sits behind Cloudflare, scraped via a real browser) — impractical in a headless env and heavy for an otherwise httpx/bs4 project. So the network-bound scrape is an **optional extra**, and the durable value — the recompute pipeline + tables + sanity harness — is pure, network-free, and fully tested now. This mirrors the T3a/T3b live-gate split.
+
+**Delivered:**
+- `data/models.py`: `PlayerMatchEvents` (per-**match** grain — DGW = 2 rows; columns are exactly the metrics `bps_sim` reads, so recompute needs no JOIN) + `RecomputedBonus` (`bps_2627`, `bonus_2627`, per match; §3.4).
+- `projection/bonus_recompute.py` (pure): `recompute_fixture` / `recompute_season` (upsert, idempotent) / `recomputed_bonus_coverage` + the **old-rules sanity harness** `oldrules_reproduction` (recompute under `BPS_WEIGHTS_2526`, report `slot_exact_rate` + `recipient_jaccard` vs FPL's awarded bonus — agreement, not equality, since FBref lacks some Opta BPS metrics).
+- `config/strategy.py`: `BPS_WEIGHTS_2526` singleton (the four 26/27 deltas), now the shared source of truth for the sim tests too.
+- `data/ingestors/fbref.py` (**OPTIONAL**, lazy-imported, `pragma: no cover` on the live path): pure column-mappers `map_summary_row`/`map_keeper_row`/`normalize_position` (tested) + `ingest_fbref_season` orchestration; raises an actionable ImportError pointing at the `[events]` extra when soccerdata is absent.
+- `pyproject.toml`: `[project.optional-dependencies] events = ["soccerdata>=1.9.0"]` — out of core deps.
+
+**Gate:** `tests/test_bonus_recompute.py` (11) — recompute arithmetic, DB write + idempotency, DGW per-match rows, coverage, old-rules agreement/disagreement detection, FBref mappers + derivations, optional-extra error. DefCon/BPS independence already asserted in `test_bps_sim.py` (T5a). Suite **75/75**, ruff clean (new files).
+
+**⚠️ Deferred to a browser-capable env (not runnable headless here):** the live FBref scrape, and therefore the two *real-data* numbers — old-rules reproduction within tolerance on actual events, and `recomputed_bonus` coverage ≥95% of finished fixtures with event data. The pure plumbing they'd exercise is locked by synthetic-event tests; only the network run remains, exactly as T3a's live-run coverage folded into T3.
+
+### T5b (original spec retained below for reference)
 *Larger; needs `soccerdata` dep. Full scope retained (Monte-Carlo BPS sim kept — decision 2026-07-22).*
 
 **Scope**

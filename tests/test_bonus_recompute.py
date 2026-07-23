@@ -1,0 +1,169 @@
+"""T5b gate — 26/27 bonus recompute pipeline + FBref mapper + sanity harness.
+
+Network-free: the recompute core operates on the DB and plain mappings, and the
+FBref column-mappers are pure. The live FBref scrape (browser-only) is exercised
+separately when an event-capable environment is available.
+"""
+
+from __future__ import annotations
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from data.ingestors import fbref
+from data.models import Base, Player, PlayerMatchEvents, RecomputedBonus
+from projection import bonus_recompute as br
+
+# --- fixture events (hand-computable under 26/27 BPS_WEIGHTS) ---------------
+_FWD_BRACE = {"position": "FWD", "minutes": 90, "goals": 2}            # 6+48 = 54
+_MID_GA = {"position": "MID", "minutes": 90, "goals": 1, "assists": 1}  # 6+18+9 = 33
+_DEF_CS = {"position": "DEF", "minutes": 90, "clean_sheet": 1}          # 6+12 = 18
+
+
+# --- pure recompute ---------------------------------------------------------
+def test_recompute_fixture_bps_and_bonus():
+    result = br.recompute_fixture({1: _FWD_BRACE, 2: _MID_GA, 3: _DEF_CS})
+    assert result[1] == (54, 3)
+    assert result[2] == (33, 2)
+    assert result[3] == (18, 1)
+
+
+def test_event_to_mapping_round_trips_through_sim():
+    row = PlayerMatchEvents(
+        player_id=1, season="2025-26", game_id="g", position="FWD",
+        minutes=90, goals=2,
+    )
+    # attribute defaults are None pre-flush, so mimic a flushed row's ints
+    for f in br.EVENT_FIELDS:
+        if getattr(row, f) is None:
+            setattr(row, f, 0)
+    ev = br.event_to_mapping(row)
+    assert ev["position"] == "FWD"
+    assert br.recompute_fixture({1: ev})[1] == (54, 3)
+
+
+# --- DB-backed recompute (temp DB) ------------------------------------------
+@pytest.fixture
+def session(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'br.db'}")
+    Base.metadata.create_all(bind=engine)
+    Local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    s = Local()
+    for pid in (1, 2, 3, 4):
+        s.add(Player(id=pid, fpl_id=pid, code=pid, first_name="P", second_name=str(pid),
+                     web_name=f"p{pid}", team_id=1, position="MID", now_cost=5.0))
+    s.commit()
+    yield s
+    s.close()
+
+
+def _seed_match(s, game_id, gw, players):
+    for pid, ev in players.items():
+        s.add(PlayerMatchEvents(player_id=pid, season="2025-26", gameweek=gw,
+                                game_id=game_id, **ev))
+    s.commit()
+
+
+def test_recompute_season_writes_and_covers(session):
+    _seed_match(session, "g1", 5, {1: _FWD_BRACE, 2: _MID_GA, 3: _DEF_CS})
+    matches, written = br.recompute_season(session, "2025-26")
+    assert matches == 1
+    assert written == 3
+
+    rows = {r.player_id: (r.bps_2627, r.bonus_2627)
+            for r in session.query(RecomputedBonus).all()}
+    assert rows == {1: (54, 3), 2: (33, 2), 3: (18, 1)}
+    assert session.query(RecomputedBonus).first().gameweek == 5
+    assert br.recomputed_bonus_coverage(session, "2025-26") == 1.0
+
+
+def test_recompute_is_idempotent(session):
+    _seed_match(session, "g1", 5, {1: _FWD_BRACE, 2: _MID_GA, 3: _DEF_CS})
+    br.recompute_season(session, "2025-26")
+    br.recompute_season(session, "2025-26")  # rerun: upsert, no duplicates
+    assert session.query(RecomputedBonus).count() == 3
+
+
+def test_dgw_player_gets_a_row_per_match(session):
+    # player 1 plays twice in GW5 (two game_ids) → two recomputed rows.
+    _seed_match(session, "g1", 5, {1: _FWD_BRACE, 2: _MID_GA})
+    _seed_match(session, "g2", 5, {1: _MID_GA, 3: _DEF_CS})
+    br.recompute_season(session, "2025-26")
+    p1_rows = session.query(RecomputedBonus).filter_by(player_id=1).all()
+    assert len(p1_rows) == 2
+    assert {r.game_id for r in p1_rows} == {"g1", "g2"}
+
+
+# --- old-rules sanity harness -----------------------------------------------
+def test_oldrules_reproduction_perfect_agreement():
+    events = {"g1": {1: _FWD_BRACE, 2: _MID_GA, 3: _DEF_CS}}
+    actual = {"g1": {1: 3, 2: 2, 3: 1}}  # matches the ranking under old rules too
+    m = br.oldrules_reproduction(events, actual)
+    assert m["n_matches"] == 1.0
+    assert m["slot_exact_rate"] == 1.0
+    assert m["recipient_jaccard"] == 1.0
+
+
+def test_oldrules_reproduction_detects_disagreement():
+    events = {"g1": {1: _FWD_BRACE, 2: _MID_GA, 3: _DEF_CS}}
+    # FPL actually gave the DEF the 3 (Opta metrics we lack) → we disagree
+    actual = {"g1": {3: 3, 1: 2, 2: 1}}
+    m = br.oldrules_reproduction(events, actual)
+    assert m["slot_exact_rate"] < 1.0
+    # recipients overlap (same 3 players got bonus) even when ranks differ
+    assert m["recipient_jaccard"] == 1.0
+
+
+# --- FBref pure mappers ------------------------------------------------------
+def test_map_summary_row_available_fields_and_derivations():
+    raw = {
+        "min": 90, "Performance Gls": 1, "Performance Ast": 0,
+        "Performance CrdY": 1, "Performance Tkl": 3, "Performance Int": 2,
+        "Performance Blocks": 1, "Take-Ons Succ": 2,
+        "Passes Att": 40, "Passes Cmp%": 88.5,
+        "Performance Sh": 4, "Performance SoT": 1,          # → 3 off target
+        "Performance PKatt": 1, "Performance PK": 0,        # → 1 missed
+    }
+    out = fbref.map_summary_row(raw)
+    assert out["minutes"] == 90
+    assert out["goals"] == 1
+    assert out["tackles"] == 3
+    assert out["dribbles"] == 2
+    assert out["passes"] == 40
+    assert out["pass_completion_pct"] == 88.5
+    assert out["shots_off_target"] == 3
+    assert out["penalties_missed"] == 1
+    # unavailable metrics are omitted (ORM default 0 applies), not guessed
+    assert "clearances" not in out
+    assert "big_chances_created" not in out
+
+
+def test_map_keeper_row():
+    out = fbref.map_keeper_row({"Shot Stopping Saves": 5, "Penalty Kicks PKsv": 1})
+    assert out == {"saves": 5, "penalties_saved": 1}
+
+
+def test_normalize_position():
+    assert fbref.normalize_position("GK") == "GK"
+    assert fbref.normalize_position("DF,MF") == "DEF"
+    assert fbref.normalize_position("FW") == "FWD"
+    assert fbref.normalize_position("MF") == "MID"
+    assert fbref.normalize_position(None) == "MID"
+
+
+def test_ingest_fbref_season_needs_optional_extra(monkeypatch):
+    """Without soccerdata the adapter fails with an actionable message, not an
+    opaque ImportError deep in the call stack."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _blocked(name, *args, **kwargs):
+        if name == "soccerdata":
+            raise ImportError("no soccerdata")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked)
+    with pytest.raises(ImportError, match="events"):
+        fbref.ingest_fbref_season("2025-26")

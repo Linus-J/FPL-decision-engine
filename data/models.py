@@ -260,6 +260,102 @@ class PlayerXGStats(Base):
     player: Mapped["Player"] = relationship("Player", back_populates="xg_stats")
 
 
+class PlayerMatchEvents(Base):
+    """Per-player-per-match raw event counts (Opta/FBref-derived) — the input
+    to the 26/27 BPS simulator (plan §3.3-3.4 / T5b).
+
+    Grain is one match, NOT one gameweek: bonus is awarded per fixture, so a
+    DGW player has two rows (one per ``game_id``). Source-agnostic — the FBref
+    adapter (``data/ingestors/fbref.py``) is one writer, but the columns are
+    exactly the metrics ``projection.bps_sim`` reads, so recompute needs no
+    JOINs. Metrics a provider cannot supply (e.g. FBref lacks Opta big-chances)
+    are left 0; that gap is the documented tolerance of the sanity harness.
+    """
+
+    __tablename__ = "player_match_events"
+    __table_args__ = (
+        UniqueConstraint("player_id", "season", "game_id", name="uq_match_events"),
+        Index("ix_match_events_season_gw", "season", "gameweek"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.id"), nullable=False)
+    season: Mapped[str] = mapped_column(String(7), nullable=False)
+    gameweek: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Stable per-match identifier (FBref match id, or synthesised season+gw+teams).
+    game_id: Mapped[str] = mapped_column(String, nullable=False)
+    position: Mapped[str] = mapped_column(String(3), default="MID")
+    source: Mapped[str] = mapped_column(String, default="fbref")
+
+    minutes: Mapped[int] = mapped_column(Integer, default=0)
+    goals: Mapped[int] = mapped_column(Integer, default=0)
+    winning_goals: Mapped[int] = mapped_column(Integer, default=0)
+    assists: Mapped[int] = mapped_column(Integer, default=0)
+    clean_sheet: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Attacking contribution
+    big_chances_created: Mapped[int] = mapped_column(Integer, default=0)
+    key_passes: Mapped[int] = mapped_column(Integer, default=0)
+    open_play_crosses: Mapped[int] = mapped_column(Integer, default=0)
+    dribbles: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Goalkeeping
+    saves: Mapped[int] = mapped_column(Integer, default=0)
+    saves_in_box: Mapped[int] = mapped_column(Integer, default=0)
+    big_chances_saved: Mapped[int] = mapped_column(Integer, default=0)
+    penalties_saved: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Defensive actions
+    tackles: Mapped[int] = mapped_column(Integer, default=0)
+    clearances: Mapped[int] = mapped_column(Integer, default=0)
+    blocks: Mapped[int] = mapped_column(Integer, default=0)
+    interceptions: Mapped[int] = mapped_column(Integer, default=0)
+    recoveries: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Passing accuracy
+    passes: Mapped[int] = mapped_column(Integer, default=0)
+    pass_completion_pct: Mapped[float] = mapped_column(Float, default=0.0)
+
+    # Negative
+    being_tackled: Mapped[int] = mapped_column(Integer, default=0)
+    penalties_conceded: Mapped[int] = mapped_column(Integer, default=0)
+    penalties_missed: Mapped[int] = mapped_column(Integer, default=0)
+    yellow_cards: Mapped[int] = mapped_column(Integer, default=0)
+    red_cards: Mapped[int] = mapped_column(Integer, default=0)
+    own_goals: Mapped[int] = mapped_column(Integer, default=0)
+    big_chances_missed: Mapped[int] = mapped_column(Integer, default=0)
+    errors_leading_to_goal: Mapped[int] = mapped_column(Integer, default=0)
+    errors_leading_to_shot: Mapped[int] = mapped_column(Integer, default=0)
+    fouls: Mapped[int] = mapped_column(Integer, default=0)
+    offsides: Mapped[int] = mapped_column(Integer, default=0)
+    shots_off_target: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class RecomputedBonus(Base):
+    """Historical bonus re-derived under the 26/27 BPS rules (plan §3.4 / T5b).
+
+    One row per (player, match). ``bps_2627``/``bonus_2627`` are the simulator's
+    output over ``player_match_events`` using the current ``BPS_WEIGHTS``; Phase 2
+    reads these instead of the as-played ``PlayerGameweekStats.bonus`` so that
+    training targets reflect the rules the bot will actually play under.
+    """
+
+    __tablename__ = "recomputed_bonus"
+    __table_args__ = (
+        UniqueConstraint("player_id", "season", "game_id", name="uq_recomputed_bonus"),
+        Index("ix_recomputed_bonus_season_gw", "season", "gameweek"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.id"), nullable=False)
+    season: Mapped[str] = mapped_column(String(7), nullable=False)
+    gameweek: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    game_id: Mapped[str] = mapped_column(String, nullable=False)
+    bps_2627: Mapped[int] = mapped_column(Integer, default=0)
+    bonus_2627: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class FixtureOdds(Base):
     __tablename__ = "fixture_odds"
 
