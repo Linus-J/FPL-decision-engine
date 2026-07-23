@@ -63,10 +63,19 @@ ScoringRules clean-sheet fix (6→4), DefConRules, BPSWeights (Appendix A.3), si
 
 **⚠️ Scope split discovered during T3a — deferred to T3b (a T6 dependency, NOT on the T4 critical path):** full historical `Fixture` rows with correct `team_h/team_a`. vaastav fixture team ids are per-season, but `teams` is single-season (current bootstrap) and `Fixture.team_h_id` is an FK to it; relegated teams don't exist in the current table. Storing historical fixtures correctly needs **season-aware `teams`** (add `season` + stable `code`, per-season backfill from `teams.csv`, and a season-aware fixture→team reference) — a T2.5-sized change. Only FDR/odds JOIN *quality* for past seasons depends on it; the honest baseline (a leaky-vs-leakfree comparison) does not.
 
-## T3b — Season-aware teams + historical fixtures (NEW; the deferred M2 remainder) — gates T6 odds JOINs
-- `Team`: add `season` + stable `code`; per-season backfill from `{season}/teams.csv`.
-- Historical `Fixture` rows with `(season, team refs, kickoff, difficulty)` resolved via the team crosswalk; `load_fixture_difficulty`/`load_fixture_odds` JOIN on `(season, gameweek)` return non-default rows.
-- **Gate:** ≥95% of `player_gw_stats` (season, gw) rows resolve to a `Fixture` for the player's team; FDR/odds non-default for a backfilled season.
+## T3b — Season-aware team strengths + per-GW fixture context ✅ DONE (real FDR; the M2 remainder)
+
+**Cleaner than the original spec** — instead of making the FK'd `teams` table season-aware and reconstructing full historical fixtures, the fixture context lives on the stat row and strengths in a season-keyed table (no cross-season FK mess):
+- `PlayerGameweekStats` += `team_id_season`, `opponent_team_id`, `was_home` (from `merged_gw`).
+- New `TeamSeasonStrength(season, team_id, code, strength_*)` backfilled from per-season `teams.csv`.
+- `backfill_history.py`: `team_strength_rows` / `team_name_to_id` / `write_team_strengths` + `_resolve_team_id`; `_ingest_dataframe` writes the context.
+- `features.load_fixture_difficulty` rewritten to compute FDR from `(team_id_season, opponent_team_id, was_home)` × `TeamSeasonStrength` — season-accurate (a player's *actual* club/opponents that season), keyed on `player_gw_stats` (historical, behaviour-compatible). next-3-GW opponent avg from the player's own subsequent rows.
+
+**Real gate (live-data DB):** 2025-26 → 100% fixture-context coverage (29,338 rows), 100 strength rows (5×20). FDR **98% non-default**, home/away balanced (0.50). Re-ran the honest baseline with real FDR → **40.2 actual pts/GW, predicted 40.1 ≈ actual** (calibration tightened from 41.4-vs-43.0). Still ≪ ~50 leaky.
+
+**Gate:** `tests/test_team_fdr.py` (4) — strength parsing, name→id, team-id resolution, season-context FDR read. Suite 64/64.
+
+*Full historical `Fixture` rows with team refs (for the live-projection future-GW FDR path) remain unbuilt — not needed for the historical backtest; the live pipeline's future-GW FDR was already defaulted pre-T3b.*
 
 ---
 
@@ -99,7 +108,7 @@ ScoringRules clean-sheet fix (6→4), DefConRules, BPSWeights (Appendix A.3), si
 
 ## T4 — Leakage-free reads + honest baseline ✅ DONE (fixes L1–L3, M4, M5)
 
-**HONEST BASELINE (2026-07-22, `results/backtest_2526_v1_leakfree.csv`):** leakage-free walk-forward on **2025-26**, GW6–38 → **43.0 actual pts/GW** (total 1420), predicted xPts **41.4** ≈ actual (well-calibrated, no look-ahead inflation). The old **leaky** v1 baseline was **~50 pts/GW** → removing the leak dropped it **~7 pts/GW**, exactly the predicted direction. **Exit gate met:** leakfree < leaky.
+**HONEST BASELINE (`results/backtest_2526_v1_leakfree.csv`):** leakage-free walk-forward on **2025-26**, GW6–38. Two recorded points: (a) with FDR/odds defaulted → 43.0 pts/GW (predicted 41.4); (b) **with real FDR (T3b) → 40.2 actual pts/GW, predicted 40.1 ≈ actual** — near-perfect calibration. The old **leaky** v1 baseline was **~50 pts/GW**, so removing the leak dropped it ~7–10 pts/GW. **Exit gate met:** leakfree ≪ leaky, and the FDR version is the better-calibrated honest baseline for Phase 2 to beat.
 
 **Delivered:**
 - `backtest.py::_load_all_stats` / `_load_players_snapshot` read dynamic columns from `player_state_snapshots` as-of `deadline(season, gw)`; static (position/team) from `players`. Call-site simplified.

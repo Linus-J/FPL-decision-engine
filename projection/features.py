@@ -5,6 +5,12 @@ from data.db import get_session
 
 
 def load_fixture_difficulty(season: str | None = None) -> pd.DataFrame:
+    """Per player-GW FDR from the point-in-time fixture context stored on the
+    stat row (team_id_season / opponent_team_id / was_home) and the per-season
+    TeamSeasonStrength table (Phase-1 T3b). This is season-accurate — a player's
+    club and opponents in a past season, not their current club. Keyed on
+    player_gw_stats rows (historical), same as before; missing strengths default
+    to 1200 via add_fdr_features."""
     db = get_session()
     try:
         season_filter = "AND s.season = :season" if season else ""
@@ -14,57 +20,44 @@ def load_fixture_difficulty(season: str | None = None) -> pd.DataFrame:
                 s.player_id,
                 s.gameweek,
                 s.season,
-                p.team_id,
-                f.team_h_id,
-                f.team_a_id,
-                CASE WHEN f.team_h_id = p.team_id THEN 1 ELSE 0 END AS is_home,
-                COALESCE(gw.is_bgw, 0) AS is_bgw,
-                CASE
-                    WHEN f.team_h_id = p.team_id THEN t_opp.strength_defence_away
-                    ELSE t_opp.strength_defence_home
-                END AS opp_defence_strength,
-                CASE
-                    WHEN f.team_h_id = p.team_id THEN t_opp.strength_attack_away
-                    ELSE t_opp.strength_attack_home
-                END AS opp_attack_strength,
-                CASE
-                    WHEN f.team_h_id = p.team_id THEN t_own.strength_attack_home
-                    ELSE t_own.strength_attack_away
-                END AS own_attack_strength,
-                CASE
-                    WHEN f.team_h_id = p.team_id THEN t_own.strength_defence_home
-                    ELSE t_own.strength_defence_away
-                END AS own_defence_strength,
-                CASE
-                    WHEN f.team_h_id = p.team_id THEN t_own.strength_overall_home
-                    ELSE t_own.strength_overall_away
-                END AS own_overall_strength,
+                s.team_id_season AS team_id,
+                CASE WHEN s.was_home THEN 1 ELSE 0 END AS is_home,
+                COALESCE(g.is_bgw, 0) AS is_bgw,
+                CASE WHEN s.was_home THEN tss_opp.strength_defence_away
+                     ELSE tss_opp.strength_defence_home END AS opp_defence_strength,
+                CASE WHEN s.was_home THEN tss_opp.strength_attack_away
+                     ELSE tss_opp.strength_attack_home END AS opp_attack_strength,
+                CASE WHEN s.was_home THEN tss_own.strength_attack_home
+                     ELSE tss_own.strength_attack_away END AS own_attack_strength,
+                CASE WHEN s.was_home THEN tss_own.strength_defence_home
+                     ELSE tss_own.strength_defence_away END AS own_defence_strength,
+                CASE WHEN s.was_home THEN tss_own.strength_overall_home
+                     ELSE tss_own.strength_overall_away END AS own_overall_strength,
                 COALESCE((
-                    SELECT AVG(CASE WHEN f2.team_h_id = p.team_id THEN t2.strength_defence_away ELSE t2.strength_defence_home END)
-                    FROM fixtures f2
-                    JOIN teams t2 ON t2.id = CASE WHEN f2.team_h_id = p.team_id THEN f2.team_a_id ELSE f2.team_h_id END
-                    WHERE (f2.team_h_id = p.team_id OR f2.team_a_id = p.team_id)
-                    AND f2.gameweek > s.gameweek AND f2.gameweek <= s.gameweek + 3
+                    SELECT AVG(CASE WHEN s2.was_home THEN t2.strength_defence_away
+                                    ELSE t2.strength_defence_home END)
+                    FROM player_gw_stats s2
+                    JOIN team_season_strength t2
+                        ON t2.season = s2.season AND t2.team_id = s2.opponent_team_id
+                    WHERE s2.player_id = s.player_id AND s2.season = s.season
+                        AND s2.gameweek > s.gameweek AND s2.gameweek <= s.gameweek + 3
                 ), 1200) AS next_3gw_avg_opp_defence,
                 COALESCE((
-                    SELECT AVG(CASE WHEN f2.team_h_id = p.team_id THEN t2.strength_attack_away ELSE t2.strength_attack_home END)
-                    FROM fixtures f2
-                    JOIN teams t2 ON t2.id = CASE WHEN f2.team_h_id = p.team_id THEN f2.team_a_id ELSE f2.team_h_id END
-                    WHERE (f2.team_h_id = p.team_id OR f2.team_a_id = p.team_id)
-                    AND f2.gameweek > s.gameweek AND f2.gameweek <= s.gameweek + 3
+                    SELECT AVG(CASE WHEN s2.was_home THEN t2.strength_attack_away
+                                    ELSE t2.strength_attack_home END)
+                    FROM player_gw_stats s2
+                    JOIN team_season_strength t2
+                        ON t2.season = s2.season AND t2.team_id = s2.opponent_team_id
+                    WHERE s2.player_id = s.player_id AND s2.season = s.season
+                        AND s2.gameweek > s.gameweek AND s2.gameweek <= s.gameweek + 3
                 ), 1200) AS next_3gw_avg_opp_attack
             FROM player_gw_stats s
-            JOIN players p ON p.id = s.player_id
-            JOIN fixtures f
-                ON f.gameweek = s.gameweek
-                AND (f.team_h_id = p.team_id OR f.team_a_id = p.team_id)
-            JOIN teams t_own ON t_own.id = p.team_id
-            JOIN teams t_opp ON t_opp.id = CASE
-                WHEN f.team_h_id = p.team_id THEN f.team_a_id
-                ELSE f.team_h_id
-            END
-            LEFT JOIN gameweeks gw ON gw.name = 'Gameweek ' || s.gameweek
-            {season_filter}
+            LEFT JOIN team_season_strength tss_own
+                ON tss_own.season = s.season AND tss_own.team_id = s.team_id_season
+            LEFT JOIN team_season_strength tss_opp
+                ON tss_opp.season = s.season AND tss_opp.team_id = s.opponent_team_id
+            LEFT JOIN gameweeks g ON g.id = s.gameweek AND g.season = s.season
+            WHERE 1 = 1 {season_filter}
         """)
         return pd.read_sql(query, db.bind, params=params)
     finally:

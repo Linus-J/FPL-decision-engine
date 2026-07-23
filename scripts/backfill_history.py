@@ -15,7 +15,12 @@ import pandas as pd
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session, init_db
-from data.models import Gameweek, PlayerGameweekStats, PlayerStateSnapshot
+from data.models import (
+    Gameweek,
+    PlayerGameweekStats,
+    PlayerStateSnapshot,
+    TeamSeasonStrength,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +37,13 @@ SEASONS = [
 GW_CSV_URL = "{base}/{season}/gws/merged_gw.csv"
 FIXTURES_CSV_URL = "{base}/{season}/fixtures.csv"
 PLAYERS_RAW_CSV_URL = "{base}/{season}/players_raw.csv"
+TEAMS_CSV_URL = "{base}/{season}/teams.csv"
+
+_STRENGTH_COLS = (
+    "strength_overall_home", "strength_overall_away",
+    "strength_attack_home", "strength_attack_away",
+    "strength_defence_home", "strength_defence_away",
+)
 
 # FPL deadline is ~90 minutes before the first kickoff of the gameweek.
 DEADLINE_LEAD = timedelta(minutes=90)
@@ -136,6 +148,74 @@ def resolve_player_id(
     if code is None:
         return None
     return code_to_dbid.get(code)
+
+
+# --- Per-season team strengths + fixture context (T3b) ---
+
+def team_strength_rows(teams_df: pd.DataFrame, season: str) -> list[dict]:
+    """Rows for TeamSeasonStrength from a season's teams.csv. Pure/testable."""
+    if "id" not in teams_df.columns:
+        return []
+    rows: list[dict] = []
+    for r in teams_df.itertuples():
+        code = getattr(r, "code", None)
+        row: dict = {
+            "season": season,
+            "team_id": int(r.id),
+            "code": int(code) if pd.notna(code) else None,
+        }
+        for col in _STRENGTH_COLS:
+            v = getattr(r, col, None)
+            row[col] = int(v) if pd.notna(v) else 1200
+        rows.append(row)
+    return rows
+
+
+def team_name_to_id(teams_df: pd.DataFrame) -> dict[str, int]:
+    """name/short_name -> that season's team id, for resolving merged_gw `team`."""
+    out: dict[str, int] = {}
+    if "id" not in teams_df.columns:
+        return out
+    for r in teams_df.itertuples():
+        tid = int(r.id)
+        for attr in ("name", "short_name"):
+            v = getattr(r, attr, None)
+            if pd.notna(v):
+                out[str(v)] = tid
+    return out
+
+
+def _resolve_team_id(raw: object, name_to_id: dict[str, int]) -> int | None:
+    if raw is None:
+        return None
+    try:
+        if pd.isna(raw):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(raw)  # already a numeric team id
+    except (ValueError, TypeError):
+        return name_to_id.get(str(raw))  # a team name/short_name
+
+
+def write_team_strengths(rows: list[dict]) -> int:
+    db = get_session()
+    try:
+        for row in rows:
+            stmt = (
+                insert(TeamSeasonStrength)
+                .values(**row)
+                .on_conflict_do_update(
+                    index_elements=["season", "team_id"],
+                    set_={col: row[col] for col in _STRENGTH_COLS},
+                )
+            )
+            db.execute(stmt)
+        db.commit()
+        return len(rows)
+    finally:
+        db.close()
 
 
 # --- Point-in-time snapshot backfill, reconciled to live bootstrap (T3; C1) ---
@@ -278,7 +358,9 @@ def _ingest_dataframe(
     season: str,
     elem_to_code: dict[int, int],
     code_to_dbid: dict[int, int],
+    name_to_id: dict[str, int] | None = None,
 ) -> tuple[int, int]:
+    name_to_id = name_to_id or {}
     df = df.rename(columns={"round": "GW"}) if "GW" not in df.columns else df
 
     required = {"element", "GW", "minutes", "total_points"}
@@ -302,12 +384,20 @@ def _ingest_dataframe(
                 skipped += 1
                 continue
 
+            opp = row.get("opponent_team")
+            opponent_team_id = int(opp) if pd.notna(opp) else None
+            was_home_raw = row.get("was_home")
+            was_home = bool(was_home_raw) if pd.notna(was_home_raw) else None
+
             stmt = (
                 insert(PlayerGameweekStats)
                 .values(
                     player_id=player_id,
                     gameweek=gw,
                     season=season,
+                    team_id_season=_resolve_team_id(row.get("team"), name_to_id),
+                    opponent_team_id=opponent_team_id,
+                    was_home=was_home,
                     total_points=int(row.get("total_points", 0) or 0),
                     minutes=int(row.get("minutes", 0) or 0),
                     goals_scored=int(row.get("goals_scored", 0) or 0),
@@ -366,6 +456,16 @@ async def backfill() -> None:
             elem_to_code = element_code_map(players_raw) if players_raw is not None else {}
             logger.info("Season %s: %d element→code entries", db_season, len(elem_to_code))
 
+            # 2b. Per-season team strengths + name→id map (T3b, for FDR).
+            teams_df = await _fetch_csv(
+                client, TEAMS_CSV_URL.format(base=VAASTAV_BASE, season=vaastav_season)
+            )
+            name_to_id: dict[str, int] = {}
+            if teams_df is not None:
+                n_str = write_team_strengths(team_strength_rows(teams_df, db_season))
+                name_to_id = team_name_to_id(teams_df)
+                logger.info("Season %s: %d team strengths written", db_season, n_str)
+
             # 3. Per-GW player stats, mapped via code (not the reassigned element id).
             df = await _fetch_csv(
                 client, GW_CSV_URL.format(base=VAASTAV_BASE, season=vaastav_season)
@@ -375,7 +475,9 @@ async def backfill() -> None:
                 continue
 
             total_rows = len(df)
-            inserted, skipped = _ingest_dataframe(df, db_season, elem_to_code, code_to_dbid)
+            inserted, skipped = _ingest_dataframe(
+                df, db_season, elem_to_code, code_to_dbid, name_to_id
+            )
             match_rate = inserted / total_rows * 100 if total_rows else 0
             logger.info(
                 "Season %s: %d rows → %d inserted (%.0f%% match rate), %d unmatched",

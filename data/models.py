@@ -169,7 +169,36 @@ class PlayerGameweekStats(Base):
     transfers_out: Mapped[int] = mapped_column(Integer, default=0)
     value: Mapped[float] = mapped_column(Float, default=0.0)
 
+    # Per-GW fixture context (that season's team ids) — the leakage-safe source
+    # of FDR without a cross-season fixtures/teams JOIN (Phase-1 T3b).
+    team_id_season: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    opponent_team_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    was_home: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
     player: Mapped["Player"] = relationship("Player", back_populates="gw_stats")
+
+
+class TeamSeasonStrength(Base):
+    """Per-season FPL team strengths (teams change every season). Keyed by
+    (season, team_id) where team_id is that season's FPL id — read alongside
+    PlayerGameweekStats.team_id_season / opponent_team_id for point-in-time FDR
+    (Phase-1 T3b). Avoids making the FK'd `teams` table season-aware."""
+
+    __tablename__ = "team_season_strength"
+    __table_args__ = (
+        UniqueConstraint("season", "team_id", name="uq_team_season_strength"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    season: Mapped[str] = mapped_column(String(7), nullable=False)
+    team_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    strength_overall_home: Mapped[int] = mapped_column(Integer, default=1200)
+    strength_overall_away: Mapped[int] = mapped_column(Integer, default=1200)
+    strength_attack_home: Mapped[int] = mapped_column(Integer, default=1200)
+    strength_attack_away: Mapped[int] = mapped_column(Integer, default=1200)
+    strength_defence_home: Mapped[int] = mapped_column(Integer, default=1200)
+    strength_defence_away: Mapped[int] = mapped_column(Integer, default=1200)
 
 
 class PlayerStateSnapshot(Base):
