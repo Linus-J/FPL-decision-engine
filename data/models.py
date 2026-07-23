@@ -118,7 +118,7 @@ class Fixture(Base):
 
     team_h: Mapped["Team"] = relationship("Team", foreign_keys=[team_h_id], back_populates="home_fixtures")
     team_a: Mapped["Team"] = relationship("Team", foreign_keys=[team_a_id], back_populates="away_fixtures")
-    odds: Mapped["FixtureOdds | None"] = relationship("FixtureOdds", back_populates="fixture", uselist=False)
+    odds: Mapped[list["FixtureOdds"]] = relationship("FixtureOdds", back_populates="fixture")
 
 
 class Gameweek(Base):
@@ -357,19 +357,64 @@ class RecomputedBonus(Base):
 
 
 class FixtureOdds(Base):
+    """Live odds for a (current-season) fixture. APPEND-ONLY: one row per fetch,
+    keyed ``(fixture_id, fetched_at)`` — never UPDATE (Phase-1 finding L4). The
+    leakage-free read (``features.load_live_odds_asof``) takes the latest row
+    with ``fetched_at <= deadline(season, gw)``. Historical closing odds live in
+    ``HistoricalFixtureOdds`` instead (past seasons have no ``fixtures`` rows)."""
+
     __tablename__ = "fixture_odds"
+    __table_args__ = (
+        UniqueConstraint("fixture_id", "fetched_at", name="uq_fixture_odds_asof"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), unique=True, nullable=False)
+    fixture_id: Mapped[int] = mapped_column(Integer, ForeignKey("fixtures.id"), nullable=False)
     home_win_prob: Mapped[float] = mapped_column(Float, default=0.0)
     draw_prob: Mapped[float] = mapped_column(Float, default=0.0)
     away_win_prob: Mapped[float] = mapped_column(Float, default=0.0)
+    over25_prob: Mapped[float] = mapped_column(Float, default=0.0)
     btts_prob: Mapped[float] = mapped_column(Float, default=0.0)
     home_cs_prob: Mapped[float] = mapped_column(Float, default=0.0)
     away_cs_prob: Mapped[float] = mapped_column(Float, default=0.0)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     fixture: Mapped["Fixture"] = relationship("Fixture", back_populates="odds")
+
+
+class HistoricalFixtureOdds(Base):
+    """Closing pre-match odds for a past-season fixture (plan T6).
+
+    Season-keyed rather than FK'd to ``fixtures`` — past seasons have no fixture
+    rows (same reason T3b keyed FDR off the stat row). Read via the point-in-time
+    context on ``player_gw_stats`` (``team_id_season``/``opponent_team_id``/
+    ``was_home``). ``fetched_at`` is stamped ``deadline(season, gw) − ε`` (NOT
+    kickoff − ε, per finding C2) so the as-of ``< deadline`` filter keeps it."""
+
+    __tablename__ = "historical_fixture_odds"
+    __table_args__ = (
+        UniqueConstraint(
+            "season", "gameweek", "home_team_id", "away_team_id",
+            name="uq_hist_odds",
+        ),
+        Index("ix_hist_odds_season_gw", "season", "gameweek"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    season: Mapped[str] = mapped_column(String(7), nullable=False)
+    gameweek: Mapped[int] = mapped_column(Integer, nullable=False)
+    # That season's FPL team ids (match player_gw_stats.team_id_season).
+    home_team_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    away_team_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    home_win_prob: Mapped[float] = mapped_column(Float, default=0.0)
+    draw_prob: Mapped[float] = mapped_column(Float, default=0.0)
+    away_win_prob: Mapped[float] = mapped_column(Float, default=0.0)
+    over25_prob: Mapped[float] = mapped_column(Float, default=0.0)
+    btts_prob: Mapped[float] = mapped_column(Float, default=0.0)
+    home_cs_prob: Mapped[float] = mapped_column(Float, default=0.0)
+    away_cs_prob: Mapped[float] = mapped_column(Float, default=0.0)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
 class PlayerProjection(Base):

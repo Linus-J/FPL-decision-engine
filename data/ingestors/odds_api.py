@@ -3,12 +3,12 @@ import logging
 from datetime import datetime
 
 import aiohttp
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy import text
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from config.settings import settings
 from data.db import get_session
-from data.models import Fixture, FixtureOdds
+from data.models import FixtureOdds
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,26 @@ def _cs_from_h2h(home_win: float, draw: float, away_win: float) -> tuple[float, 
     return round(min(home_cs, 0.6), 3), round(min(away_cs, 0.6), 3)
 
 
+def _extract_over25(bookmakers: list[dict]) -> float:
+    """Implied P(over 2.5 goals) from the totals market, de-vigged against the
+    paired under. Returns 0.0 if the 2.5 line is not offered."""
+    for bm in bookmakers:
+        for market in bm.get("markets", []):
+            if market["key"] != "totals":
+                continue
+            over = under = None
+            for o in market.get("outcomes", []):
+                if abs(float(o.get("point", 0)) - 2.5) > 1e-9:
+                    continue
+                if o["name"].lower() == "over":
+                    over = _implied_prob(o["price"])
+                elif o["name"].lower() == "under":
+                    under = _implied_prob(o["price"])
+            if over and under:
+                return round(over / (over + under), 3)
+    return 0.0
+
+
 def _match_fixture(
     home_team_name: str,
     away_team_name: str,
@@ -129,34 +149,30 @@ async def ingest_odds() -> int:
                 logger.debug("No fixture match for %s vs %s", event.get("home_team"), event.get("away_team"))
                 continue
 
-            home_win, draw, away_win = _extract_h2h(event.get("bookmakers", []))
+            bookmakers = event.get("bookmakers", [])
+            home_win, draw, away_win = _extract_h2h(bookmakers)
             home_cs, away_cs = _cs_from_h2h(home_win, draw, away_win)
+            over25 = _extract_over25(bookmakers)
 
+            # Append-only (finding L4): one row per fetch, keyed
+            # (fixture_id, fetched_at). Never UPDATE — the as-of read
+            # (features.load_live_odds_asof) picks the latest ≤ deadline.
             stmt = sqlite_insert(FixtureOdds).values(
                 fixture_id=fixture_id,
                 home_win_prob=round(home_win, 3),
                 draw_prob=round(draw, 3),
                 away_win_prob=round(away_win, 3),
+                over25_prob=over25,
                 btts_prob=0.0,
                 home_cs_prob=home_cs,
                 away_cs_prob=away_cs,
                 fetched_at=datetime.utcnow(),
-            ).on_conflict_do_update(
-                index_elements=["fixture_id"],
-                set_={
-                    "home_win_prob": round(home_win, 3),
-                    "draw_prob": round(draw, 3),
-                    "away_win_prob": round(away_win, 3),
-                    "home_cs_prob": home_cs,
-                    "away_cs_prob": away_cs,
-                    "fetched_at": datetime.utcnow(),
-                },
-            )
+            ).on_conflict_do_nothing(index_elements=["fixture_id", "fetched_at"])
             db.execute(stmt)
             upserted += 1
 
         db.commit()
-        logger.info("Odds ingest complete: %d fixtures updated", upserted)
+        logger.info("Odds ingest complete: %d fixture snapshots appended", upserted)
         return upserted
     finally:
         db.close()

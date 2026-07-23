@@ -190,6 +190,17 @@ def add_enrichment_features(df: pd.DataFrame, enrichment: pd.DataFrame) -> pd.Da
 
 
 def load_fixture_odds(season: str | None = None) -> pd.DataFrame:
+    """Per player-GW odds features (my/opp clean-sheet + BTTS prob) for the
+    historical training/backtest path.
+
+    Sourced from ``historical_fixture_odds`` via the point-in-time context on
+    the stat row (``team_id_season``/``opponent_team_id``/``was_home``) — NOT
+    the old ``fixtures``-table join, which used the player's *current* club and
+    latest odds against historical rows (Phase-1 finding L4). The odds row is
+    matched on ``(season, gameweek)`` and the season-correct home/away team pair,
+    and only counts when ``fetched_at < deadline(season, gw)`` — proving the
+    closing odds were stamped at the deadline, not kickoff (finding C2). Missing
+    odds default to 0.2 CS / 0.5 BTTS via ``add_odds_features``."""
     db = get_session()
     try:
         season_filter = "AND s.season = :season" if season else ""
@@ -199,24 +210,56 @@ def load_fixture_odds(season: str | None = None) -> pd.DataFrame:
                 s.player_id,
                 s.gameweek,
                 s.season,
-                CASE
-                    WHEN f.team_h_id = p.team_id THEN COALESCE(fo.home_cs_prob, 0.2)
-                    ELSE COALESCE(fo.away_cs_prob, 0.2)
-                END AS my_cs_prob,
-                CASE
-                    WHEN f.team_h_id = p.team_id THEN COALESCE(fo.away_cs_prob, 0.2)
-                    ELSE COALESCE(fo.home_cs_prob, 0.2)
-                END AS opp_cs_prob,
-                COALESCE(fo.btts_prob, 0.5) AS btts_prob
+                CASE WHEN s.was_home THEN COALESCE(o.home_cs_prob, 0.2)
+                     ELSE COALESCE(o.away_cs_prob, 0.2) END AS my_cs_prob,
+                CASE WHEN s.was_home THEN COALESCE(o.away_cs_prob, 0.2)
+                     ELSE COALESCE(o.home_cs_prob, 0.2) END AS opp_cs_prob,
+                COALESCE(o.btts_prob, 0.5) AS btts_prob
             FROM player_gw_stats s
-            JOIN players p ON p.id = s.player_id
-            JOIN fixtures f
-                ON f.gameweek = s.gameweek
-                AND (f.team_h_id = p.team_id OR f.team_a_id = p.team_id)
-            LEFT JOIN fixture_odds fo ON fo.fixture_id = f.id
-            {season_filter}
+            LEFT JOIN gameweeks g ON g.id = s.gameweek AND g.season = s.season
+            LEFT JOIN historical_fixture_odds o
+                ON o.season = s.season AND o.gameweek = s.gameweek
+                AND (
+                    (s.was_home = 1 AND o.home_team_id = s.team_id_season
+                        AND o.away_team_id = s.opponent_team_id)
+                    OR (s.was_home = 0 AND o.away_team_id = s.team_id_season
+                        AND o.home_team_id = s.opponent_team_id)
+                )
+                AND (g.deadline_time IS NULL OR o.fetched_at < g.deadline_time)
+            WHERE 1 = 1 {season_filter}
         """)
         return pd.read_sql(query, db.bind, params=params)
+    finally:
+        db.close()
+
+
+def load_live_odds_asof(season: str, gameweek: int) -> pd.DataFrame:
+    """As-of read of the append-only ``fixture_odds`` for the LIVE projection
+    path: the latest snapshot per fixture with ``fetched_at <= deadline`` of the
+    target GW (Phase-1 findings L4/C2). Multiple fetches accumulate per fixture;
+    this excludes any stamped at/after the deadline. Keyed on ``(season, gw)``.
+    Returns one row per fixture with home/away CS + BTTS probabilities."""
+    db = get_session()
+    try:
+        query = text("""
+            SELECT
+                f.id AS fixture_id,
+                f.team_h_id,
+                f.team_a_id,
+                fo.home_cs_prob,
+                fo.away_cs_prob,
+                fo.btts_prob
+            FROM fixtures f
+            JOIN gameweeks g ON g.id = :gw AND g.season = :season
+            JOIN fixture_odds fo ON fo.fixture_id = f.id
+                AND fo.fetched_at <= g.deadline_time
+                AND fo.fetched_at = (
+                    SELECT MAX(fo2.fetched_at) FROM fixture_odds fo2
+                    WHERE fo2.fixture_id = f.id AND fo2.fetched_at <= g.deadline_time
+                )
+            WHERE f.season = :season AND f.gameweek = :gw
+        """)
+        return pd.read_sql(query, db.bind, params={"season": season, "gw": gameweek})
     finally:
         db.close()
 

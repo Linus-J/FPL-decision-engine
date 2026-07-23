@@ -180,7 +180,21 @@ Leakage-free reads + REAL pass/fail exit gate (REVISED; fixes L1–L3, M4)
 
 ---
 
-## T6 — Odds history as-of, stamped ≤ deadline (REVISED; fixes L4, C2)
+## T6 — Odds history as-of, stamped ≤ deadline ✅ DONE (fixes L4, C2)
+
+**Real gate (live-data DB `fpl_bot_v2.db`):** backfilled football-data.co.uk closing odds for all 5 seasons — **380/380 matches mapped per season, 0 skipped** (team-name alias + fuzzy match resolved every club). Post-filter non-default odds coverage on the backtest window (GW6–38): **100%** for 2023-24 (12,943 rows), 2024-25 (16,251), 2025-26 (25,750) — ≫ the ≥95% gate. Spot-checked: de-vigged 1X2 sums to 1.0, home-win mean 0.449 (realistic PL home edge), probabilities vary per fixture — a genuine join on season-correct team pairs, not a blanket match.
+
+**Delivered — the cleaner season-keyed design (mirrors T3b, avoids resurrecting historical `fixtures`):**
+- `data/models.py`: `FixtureOdds` → **append-only** `UNIQUE(fixture_id, fetched_at)` (+ `over25_prob`); NEW `HistoricalFixtureOdds` keyed `(season, gameweek, home_team_id, away_team_id)` with `fetched_at = deadline − ε`.
+- `scripts/backfill_odds.py` (NEW): football-data.co.uk E0.csv per season → closing 1X2 (Pinnacle→Bet365 priority) + O/U2.5 → de-vigged probs + CS proxy; team-name→FPL-id (alias map + fuzzy); date→GW via the T3a deadlines in the DB; stamped at deadline−ε (C2). Pure parse/map helpers factored out.
+- `projection/features.py`: `load_fixture_odds` **rewritten** — reads `historical_fixture_odds` via the point-in-time stat-row context (`team_id_season`/`opponent_team_id`/`was_home`), `(season, gameweek)`-keyed, only when `fetched_at < deadline` (kills the L4 fixtures-table/current-club/latest-odds join). NEW `load_live_odds_asof(season, gw)` — latest `fixture_odds` snapshot `<= deadline` per fixture for the live path.
+- `data/ingestors/odds_api.py`: live write now **append-only** (`on_conflict_do_nothing` on `(fixture_id, fetched_at)`) + Over-2.5 extraction. Model training call-sites unchanged (`load_fixture_odds()` output contract preserved).
+
+**Gate:** `tests/test_odds_asof.py` (11) — pure helpers (de-vig, name/date mapping, GW assignment, row build) + DB reads: historical home/away CS via context, **C2 canary** (odds stamped after the deadline are excluded → default), live as-of picks latest-before-deadline across 3 append-only snapshots. Suite **86/86**; new files ruff-clean (scripts/ carries the same `E402` sys.path-bootstrap pattern as `backfill_history.py`).
+
+*Note: the pre-existing `fixture_odds` table in `fpl_bot_v2.db` keeps its old schema (SQLite won't ALTER on `create_all`); the append-only schema applies on the next from-scratch spine rebuild. Only the live path uses it — the historical gate reads `historical_fixture_odds`, created fresh. BTTS uses an over-2.5 proxy (no BTTS column in football-data E0) — documented.*
+
+### T6 (original spec retained below for reference)
 
 **Scope**
 - `data/models.py::FixtureOdds`: `fixture_id UNIQUE` → `UNIQUE(fixture_id, fetched_at)` (append-only). `features.py::load_fixture_odds` reads latest `fetched_at <= deadline(season, gw)`; the JOIN keys on `(season, gameweek)` (T2.5).
