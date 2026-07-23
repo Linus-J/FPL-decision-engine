@@ -169,7 +169,17 @@ Leakage-free reads + REAL pass/fail exit gate (REVISED; fixes L1–L3, M4)
 
 ---
 
-## T7 — GW1 cold-start harness (NEW; fixes C3) — the actual mid-Aug deliverable
+## T7 — GW1 cold-start harness ✅ DONE (fixes C3) — the actual mid-Aug deliverable
+
+**Delivered (`projection/cold_start.py`):** prior-season→new-season bridge (aggregates `player_gw_stats[season-1]` per player, carried via the code-mapped ids), `project_cold_start` (xPts + start-prob per player, tagged `prior_season` or `position_price_prior` — never a silent 0.0), `apply_departure_gate` (§6.5 confirmed tier: drop status 'u'), and `build_initial_squad(season)` wiring it into the squad ILP.
+
+**Real gate (built against the live-data DB):** the actual **2026-27 GW1 initial 15** from 2025-26 priors → 15 players, exactly £100.0m, valid shape (2/5/5/3), **zero silent-0.0 slots** (11 prior-season + 4 position/price enablers), **no confirmed leaver**. Football-sensible (Haaland, B.Fernandes, Gabriel, Raya, Semenyo + budget fillers).
+
+**Gate:** `tests/test_cold_start.py` (5, temp DB) — prior aggregation, source tagging + no-silent-0.0 contract, departure gate, price-prior monotonicity. Suite 60/60.
+
+*(The richer promoted-team/new-signing prior model is Phase-2 work; T7 sets the harness, the prior-season carryover, and the contract Phase 2 optimises against.)*
+
+### T7 (original spec)
 
 **Problem.** Every gate above runs `--start-gw 6` (5 GWs of current-season data). The real deliverable is the **GW1 squad with zero current-season rows**: `history = all_stats[gameweek < 1]` is empty (models untrainable), snapshots empty, and promoted-team/new-signing players have no history → they collapse to `sp=0.5, xp=0.0` defaults.
 
