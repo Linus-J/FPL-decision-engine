@@ -150,11 +150,14 @@ def aggregate_xg_rows(
     agg: dict[tuple[int, int], dict] = {}
     for player_id, gw, fields in per_match:
         key = (player_id, gw)
-        cur = agg.setdefault(key, {"xg": 0.0, "xa": 0.0, "npxg": 0.0, "shots": 0})
+        cur = agg.setdefault(
+            key, {"xg": 0.0, "xa": 0.0, "npxg": 0.0, "shots": 0, "key_passes": 0}
+        )
         cur["xg"] += fields.get("xg", 0.0)
         cur["xa"] += fields.get("xa", 0.0)
         cur["npxg"] += fields.get("npxg", 0.0)
         cur["shots"] += fields.get("shots", 0)
+        cur["key_passes"] += fields.get("key_passes", 0)
     for cur in agg.values():
         cur["xg"] = round(cur["xg"], 4)
         cur["xa"] = round(cur["xa"], 4)
