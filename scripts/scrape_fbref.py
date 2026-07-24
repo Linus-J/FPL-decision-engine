@@ -25,6 +25,7 @@ idempotent on (player_id, season, game_id).
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -42,10 +43,17 @@ DEFAULT_SEASONS = ["2025-26"]
 
 
 def main(seasons: list[str]) -> None:
+    # Optional browser overrides (Chromium is auto-detected otherwise):
+    #   FBREF_BROWSER=/usr/bin/chromium  — explicit browser path
+    #   FBREF_HEADED=1                   — run headed (often clears Cloudflare)
+    path_to_browser = os.environ.get("FBREF_BROWSER") or None
+    headless = os.environ.get("FBREF_HEADED", "") == ""
     init_db()
     for season in seasons:
-        logger.info("=== FBref scrape: %s ===", season)
-        written, unmatched = ingest_fbref_season(season)
+        logger.info("=== FBref scrape: %s (headless=%s) ===", season, headless)
+        written, unmatched = ingest_fbref_season(
+            season, path_to_browser=path_to_browser, headless=headless
+        )
         logger.info("%s: %d event rows written, %d players unmatched", season, written, unmatched)
 
         db = get_session()

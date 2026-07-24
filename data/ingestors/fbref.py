@@ -173,12 +173,17 @@ def ingest_fbref_season(  # pragma: no cover - live network + browser only
     season: str,
     *,
     no_cache: bool = False,
+    path_to_browser: str | None = None,
+    headless: bool = True,
 ) -> tuple[int, int]:
     """Scrape one PL season's per-match player events into player_match_events.
 
-    Requires ``soccerdata`` + a browser (see module docstring). Returns
-    ``(rows_written, players_unmatched)``. UNTESTED against a live browser in
-    this environment — the pure mappers above carry the tested logic.
+    Requires ``soccerdata`` + a Chromium/Chrome browser (FBref's reader drives
+    SeleniumBase in undetected-chromedriver mode — Chrome-only, no Firefox).
+    ``path_to_browser`` overrides auto-detection (e.g. ``/usr/bin/chromium``);
+    ``headless=False`` runs headed, which often clears Cloudflare when headless
+    is blocked. Returns ``(rows_written, players_unmatched)``. UNTESTED against a
+    live browser here — the pure mappers above carry the tested logic.
     """
     try:
         import soccerdata as sd
@@ -196,7 +201,11 @@ def ingest_fbref_season(  # pragma: no cover - live network + browser only
     if not sd_season:
         raise ValueError(f"No FBref season mapping for {season!r}")
 
-    fbref = sd.FBref(leagues=FBREF_LEAGUE, seasons=sd_season, no_cache=no_cache)
+    fbref_kwargs: dict = {"leagues": FBREF_LEAGUE, "seasons": sd_season,
+                          "no_cache": no_cache, "headless": headless}
+    if path_to_browser:
+        fbref_kwargs["path_to_browser"] = path_to_browser
+    fbref = sd.FBref(**fbref_kwargs)
     schedule = fbref.read_schedule()
     summary = _flatten_columns(fbref.read_player_match_stats(stat_type="summary"))
     keepers = _flatten_columns(fbref.read_player_match_stats(stat_type="keepers"))
