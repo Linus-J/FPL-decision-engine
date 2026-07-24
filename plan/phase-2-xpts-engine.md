@@ -96,8 +96,10 @@ Point-in-time SAFE inputs available: snapshots (T3), real FDR historical (T3b), 
 - **Gate:** `tests/test_defcon.py` (4) — thresholds by position, P(hit) monotonic, GK/no-minutes → 0, sample mean == expectation. Suite 140/140.
 
 ### P8 — Bonus component (Monte-Carlo, reduced-BPS)  *(C3; needs events; depends on P1,P3–P7)*
-- MC the 26/27 BPS formula (`bps_sim`, T5a) over **the events actually modelled** (appearance from P1, goals P3, assists P4, CS P5, saves P6, CBIRT P7) — a **documented reduced-BPS approximation**, since key-passes/big-chances/crosses/dribbles/pass-completion have no component. Measure the reduced-vs-full bias against `recomputed_bonus` (T5b) and record it.
-- **Gate:** predicted vs realised (26/27-recomputed) bonus within the documented tolerance; top-3-per-fixture ranking sane for attacking mids despite the reduced inputs.
+### P8 — Bonus component (Monte-Carlo, reduced-BPS)  ✅ DONE (`projection/bonus.py`)
+- `sample_fixture_bonus` = 26/27 BPS sim (`bps_sim`, T5a) over each fixture's sampled events → 3/2/1 (P10 calls it per scenario). `MODELLED_BPS_FIELDS` = the subset our components/data supply (appearance/goals/assists/CS/saves/CBIRT + key-passes from Understat + cards); `reduce_to_modelled` zeros the rest.
+- **Reduced-BPS bias (gate):** on real 25/26 events (380 fixtures), reduced vs full recompute = **96.3% slot-exact, 0.91 top-3 recipient Jaccard**. **⚠️ honest caveat:** our `player_match_events` itself lacks the Opta-only inputs (big-chances/crosses — FBref summary never had them), so "full" here is already limited; the bonus component's true error vs FPL's real awarded bonus is bounded by the event data, not just the modelling. Acceptable v1; a fuller event feed would tighten it.
+- **Gate:** `tests/test_bonus_component.py` (4) + the 380-fixture agreement run. Suite 144/144.
 
 ### P9 — Cards / other — static priors. Low effort.
 
