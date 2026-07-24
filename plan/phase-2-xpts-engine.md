@@ -38,9 +38,11 @@ Point-in-time SAFE inputs available: snapshots (T3), real FDR historical (T3b), 
 
 ---
 
-## ⚠️ Sequencing gate: FBref event scrape comes first (decision 2)
+## Event data status (decision 2)
 
-`player_match_events` (→ `recomputed_bonus`) is needed by **P-RS** (the exit-gate scoring basis), **P7** (DefCon), and **P8** (Bonus). It requires the deferred FBref scrape (soccerdata + browser). **Run the scrape once in a browser-capable env before P-RS/P7/P8.** Everything else (P0, P1, P2, P3–P6, P9, P-XI, P-FIX, P-COV structure, P11, P12) proceeds without it. Fallback only if no browser env: interim reduced scoring (old-rules bonus + a documented `bonus_2627 − bonus_oldrules` correction band) — but then the 40.2 re-baseline must use the *same* interim basis.
+**PL 2025-26 scrape DONE** (2026-07-24, headed Chromium via `scripts/scrape_fbref.py`): `player_match_events` = 11,182 rows across all 380 matches; `recomputed_bonus` populated (11,182). So **P-RS** (exit-gate scoring basis), **P7** (DefCon), **P8** (Bonus) are unblocked. Earlier PL seasons (24/25…) can be scraped the same way if more training history is wanted.
+
+**P11 needs additional scrapes** — ENG-Championship + top-5, 2025-26 season (the incomers' prior league). Same headed-Chromium + cache-resume workflow (Cloudflare re-challenges every few hundred requests; re-run to resume from the on-disk page cache).
 
 ---
 
@@ -105,9 +107,16 @@ Point-in-time SAFE inputs available: snapshots (T3), real FDR historical (T3b), 
 - Sum component samples via P-COV joint scheme → per-player xPts distribution (`xpts_mean`, `xpts_var`, samples) + team covariance for Phase 3. Delete the monolithic regressor.
 - **Gate:** the **≥57 pts/GW** exit gate runs here on the P-XI harness with P-RS scoring; MC seeded.
 
-### P11 — Promoted-team / new-signing prior model  *(Phase-1 T7 deferred)*
-- Richer cold-start prior (position + price + prior-league/prior-season proxy) feeding the T7 harness for GW1 + January incomers.
-- **Gate:** promoted-team players get position/price-sane priors, not the flat fallback.
+### P11 — Promoted-team / new-signing prior model  *(Phase-1 T7 deferred; the biggest alpha source)*
+The 102 brand-new 26/27 codes (foreign signings + promoted-team players) have **no PL history**, so T7's cold-start collapses them to a weak position+price prior — i.e. the most-mispriced group gets the worst projection. P11 gives them a real prior from their **prior-league** 2025-26 stats.
+
+- **Prior-league ingest (FBref, same infra as T5b):** scope = **ENG-Championship + top-5** (La Liga, Serie A, Bundesliga, Ligue 1). Top-5 are in soccerdata's default league dict; Championship needs a one-line `~/soccerdata/config/league_dict.json` entry. Season = 2025-26 (the just-finished season the incomers played). Same headed-Chromium + cache-resume workflow (`scripts/scrape_fbref.py`, generalise it to take a league). Store into `player_match_events`/an analogous prior-league stats table keyed by `code`/name.
+- **Cross-league translation factors** (the hard part — where alpha vs noise is decided): per-league attacking-output scalars mapping prior-league per-90 (npxG, xA, minutes) to PL-equivalent (Championship→PL ≈ 0.6–0.7, top-5 higher/nearer 1.0). Config'd in `strategy.py` (season-tunable), calibrated against players who actually made the jump (players with both a prior-league season and a subsequent PL season in our data — a natural hold-out).
+- **Identity mapping:** fuzzy-match prior-league FBref names → the 26/27 FPL entries (the 102 new codes), reusing/extending the fbref adapter's name matcher; hand-alias the ambiguous ones.
+- **Promoted-team fixture context:** promoted clubs' PL fixtures are harder than their Championship ones — the prior must not over-extrapolate Championship output into PL returns (the translation factor handles magnitude; FDR handles opponent).
+- Feeds the T7 initial-15 harness (GW1) and the January-incomer re-plan.
+
+- **Gate:** (i) every one of the 102 new players gets a translated prior-league projection, not the flat position/price fallback; (ii) translation factors calibrated on the made-the-jump hold-out (predicted vs realised first-PL-season output, by source league); (iii) a known promoted-team standout from a prior season is ranked sensibly above a squad filler (sanity check).
 
 ### P12 — Per-team DGW/BGW  *(D6)*
 - Per-team fixture counts per GW; `DGWStrategy` multipliers per-team.
