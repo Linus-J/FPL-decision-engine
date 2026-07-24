@@ -492,6 +492,146 @@ def run_backtest(
     return df
 
 
+def _merge_squad_dynamic(
+    squad_static: pd.DataFrame, players: pd.DataFrame, squad_ids: list[int]
+) -> pd.DataFrame:
+    """A fixed squad's static identity (id/position/team_id/web_name) + this
+    GW's dynamic price/start-prob from the player snapshot. Only the dynamic
+    columns are merged in — merging the full snapshot would duplicate
+    position/team_id/web_name as pandas `_x`/`_y` suffixes (both frames carry
+    them), silently breaking any code that reads the bare column name."""
+    dynamic_cols = ["id", "now_cost", "start_probability"]
+    merged = squad_static.merge(
+        players.loc[players["id"].isin(squad_ids), dynamic_cols], on="id", how="left",
+    )
+    merged["now_cost"] = merged["now_cost"].fillna(0.0)
+    merged["start_probability"] = merged["start_probability"].fillna(0.5)
+    return merged
+
+
+def run_naive_xi_backtest(
+    season: str = "2024-25",
+    start_gw: int = 6,
+    end_gw: int = 38,
+    horizon: int | None = None,
+    budget: float = SQUAD.budget_total,
+    score_2627: bool = False,
+) -> pd.DataFrame:
+    """P-XI: the Phase-2 EXIT-GATE harness (finding M2). Precisely: a **fixed**
+    initial 15 built ONCE at ``start_gw`` (via ``optimise_squad`` — the same
+    mechanism the Phase-1 baseline used, so re-running this with
+    ``score_2627=False`` reproduces 40.2 like-for-like), then each GW just
+    re-optimises the legal starting XI + captain from that fixed squad
+    (``optimise_starting_xi`` — ILP-optimal: captain = the highest-projected
+    starter, since doubling any other starter's xPts cannot beat that).
+    **No transfers, no chips, no hits** — this isolates the projection quality
+    from the decision layer (Phase 3).
+
+    No auto-substitutions: a starting pick that ends up not playing scores 0,
+    same as ``run_backtest``'s ``_score_squad`` — kept identical to the
+    baseline's scoring mechanism, not a de-scoped shortcut, so the two numbers
+    stay comparable. DGW handling is whatever ``player_gw_stats``/projections
+    already carry (P12 refines the DGW xPts multiplier upstream).
+
+    ``score_2627=True`` scores the actual side under 26/27 rules (P-RS) — the
+    exit-gate call. ``score_2627=False`` reproduces the Phase-1 baseline.
+    """
+    horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
+    all_stats = _load_all_stats(season)
+    available_gws = sorted(all_stats["gameweek"].unique())
+    opp_ctx = _opponent_context(season, all_stats)
+
+    if score_2627:
+        db = get_session()
+        try:
+            bonus_map = load_bonus_2627_map(db, season)
+        finally:
+            db.close()
+        all_stats = rescore_actuals(all_stats, bonus_map)
+        logger.info(
+            "P-XI: 26/27 re-score coverage %.1f%% of bonus-earning player-GWs",
+            100 * rescore_coverage_relevant(all_stats, bonus_map),
+        )
+
+    squad_ids: list[int] = []
+    squad_static: pd.DataFrame | None = None  # position/team_id — fixed once built
+    results = []
+
+    for gw in available_gws:
+        if gw < start_gw or gw > end_gw:
+            continue
+
+        history = all_stats[all_stats["gameweek"] < gw].copy()
+        if history.empty or len(history) < 50 or history["minutes"].nunique() < 2:
+            logger.info("GW%d: insufficient history, skipping", gw)
+            continue
+
+        players = _load_players_snapshot(season, gw)
+        if players.empty:
+            logger.warning("GW%d: no player snapshot, skipping", gw)
+            continue
+
+        minutes_model = train_minutes(df_override=history, save=False, fast=True)
+        points_model = train_points(df_override=history, save=False, fast=True)
+        projections = _build_gw_projections(
+            history=history, players=players,
+            minutes_model=minutes_model, points_model=points_model,
+            target_gw=gw, horizon=horizon, opp_ctx=opp_ctx,
+        )
+        if projections.empty:
+            logger.warning("GW%d: no projections, skipping", gw)
+            continue
+
+        players = players.merge(
+            projections[projections["gameweek"] == gw][["player_id", "start_probability"]],
+            left_on="id", right_on="player_id", how="left",
+        ).drop(columns=["player_id"], errors="ignore")
+        players["start_probability"] = players["start_probability"].fillna(0.5)
+
+        if not squad_ids:
+            try:
+                solution = optimise_squad(projections=projections, players=players,
+                                          budget=budget, horizon=horizon)
+            except Exception as e:
+                logger.error("GW%d: initial squad build failed — %s", gw, e)
+                continue
+            squad_ids = solution.squad["id"].tolist()
+            squad_static = solution.squad[["id", "position", "team_id", "web_name"]].copy()
+            logger.info("GW%d: fixed initial 15 built (£%.1fm)", gw, solution.total_cost)
+
+        squad_df = _merge_squad_dynamic(squad_static, players, squad_ids)
+
+        try:
+            xi_solution = optimise_starting_xi(squad_df, projections, gw)
+        except RuntimeError as e:
+            logger.error("GW%d: starting XI infeasible — %s", gw, e)
+            continue
+
+        starting_ids = xi_solution.starting_xi["id"].tolist()
+        actual = _actual_gw_points(all_stats, gw, score_2627=score_2627)
+        actual_pts = _score_squad(squad_ids, starting_ids, xi_solution.captain_id, actual)
+
+        captain_name = squad_df.loc[squad_df["id"] == xi_solution.captain_id, "web_name"]
+        results.append({
+            "gameweek": gw,
+            "predicted_xpts": round(xi_solution.total_xpts, 2),
+            "actual_pts": actual_pts,
+            "captain": captain_name.values[0] if len(captain_name) else "?",
+        })
+        logger.info("GW%d: predicted=%.1f actual=%d captain=%s",
+                    gw, xi_solution.total_xpts, actual_pts,
+                    captain_name.values[0] if len(captain_name) else "?")
+
+    df = pd.DataFrame(results)
+    if not df.empty:
+        logger.info(
+            "Naive-XI backtest complete: GW%d–%d | avg actual=%.1f | avg xPts=%.1f",
+            df["gameweek"].min(), df["gameweek"].max(),
+            df["actual_pts"].mean(), df["predicted_xpts"].mean(),
+        )
+    return df
+
+
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="FPL backtest")
     p.add_argument("--season", default="2024-25")
@@ -503,12 +643,17 @@ def _parse_args() -> argparse.Namespace:
         "--score-2627", action="store_true",
         help="Score actuals under 26/27 rules (P-RS): swap in recomputed_bonus.bonus_2627",
     )
+    p.add_argument(
+        "--naive-xi", action="store_true",
+        help="P-XI exit-gate harness: fixed initial 15, no transfers/chips (run_naive_xi_backtest)",
+    )
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    results = run_backtest(
+    runner = run_naive_xi_backtest if args.naive_xi else run_backtest
+    results = runner(
         season=args.season,
         start_gw=args.start_gw,
         end_gw=args.end_gw,
