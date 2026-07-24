@@ -425,12 +425,41 @@ class PlayerProjection(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.id"), nullable=False)
     gameweek: Mapped[int] = mapped_column(Integer, nullable=False)
+    # xpts kept as the back-compatible alias of xpts_mean during the Phase-2
+    # migration; xpts_mean/xpts_var are the distributional contract (P0), summed
+    # from the component Monte-Carlo draws in projection_samples (P10).
     xpts: Mapped[float] = mapped_column(Float, default=0.0)
+    xpts_mean: Mapped[float] = mapped_column(Float, default=0.0)
+    xpts_var: Mapped[float] = mapped_column(Float, default=0.0)
     start_probability: Mapped[float] = mapped_column(Float, default=0.0)
     cs_probability: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     player: Mapped["Player"] = relationship("Player", back_populates="projections")
+
+
+class ProjectionSample(Base):
+    """One Monte-Carlo draw of a player's GW xPts (Phase-2 P0 output contract;
+    populated by the joint sampler in P10). ``scenario_id`` is shared across all
+    players drawn in the SAME scenario, so teammate covariance is recoverable
+    (P-COV) — the reason samples are stored rather than just mean/var."""
+
+    __tablename__ = "projection_samples"
+    __table_args__ = (
+        UniqueConstraint(
+            "player_id", "gameweek", "season", "scenario_id", "created_at",
+            name="uq_projection_sample",
+        ),
+        Index("ix_projection_sample_run", "created_at", "scenario_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.id"), nullable=False)
+    gameweek: Mapped[int] = mapped_column(Integer, nullable=False)
+    season: Mapped[str] = mapped_column(String(7), default="")
+    scenario_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    xpts: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class PlayerSetPieceRole(Base):

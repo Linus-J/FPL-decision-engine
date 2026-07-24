@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
@@ -21,9 +20,11 @@ from data.db import get_session
 from optimiser.chips import Chip, recommend_chip
 from optimiser.squad import optimise_squad, optimise_starting_xi
 from optimiser.transfers import evaluate_transfers
-from projection.minutes_model import train as train_minutes, predict_batch as minutes_batch
-from projection.points_model import train as train_points, predict_batch as points_batch
-
+from projection.fixture_adjust import fixture_multiplier
+from projection.minutes_model import predict_batch as minutes_batch
+from projection.minutes_model import train as train_minutes
+from projection.points_model import predict_batch as points_batch
+from projection.points_model import train as train_points
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ def _load_all_stats(season: str) -> pd.DataFrame:
                 s.clean_sheets, s.goals_conceded, s.saves,
                 s.yellow_cards, s.red_cards, s.bonus, s.bps,
                 s.value AS now_cost,
+                s.team_id_season, s.opponent_team_id, s.was_home,
                 p.position, p.team_id,
                 COALESCE(ps.ict_index, 0) AS ict_index,
                 COALESCE(ps.influence, 0) AS influence,
@@ -115,6 +117,37 @@ def _actual_gw_points(all_stats: pd.DataFrame, gw: int) -> dict[int, int]:
     return dict(zip(subset["player_id"], subset["total_points"]))
 
 
+def _opponent_context(
+    season: str, all_stats: pd.DataFrame
+) -> dict[tuple[int, int], tuple[float | None, bool | None]]:
+    """Per (player_id, gameweek) → (opponent defence strength, was_home) for the
+    season, from the point-in-time fixture context on the stat row (T3b) joined
+    to TeamSeasonStrength. Feeds the per-GW fixture multiplier. The opponent
+    defends away when the player is home, and vice-versa."""
+    db = get_session()
+    try:
+        rows = db.execute(
+            text("""SELECT team_id, strength_defence_home, strength_defence_away
+                    FROM team_season_strength WHERE season = :s"""),
+            {"s": season},
+        ).fetchall()
+    finally:
+        db.close()
+    defence = {int(r[0]): (r[1], r[2]) for r in rows}
+
+    ctx: dict[tuple[int, int], tuple[float | None, bool | None]] = {}
+    for r in all_stats.itertuples():
+        opp = getattr(r, "opponent_team_id", None)
+        if opp is None or pd.isna(opp):
+            continue
+        was_home = getattr(r, "was_home", None)
+        was_home = None if (was_home is None or pd.isna(was_home)) else bool(was_home)
+        def_home, def_away = defence.get(int(opp), (None, None))
+        opp_def = def_away if was_home else def_home
+        ctx[(int(r.player_id), int(r.gameweek))] = (opp_def, was_home)
+    return ctx
+
+
 def _build_gw_projections(
     history: pd.DataFrame,
     players: pd.DataFrame,
@@ -122,10 +155,12 @@ def _build_gw_projections(
     points_model,
     target_gw: int,
     horizon: int,
+    opp_ctx: dict[tuple[int, int], tuple[float | None, bool | None]] | None = None,
 ) -> pd.DataFrame:
     if history.empty:
         return pd.DataFrame()
 
+    opp_ctx = opp_ctx or {}
     sp_by_player = minutes_batch(history, minutes_model)
     xp_by_player = points_batch(history, points_model)
 
@@ -133,16 +168,24 @@ def _build_gw_projections(
     for _, player in players.iterrows():
         pid = int(player["id"])
         if player.get("status") in ("i", "u", "s"):
-            sp, xp = 0.0, 0.0
+            sp, base_xp = 0.0, 0.0
         else:
             sp = float(sp_by_player.get(pid, 0.5))
-            xp = float(xp_by_player.get(pid, 0.0))
+            base_xp = float(xp_by_player.get(pid, 0.0))
 
+        # Per-GW fixture conditioning (fixes D3): each horizon GW is scaled by
+        # its own opponent, so projections differ by fixture instead of the base
+        # xp being broadcast flat across the horizon.
         for gw_offset in range(horizon):
+            gw = target_gw + gw_offset
+            opp_def, was_home = opp_ctx.get((pid, gw), (None, None))
+            mult = fixture_multiplier(opp_def, was_home)
+            xp_gw = max(0.0, base_xp * mult)
             rows.append({
                 "player_id": pid,
-                "gameweek": target_gw + gw_offset,
-                "xpts": max(0.0, xp),
+                "gameweek": gw,
+                "xpts": xp_gw,
+                "xpts_mean": xp_gw,
                 "start_probability": sp,
             })
 
@@ -180,6 +223,7 @@ def run_backtest(
     horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
     all_stats = _load_all_stats(season)
     available_gws = sorted(all_stats["gameweek"].unique())
+    opp_ctx = _opponent_context(season, all_stats)
 
     results = []
     current_squad_ids: list[int] = []
@@ -220,6 +264,7 @@ def run_backtest(
             points_model=points_model,
             target_gw=gw,
             horizon=horizon,
+            opp_ctx=opp_ctx,
         )
 
         if projections.empty:
