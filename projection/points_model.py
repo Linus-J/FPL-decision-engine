@@ -20,6 +20,7 @@ from projection.features import (
     add_enrichment_features,
     add_fdr_features,
     add_odds_features,
+    assert_rate_only,
     load_fixture_difficulty,
     load_fixture_odds,
     load_player_enrichment,
@@ -202,13 +203,18 @@ FEATURE_COLS = [
     "avg_saves_3gw", "avg_saves_5gw",
     "avg_bonus_3gw", "avg_bonus_5gw",
     "avg_gc_3gw", "avg_gc_5gw",
-    "ict_index", "influence", "creativity", "threat",
-    "form", "now_cost", "selected_by_percent",
+    # D4 (P2): cumulative ict_index/influence/creativity/threat + the form proxy
+    # retired — the rolling avg_* rates above carry the signal as-of and
+    # train/serve-consistently. now_cost/selected_by_percent are point-in-time
+    # state, not season-cumulative volume, so they stay.
+    "now_cost", "selected_by_percent",
     "pos_GKP", "pos_DEF", "pos_MID", "pos_FWD",
     *FDR_FEATURE_COLS,
     *ODDS_FEATURE_COLS,
     *ENRICHMENT_FEATURE_COLS,
 ]
+
+assert_rate_only(FEATURE_COLS)
 
 
 def train(save: bool = True, df_override: pd.DataFrame | None = None, fast: bool = False) -> Pipeline:

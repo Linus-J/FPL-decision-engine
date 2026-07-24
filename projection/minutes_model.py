@@ -2,7 +2,6 @@ import logging
 import pickle
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import GradientBoostingClassifier
@@ -12,7 +11,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy import text
 
-from config.strategy import OPTIMISER
 from data.db import get_session
 from projection.features import (
     ENRICHMENT_FEATURE_COLS,
@@ -21,6 +19,7 @@ from projection.features import (
     add_enrichment_features,
     add_fdr_features,
     add_odds_features,
+    assert_rate_only,
     load_fixture_difficulty,
     load_fixture_odds,
     load_player_enrichment,
@@ -145,8 +144,9 @@ FEATURE_COLS = [
     "season_avg_minutes",
     "now_cost",
     "selected_by_percent",
-    "form",
-    "ict_index",
+    # D4 (P2): cumulative ict_index + form proxy retired (rolling avg_* rates
+    # carry the signal). is_available/cop_next stay for now — availability
+    # becomes a deterministic override in P1, not a learned feature.
     "is_available",
     "cop_next",
     "pos_GKP",
@@ -157,6 +157,8 @@ FEATURE_COLS = [
     *ODDS_FEATURE_COLS,
     *ENRICHMENT_FEATURE_COLS,
 ]
+
+assert_rate_only(FEATURE_COLS)
 
 
 def train(save: bool = True, df_override: pd.DataFrame | None = None, fast: bool = False) -> Pipeline:

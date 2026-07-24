@@ -57,9 +57,11 @@ Point-in-time SAFE inputs available: snapshots (T3), real FDR historical (T3b), 
 - Build the forward-fixture FDR path from the season-aware `fixtures` table for the **live 2026-27** horizon (the backtest gets future opponents from the player's own later `player_gw_stats` rows; the live path currently has none). Add season filter to `pipeline._get_team_fixture_count` (`pipeline.py:150`).
 - **Gate:** a live GW1 projection conditions each horizon GW on the real scheduled opponent, not a default.
 
-### P2 — Rate-feature refactor  *(D4)*  — precondition for all component models
-- Per-90 / rolling-rate features (xG90, xA90, npxG90, ICT-rate) computed **identically** train + serve; retire cumulative ICT + the `form` proxy.
-- **Gate:** train/serve parity test on the rate features; no cumulative-volume feature remains in any component feature set.
+### P2 — Rate-feature refactor  *(D4)*  ✅ DONE (`features.CUMULATIVE_BANNED_FEATURES` + guard)
+- **Retired** cumulative `ict_index/influence/creativity/threat` + the `form` proxy from both models' `FEATURE_COLS`. They were volume (season-cumulative), and read from *different* sources per path (snapshot as-of in train vs the mutable players row in serve) → train/serve skew. The rolling `avg_*_{n}gw` features already carry the signal as clean per-GW rates, computed identically on both paths (shift(1) as-of, from per-GW data present on both).
+- `features.assert_rate_only(FEATURE_COLS)` runs at import in both models — a banned feature now fails fast.
+- **ICT-rate deferred (data-layer):** a true ICT-rate needs per-GW ICT or cumulative exposure (minutes/appearances) stored alongside the cumulative ICT; the spine has neither (snapshots store only cumulative ICT; `player_xg_stats` has xG, not ICT). Options later: (a) reconstruct per-GW ICT by differencing consecutive snapshots; (b) add cumulative minutes to the snapshot. Not blocking — the xG rolling rates are the stronger attacking signal anyway.
+- **Gate:** `tests/test_p2_rate_features.py` (4) — no banned col in either FEATURE_COLS, guard raises on a banned col, rolling rates still present; both models retrain clean on the live DB. Suite 100/100.
 
 ### P1 — Minutes model → 3-way multiclass  *(biggest lever, D2/D7/M1)*
 - Calibrated **P({0, 1–59, 60+})**. Learned features: rate features (P2), rotation/congestion (midweek flags), pre-season minutes. **Availability (`status`/`chance_of_playing`/news) is NOT a learned feature** (defaulted in history, M1) — it stays a **deterministic override** on the model output (extends the existing `pipeline.py:305-311` hard-zero of i/u/s and 'd' discount), with a news-override hook for Phase 4.

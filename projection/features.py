@@ -310,3 +310,40 @@ ENRICHMENT_FEATURE_COLS = [
     "price_momentum",
     "transfer_velocity",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Rate-feature contract (Phase-2 P2, defect D4)
+#
+# Model features must be RATES, not season-cumulative VOLUME, and must be
+# computed identically on the train (backtest) and serve (live pipeline) paths.
+# The rolling `avg_*_{n}gw` features already satisfy this: per-GW quantities
+# averaged over a shift(1) window (as-of, leakage-free), from data present on
+# both paths.
+#
+# The columns below are BANNED as model features:
+#   - ict_index/influence/creativity/threat: stored only as season-CUMULATIVE
+#     (snapshot) — volume, not rate, and read from different sources on the two
+#     paths (snapshot as-of vs the mutable players row) → train/serve skew.
+#   - form: the T3 prior-window proxy, not reconcilable across paths; the
+#     rolling avg_pts_*gw features carry recent-form signal as a clean rate.
+#
+# A true ICT-rate is deferred: it needs either per-GW ICT or cumulative
+# exposure (minutes/appearances) stored alongside the cumulative ICT, neither
+# of which the spine currently carries. See plan/phase-2-xpts-engine.md P2.
+# ---------------------------------------------------------------------------
+
+CUMULATIVE_BANNED_FEATURES = frozenset(
+    {"ict_index", "influence", "creativity", "threat", "form"}
+)
+
+
+def assert_rate_only(feature_cols: list[str]) -> None:
+    """Guard: fail fast if a banned season-cumulative/proxy column is used as a
+    model feature (D4). Called at import by each component model."""
+    offenders = CUMULATIVE_BANNED_FEATURES.intersection(feature_cols)
+    if offenders:
+        raise ValueError(
+            f"Cumulative/proxy features are banned as model inputs (D4): "
+            f"{sorted(offenders)}. Use the rolling avg_*_{{n}}gw rates instead."
+        )
