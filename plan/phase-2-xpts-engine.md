@@ -69,13 +69,17 @@ Point-in-time SAFE inputs available: snapshots (T3), real FDR historical (T3b), 
 - **Gate MET:** out-of-sample (train GW<20, test GW≥20 on 25/26) P(60+) reliability is near-diagonal (pred 0.03/0.29/0.50/0.71/0.88 vs actual 0.03/0.31/0.46/0.70/0.88); 3-way log-loss 0.4510 on 14,322 rows. `tests/test_p1_minutes.py` (7) — band bucketing, absent-class handling, the M1 non-'a' injection (i/u/s→DNP, 'd' scaling), expected points, features-removed. Suite 107/107.
 - **⚠️ European/cup congestion feature DEFERRED (needs data):** the per-team "in Europe" flag + rolling all-competitions fixture-density would sharpen rotation/fatigue, but the all-comps fixture list (UCL/UEL/UECL + FA/EFL Cup) isn't ingested — same FBref infra can pull it. Deferred as a P1 follow-up; the 3-way + override is the core lever and is complete without it.
 
-### P3 — Goals component  *(M3)*
-- Derive **expected team goals-for/against** from 1X2 supremacy + O/U2.5 via a **bivariate-Poisson** (two market constraints → both team means; T6 odds). Player share = per-90 npxG (shot vol × quality, shrunk finishing; split penalty xG via `player_setpiece_roles`) × team goals. Sample from the fitted distribution (reconciles with decision-1 samples).
-- **Gate:** predicted vs realised goal-involvement rate by position band.
+### P3 — Goals component  ✅ DONE (shots-based; xG-quality deferred)
+- **Team-goals anchor** (`projection/team_goals.py`): `team_goals_from_odds` recovers (λ_home, λ_away) from the T6 de-vigged 1X2 + O/U2.5 via a double-Poisson least-squares fit (scipy). Verified: recovers known λ within 0.06; real 0.84 favourite → λ_home 2.91. `clean_sheet_prob` = exp(−λ_opp) also serves P5.
+- **Player distribution** (`projection/goals.py`): `distribute_team_goals` splits team λ among players by attacking **weight × minutes_frac** (anchor-conserving: Σ = λ; the odds carry finishing/quality, the weight allocates *who*). `expected_goal_points` (26/27 SCORING) + `sample_goals` (Poisson) for P10.
+- **⚠️ xG-quality DEFERRED — weight is per-90 SHOTS, not npxG.** Real per-match xG proved unavailable from free sources: `player_xg_stats` was empty (Understat never ingested); soccerdata's FBref match API is Performance-only (no xG) and the cached match HTML lacks the JS-comment xG blocks; Understat changed its page-embed format (only a PROMOTION var parses). We DO have real per-GW **shots** (from the FBref summary `Performance Sh`, 5,191 player-GW rows, sensible: Haaland 126 / Fernandes 113). `weight` is a generic input, so swapping in npxG later is a drop-in change. `player_xg_stats.npxg/xg/xa` remain 0 (unpopulated); only `shots` is real.
+- **Gate:** `tests/test_team_goals.py` (8) + `tests/test_goals.py` (6) — λ round-trip, conservation, shot-share ordering, benched→0, Poisson mean. Suite 123/123.
 
 ### P4 — Assists component
-- per-90 xA / key passes × team attack context (bivariate-Poisson team goals); calibrate **FPL-assist ≠ Opta-assist**.
+- per-90 key-passes (real per-GW signal we have) × team attack context (P3 team λ); calibrate **FPL-assist ≠ Opta-assist**. Same weight-based interface as P3 (swap key-passes→xA when an xG/xA feed lands). Set-piece takers drive assists — see the set-piece note below.
 - **Gate:** predicted vs realised assist rate.
+
+> **Set-piece takers (raised 2026-07-24).** Penalty/corner/free-kick duty is a big assist+goal driver and *changes pre-season* (a new signing takes over; the prior taker leaves) — prior-season data won't catch 26/27 changes. Sources: penalties are derivable from Understat/FBref shot data (pen taker); corner/FK takers from FBref pass-types (`CK`, dead-ball) — not yet ingested; **confirmed 26/27 changes need the news layer (Phase 4)** or a manual pre-season override. `PlayerSetPieceRole` already exists (currently a crude derivation). Task: a pre-season set-piece-taker snapshot (FBref pass-types + a manual/News override for confirmed changes) feeding P3/P4 weights. Deferred to a P4 follow-up + Phase-4 news.
 
 ### P5 — Clean-sheet component  *(M3; uses P3 team goals + P1 minutes)*
 - CS = **P(opponent goals = 0)** from the bivariate-Poisson opponent mean (P3) — retire the capped `min(…,0.6)` heuristic as the anchor. **Conditional on 60+** via the P1 minutes distribution.
