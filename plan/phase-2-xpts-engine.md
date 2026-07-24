@@ -86,12 +86,14 @@ Point-in-time SAFE inputs available: snapshots (T3), real FDR historical (T3b), 
 - CS = **P(opponent goals = 0) = exp(−λ_opp)** from the P3 odds anchor (`expected_cs_points`) — retires the capped `min(…,0.6)` heuristic. **Conditional on 60+** via P1's P(60+). Plus `expected_concede_points` (GK/DEF −1 per 2 conceded = E[⌊X/2⌋]·−1 over Poisson(λ_opp)) and `sample_clean_sheet_points` (one shared opponent-goals draw → CS bonus needs CS ∧ 60+) for P10.
 - **Gate:** `tests/test_clean_sheets_assists.py` (P5 half) — CS prob/points by position+minutes, concede negativity/monotonicity, sample mean == expectation. Not truncated for heavy favourites. Suite 130/130.
 
-### P6 — Saves component (GK)
-- saves/shot × opponent shot volume. **Gate:** predicted vs realised GK save points.
+### P6 — Saves component (GK)  ✅ DONE (`projection/saves.py`)
+- Fixture-anchored: SoT faced ≈ λ_opp / conversion (0.30); `expected_saves` = SoT × (1−conv) × p_play; `expected_save_points` = E[⌊saves/3⌋] over Poisson (FPL 1-per-3); `sample_save_points` for P10. GK-only; a per-keeper shot-stopping term is a later refinement.
+- **Gate:** `tests/test_saves.py` (3) — scales with opponent/minutes, 1-per-3, sample mean == expectation. Suite 140/140.
 
-### P7 — DefCon component  *(needs events; basis-match note)*
-- per-90 CBIRT rates × opponent context → P(threshold met); `player_match_events` (T5b) + `compute_defcon_points` (T5a). **Note:** 25/26 `total_points` already includes 25/26 DefCon; the actual side (P-RS) must recompute DefCon under the same 26/27 `DefConRules` used in prediction, or predicted-vs-actual is a basis mismatch.
-- **Gate:** predicted vs realised DefCon-point rate.
+### P7 — DefCon component  ✅ DONE (`projection/defcon.py`)
+- `expected_defcon_points` = P(Poisson(expected CBIT/CBIRT) ≥ positional threshold) × 2 × p_play (DEF: CBIT≥10, MID/FWD: CBIRT≥12, GK: none — DEFCON config); `sample_defcon_points` for P10. Expected per-match action count comes from the player's rolling `player_match_events` rate at assembly (P10).
+- **⚠️ basis-match note still stands for P-RS:** 25/26 `total_points` already includes 25/26 DefCon; the actual side must recompute DefCon under the same 26/27 `DefConRules` used here, or predicted-vs-actual is a basis mismatch.
+- **Gate:** `tests/test_defcon.py` (4) — thresholds by position, P(hit) monotonic, GK/no-minutes → 0, sample mean == expectation. Suite 140/140.
 
 ### P8 — Bonus component (Monte-Carlo, reduced-BPS)  *(C3; needs events; depends on P1,P3–P7)*
 - MC the 26/27 BPS formula (`bps_sim`, T5a) over **the events actually modelled** (appearance from P1, goals P3, assists P4, CS P5, saves P6, CBIRT P7) — a **documented reduced-BPS approximation**, since key-passes/big-chances/crosses/dribbles/pass-completion have no component. Measure the reduced-vs-full bias against `recomputed_bonus` (T5b) and record it.
