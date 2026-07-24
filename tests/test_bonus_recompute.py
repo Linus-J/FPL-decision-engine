@@ -165,5 +165,5 @@ def test_ingest_fbref_season_needs_optional_extra(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _blocked)
-    with pytest.raises(ImportError, match="events"):
+    with pytest.raises(ImportError, match="soccerdata"):
         fbref.ingest_fbref_season("2025-26")

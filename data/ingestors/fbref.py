@@ -4,9 +4,10 @@ This is the one writer of ``player_match_events`` that needs the network. It is
 deliberately kept OUT of the core dependency set: ``soccerdata`` drags in a full
 SeleniumBase/Chrome stack (FBref sits behind Cloudflare and is scraped via a
 real browser), which cannot run in a headless CI/backfill environment. Install
-it only where a browser is available::
+it only where a browser is available. `uv run` re-syncs the venv from pyproject
+(where soccerdata is intentionally absent), so layer it on per-run with `--with`::
 
-    uv pip install "fpl-bot[events]"   # or: uv pip install soccerdata
+    uv run --with soccerdata python scripts/scrape_fbref.py 2025-26
 
 The pure column-mapping (``map_summary_row`` / ``map_keeper_row``) has no
 soccerdata dependency and is fully unit-tested; only ``ingest_fbref_season``
@@ -183,9 +184,12 @@ def ingest_fbref_season(  # pragma: no cover - live network + browser only
         import soccerdata as sd
     except ImportError as exc:  # keep the failure actionable
         raise ImportError(
-            "fbref ingest needs the optional 'events' extra: "
-            "`uv pip install \"fpl-bot[events]\"` (pulls soccerdata + a browser). "
-            "It is intentionally not a core dependency."
+            "fbref ingest needs soccerdata (+ a browser), intentionally not a core "
+            "dependency. Run the scrape with soccerdata layered on for that run:\n"
+            "    DB_PATH=fpl_bot_v2.db uv run --with soccerdata "
+            "python scripts/scrape_fbref.py 2025-26\n"
+            "(`uv run` re-syncs the venv from pyproject, so a bare `uv pip install "
+            "soccerdata` doesn't survive to the run — `--with` is the robust form)."
         ) from exc
 
     sd_season = SEASON_MAP.get(season)
