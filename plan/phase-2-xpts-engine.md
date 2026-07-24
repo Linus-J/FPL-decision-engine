@@ -103,9 +103,11 @@ Point-in-time SAFE inputs available: snapshots (T3), real FDR historical (T3b), 
 
 ### P9 — Cards / other — static priors. Low effort.
 
-### P-RS — 26/27 re-score of 25/26 actuals + calibration basis  *(C1; needs events)*
-- Add a backtest scoring mode that re-scores `player_gw_stats` actuals under 26/27 rules: standard scoring (unchanged per Appendix A) + `recomputed_bonus.bonus_2627` + 26/27 DefCon. `_actual_gw_points` (`backtest.py:115`) currently returns old-rules `total_points`.
-- **Gate:** actuals re-scored deterministically; the predicted and actual sides share one scoring basis (no definitional bias in the bonus/DefCon calibration).
+### P-RS — 26/27 re-score of 25/26 actuals  ✅ DONE (`projection/rescore.py`)
+- **Simplification found:** standard scoring and DefCon are UNCHANGED 25/26→26/27 (config.strategy — only the BPS weights that decide *bonus* changed). So the 26/27-equivalent total is exactly `total_points − bonus_as_played + bonus_2627` — no need to touch goals/assists/CS/appearance/cards/DefCon.
+- `rescore_points` (pure) + `load_bonus_2627_map` (Σ `recomputed_bonus.bonus_2627` per (player, GW), DGW-safe) + `rescore_actuals` (adds a `total_points_2627` column, falling back to the as-played total where there's no event coverage — never invents a 26/27 bonus). Wired into `run_backtest(score_2627=True)` / `backtest.py --score-2627`; `_actual_gw_points` reads the new column when the flag is set.
+- **Coverage (real, 25/26):** the raw "% of all player-GW rows" is a misleading 37% because ~61% of `player_gw_stats` rows are 0-minute squad players who never earn bonus — `rescore_coverage_relevant` (rows with `bonus > 0`) is the honest metric: **95.0%** covered, 1,384 rows re-scored, mean shift +0.27 pts among changed rows.
+- **Gate:** `tests/test_rescore.py` (6) — pure rescore arithmetic, DGW-summing map load, fallback-when-uncovered, both coverage metrics. Suite 149/149.
 
 ### P-XI — Naive best-XI harness + re-baseline  *(M2)*
 - Precisely define the gate harness: **fixed initial 15** (T7 cold-start), optimise the legal starting XI + captain (armband = argmax component mean; auto-subs by bench order) each GW, **GW6–38** (match the baseline window), DGW handled per P12. No transfers, no chips.

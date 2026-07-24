@@ -25,6 +25,7 @@ from projection.minutes_model import predict_batch as minutes_batch
 from projection.minutes_model import train as train_minutes
 from projection.points_model import predict_batch as points_batch
 from projection.points_model import train as train_points
+from projection.rescore import load_bonus_2627_map, rescore_actuals, rescore_coverage_relevant
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +113,15 @@ def _load_players_snapshot(season: str, target_gw: int) -> pd.DataFrame:
         db.close()
 
 
-def _actual_gw_points(all_stats: pd.DataFrame, gw: int) -> dict[int, int]:
+def _actual_gw_points(all_stats: pd.DataFrame, gw: int, score_2627: bool = False) -> dict[int, int]:
+    """Actual points for a GW. ``score_2627`` reads the ``total_points_2627``
+    column (P-RS) — required for a like-for-like comparison against a
+    26/27-scored prediction (the exit gate); default stays old-rules
+    ``total_points`` for backward compatibility."""
     subset = all_stats[all_stats["gameweek"] == gw]
-    return dict(zip(subset["player_id"], subset["total_points"]))
+    use_2627 = score_2627 and "total_points_2627" in subset.columns
+    col = "total_points_2627" if use_2627 else "total_points"
+    return dict(zip(subset["player_id"], subset[col]))
 
 
 def _opponent_context(
@@ -219,11 +226,31 @@ def run_backtest(
     end_gw: int = 38,
     horizon: int | None = None,
     budget: float = SQUAD.budget_total,
+    score_2627: bool = False,
 ) -> pd.DataFrame:
+    """``score_2627`` (P-RS): score the ACTUAL side under 26/27 rules (swap the
+    as-played bonus for the recomputed_bonus.bonus_2627 sum — standard scoring
+    and DefCon are unchanged 25/26->26/27) so the exit gate compares predicted
+    and actual on one basis (finding C1). Player-GWs with no event coverage
+    keep their as-played total (never invents a 26/27 bonus)."""
     horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
     all_stats = _load_all_stats(season)
     available_gws = sorted(all_stats["gameweek"].unique())
     opp_ctx = _opponent_context(season, all_stats)
+
+    if score_2627:
+        db = get_session()
+        try:
+            bonus_map = load_bonus_2627_map(db, season)
+        finally:
+            db.close()
+        all_stats = rescore_actuals(all_stats, bonus_map)
+        coverage = rescore_coverage_relevant(all_stats, bonus_map)
+        logger.info(
+            "P-RS: 26/27 re-score coverage %.1f%% of bonus-earning player-GWs "
+            "(%d bonus_2627 entries)",
+            100 * coverage, len(bonus_map),
+        )
 
     results = []
     current_squad_ids: list[int] = []
@@ -407,7 +434,7 @@ def run_backtest(
         starting_ids = xi_solution.starting_xi["id"].tolist()
         captain_id = xi_solution.captain_id
 
-        actual = _actual_gw_points(all_stats, gw)
+        actual = _actual_gw_points(all_stats, gw, score_2627=score_2627)
         actual_pts = _score_squad(
             new_squad_ids, starting_ids, captain_id, actual,
             bench_boost=(chip_played == Chip.BENCH_BOOST),
@@ -472,6 +499,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--end-gw", type=int, default=38)
     p.add_argument("--horizon", type=int, default=None)
     p.add_argument("--out", type=Path, default=None, help="Save results CSV to this path")
+    p.add_argument(
+        "--score-2627", action="store_true",
+        help="Score actuals under 26/27 rules (P-RS): swap in recomputed_bonus.bonus_2627",
+    )
     return p.parse_args()
 
 
@@ -482,6 +513,7 @@ if __name__ == "__main__":
         start_gw=args.start_gw,
         end_gw=args.end_gw,
         horizon=args.horizon,
+        score_2627=args.score_2627,
     )
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
