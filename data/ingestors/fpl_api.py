@@ -175,10 +175,12 @@ def upsert_players(bootstrap: dict) -> None:
                     transfers_out_event=p.get("transfers_out_event", 0),
                     updated_at=datetime.utcnow(),
                 )
+                # Upsert on the stable `code`, not the season-reassigned fpl_id
+                # (M3). fpl_id itself is updated to the current season's value.
                 .on_conflict_do_update(
-                    index_elements=["fpl_id"],
+                    index_elements=["code"],
                     set_={
-                        "code": p.get("code"),
+                        "fpl_id": p["id"],
                         "first_name": p["first_name"],
                         "second_name": p["second_name"],
                         "web_name": p["web_name"],

@@ -45,9 +45,10 @@ class Player(Base):
     __tablename__ = "players"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    fpl_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
-    # FPL's cross-season-stable player code (fpl_id/element is reassigned each
-    # season). Join key for multi-season backfill (Phase-1 finding M3).
+    # fpl_id (FPL's per-season `element` id) is NOT unique across seasons — FPL
+    # reassigns it yearly, so a departed player and a current one can share one
+    # (M3). `code` is the stable cross-season identity and the upsert key.
+    fpl_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     code: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
     first_name: Mapped[str] = mapped_column(String, nullable=False)
     second_name: Mapped[str] = mapped_column(String, nullable=False)
