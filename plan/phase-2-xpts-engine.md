@@ -75,15 +75,16 @@ Point-in-time SAFE inputs available: snapshots (T3), real FDR historical (T3b), 
 - **⚠️ xG-quality DEFERRED — weight is per-90 SHOTS, not npxG.** Real per-match xG proved unavailable from free sources: `player_xg_stats` was empty (Understat never ingested); soccerdata's FBref match API is Performance-only (no xG) and the cached match HTML lacks the JS-comment xG blocks; Understat changed its page-embed format (only a PROMOTION var parses). We DO have real per-GW **shots** (from the FBref summary `Performance Sh`, 5,191 player-GW rows, sensible: Haaland 126 / Fernandes 113). `weight` is a generic input, so swapping in npxG later is a drop-in change. `player_xg_stats.npxg/xg/xa` remain 0 (unpopulated); only `shots` is real.
 - **Gate:** `tests/test_team_goals.py` (8) + `tests/test_goals.py` (6) — λ round-trip, conservation, shot-share ordering, benched→0, Poisson mean. Suite 123/123.
 
-### P4 — Assists component
-- per-90 key-passes (real per-GW signal we have) × team attack context (P3 team λ); calibrate **FPL-assist ≠ Opta-assist**. Same weight-based interface as P3 (swap key-passes→xA when an xG/xA feed lands). Set-piece takers drive assists — see the set-piece note below.
-- **Gate:** predicted vs realised assist rate.
+### P4 — Assists component  ✅ DONE (`projection/assists.py`)
+- Team assists ≈ team λ (P3 anchor) × `ASSIST_FRACTION` (0.75, the FPL-vs-Opta calibration knob), distributed by creativity **weight** × minutes_frac (reuses `goals.distribute_team_goals` — same anchor-conserving split). `expected_assist_points` (×3) + `sample_assists` for P10.
+- **⚠️ interim weight = rolling actual assists** — per-90 key-passes/xA aren't in the free feed (same xG wall; both 0 in our data). Swappable to xA when the paid feed lands, no interface change.
+- **Gate:** `tests/test_clean_sheets_assists.py` (P4 half) — conservation × assist_fraction, weight ordering, points, sample mean. Suite 130/130.
 
 > **Set-piece takers (raised 2026-07-24).** Penalty/corner/free-kick duty is a big assist+goal driver and *changes pre-season* (a new signing takes over; the prior taker leaves) — prior-season data won't catch 26/27 changes. Sources: penalties are derivable from Understat/FBref shot data (pen taker); corner/FK takers from FBref pass-types (`CK`, dead-ball) — not yet ingested; **confirmed 26/27 changes need the news layer (Phase 4)** or a manual pre-season override. `PlayerSetPieceRole` already exists (currently a crude derivation). Task: a pre-season set-piece-taker snapshot (FBref pass-types + a manual/News override for confirmed changes) feeding P3/P4 weights. Deferred to a P4 follow-up + Phase-4 news.
 
-### P5 — Clean-sheet component  *(M3; uses P3 team goals + P1 minutes)*
-- CS = **P(opponent goals = 0)** from the bivariate-Poisson opponent mean (P3) — retire the capped `min(…,0.6)` heuristic as the anchor. **Conditional on 60+** via the P1 minutes distribution.
-- **Gate:** predicted vs realised CS rate for GK/DEF; conditioning on minutes verified; not truncated for heavy favourites.
+### P5 — Clean-sheet component  ✅ DONE (`projection/clean_sheets.py`)
+- CS = **P(opponent goals = 0) = exp(−λ_opp)** from the P3 odds anchor (`expected_cs_points`) — retires the capped `min(…,0.6)` heuristic. **Conditional on 60+** via P1's P(60+). Plus `expected_concede_points` (GK/DEF −1 per 2 conceded = E[⌊X/2⌋]·−1 over Poisson(λ_opp)) and `sample_clean_sheet_points` (one shared opponent-goals draw → CS bonus needs CS ∧ 60+) for P10.
+- **Gate:** `tests/test_clean_sheets_assists.py` (P5 half) — CS prob/points by position+minutes, concede negativity/monotonicity, sample mean == expectation. Not truncated for heavy favourites. Suite 130/130.
 
 ### P6 — Saves component (GK)
 - saves/shot × opponent shot volume. **Gate:** predicted vs realised GK save points.
