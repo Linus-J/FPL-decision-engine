@@ -43,14 +43,15 @@ ENG-Championship needs a one-time league_dict entry. Create/merge into
 
 {
   "ENG-Championship": {
-    "FBref": "Championship",
+    "FBref": "EFL Championship",
     "season_start": "Aug",
     "season_end": "May"
   }
 }
 
-then re-run with "ENG-Championship" as the league argument. If soccerdata still
-can't resolve it, tell the assistant — the FBref comp mapping may need a tweak."""
+The FBref value must be "EFL Championship" (the exact competition name on
+fbref.com/en/comps/, id 10) — "Championship" alone does not match and yields
+"No objects to concatenate". Then re-run with "ENG-Championship" as the arg."""
 
 
 def main(argv: list[str]) -> None:
