@@ -459,6 +459,39 @@ class PlayerPressSignal(Base):
     source_url: Mapped[str] = mapped_column(String, default="")
 
 
+class PriorLeagueStats(Base):
+    """Prior-season per-90 attacking rates from a non-PL league (FBref season
+    stats) — the raw input to P11's cold-start prior for players new to the PL
+    (foreign signings + promoted-team players). Keyed by (player_name, team,
+    league, season): these players have no PL `code` until P11's identity step
+    matches them to an FPL entry (`code` is filled in then). Rates are stored
+    already normalised per-90; league-strength translation to PL-equivalent is
+    applied downstream (P11), not here."""
+
+    __tablename__ = "prior_league_stats"
+    __table_args__ = (
+        UniqueConstraint("player_name", "team", "league", "season", name="uq_prior_league"),
+        Index("ix_prior_league_season", "league", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_name: Mapped[str] = mapped_column(String, nullable=False)
+    team: Mapped[str] = mapped_column(String, default="")
+    league: Mapped[str] = mapped_column(String, nullable=False)   # e.g. "ENG-Championship"
+    season: Mapped[str] = mapped_column(String(7), nullable=False)
+    position: Mapped[str] = mapped_column(String(8), default="")
+    # matched FPL identity, filled by P11 (null until then)
+    code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    minutes: Mapped[int] = mapped_column(Integer, default=0)
+    matches: Mapped[int] = mapped_column(Integer, default=0)
+    goals90: Mapped[float] = mapped_column(Float, default=0.0)
+    assists90: Mapped[float] = mapped_column(Float, default=0.0)
+    npxg90: Mapped[float] = mapped_column(Float, default=0.0)
+    xa90: Mapped[float] = mapped_column(Float, default=0.0)
+    sca90: Mapped[float] = mapped_column(Float, default=0.0)
+
+
 class DecisionLog(Base):
     __tablename__ = "decision_log"
 
