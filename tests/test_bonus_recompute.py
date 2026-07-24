@@ -144,6 +144,30 @@ def test_map_keeper_row():
     assert out == {"saves": 5, "penalties_saved": 1}
 
 
+def test_map_xg_row_extracts_and_defaults():
+    out = fbref.map_xg_row({
+        "Expected xG": 0.42, "Expected npxG": 0.31, "Expected xAG": 0.18,
+        "Performance Sh": 3,
+    })
+    assert out == {"xg": 0.42, "npxg": 0.31, "xa": 0.18, "shots": 3}
+    # missing cols default to 0
+    assert fbref.map_xg_row({"Expected xG": 0.5}) == {"xg": 0.5, "npxg": 0.0, "xa": 0.0, "shots": 0}
+
+
+def test_aggregate_xg_rows_sums_dgw():
+    # player 1 plays two matches in GW5 (DGW) → summed into one player-GW row
+    per_match = [
+        (1, 5, {"xg": 0.4, "xa": 0.1, "npxg": 0.3, "shots": 2}),
+        (1, 5, {"xg": 0.2, "xa": 0.3, "npxg": 0.2, "shots": 1}),
+        (2, 5, {"xg": 0.9, "xa": 0.0, "npxg": 0.9, "shots": 4}),
+    ]
+    agg = fbref.aggregate_xg_rows(per_match)
+    assert agg[(1, 5)]["xg"] == pytest.approx(0.6)
+    assert agg[(1, 5)]["shots"] == 3
+    assert agg[(1, 5)]["xgi"] == pytest.approx(0.6 + 0.4)   # xg + xa
+    assert agg[(2, 5)]["npxg"] == pytest.approx(0.9)
+
+
 def test_normalize_position():
     assert fbref.normalize_position("GK") == "GK"
     assert fbref.normalize_position("DF,MF") == "DEF"

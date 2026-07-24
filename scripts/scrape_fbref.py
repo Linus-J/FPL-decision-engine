@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 from data.db import get_session, init_db
-from data.ingestors.fbref import ingest_fbref_season
+from data.ingestors.fbref import ingest_fbref_season, ingest_fbref_xg_season
 from projection.bonus_recompute import recompute_season, recomputed_bonus_coverage
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,13 @@ def main(seasons: list[str]) -> None:
             season, path_to_browser=path_to_browser, headless=headless
         )
         logger.info("%s: %d event rows written, %d players unmatched", season, written, unmatched)
+
+        # Per-match xG → player_xg_stats (P3/P4). Reuses the summary pages just
+        # cached above, so this is a cache hit (no extra browser work).
+        xg_rows, xg_unmatched = ingest_fbref_xg_season(
+            season, path_to_browser=path_to_browser, headless=headless
+        )
+        logger.info("%s: %d xG player-GW rows written, %d unmatched", season, xg_rows, xg_unmatched)
 
         db = get_session()
         try:

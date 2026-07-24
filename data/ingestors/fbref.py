@@ -31,7 +31,7 @@ from collections.abc import Mapping
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session
-from data.models import Player, PlayerMatchEvents
+from data.models import Player, PlayerMatchEvents, PlayerXGStats
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,51 @@ def map_keeper_row(raw: Mapping) -> dict:
         if col in raw and raw[col] is not None:
             out[field] = int(_num(raw, col))
     return out
+
+
+# per-MATCH xG columns from the summary table → player_xg_stats fields (P3/P4).
+FBREF_XG_MAP: dict[str, str] = {
+    "xg": "Expected xG",
+    "npxg": "Expected npxG",
+    "xa": "Expected xAG",          # FBref xAG ≈ expected assists
+    "shots": "Performance Sh",
+}
+
+
+def map_xg_row(raw: Mapping) -> dict:
+    """FBref match-summary row → per-match xG fields (floats; shots int)."""
+    out: dict[str, float] = {}
+    for field, col in FBREF_XG_MAP.items():
+        if col in raw and raw[col] is not None:
+            out[field] = _num(raw, col)
+    return {
+        "xg": round(out.get("xg", 0.0), 4),
+        "xa": round(out.get("xa", 0.0), 4),
+        "npxg": round(out.get("npxg", 0.0), 4),
+        "shots": int(out.get("shots", 0)),
+    }
+
+
+def aggregate_xg_rows(
+    per_match: list[tuple[int, int, dict]],
+) -> dict[tuple[int, int], dict]:
+    """Sum per-match xG into per (player_id, gameweek) totals — a DGW player's
+    two matches in one GW combine (player_xg_stats is keyed per GW). Input is
+    ``(player_id, gameweek, xg_fields)`` triples."""
+    agg: dict[tuple[int, int], dict] = {}
+    for player_id, gw, fields in per_match:
+        key = (player_id, gw)
+        cur = agg.setdefault(key, {"xg": 0.0, "xa": 0.0, "npxg": 0.0, "shots": 0})
+        cur["xg"] += fields.get("xg", 0.0)
+        cur["xa"] += fields.get("xa", 0.0)
+        cur["npxg"] += fields.get("npxg", 0.0)
+        cur["shots"] += fields.get("shots", 0)
+    for cur in agg.values():
+        cur["xg"] = round(cur["xg"], 4)
+        cur["xa"] = round(cur["xa"], 4)
+        cur["npxg"] = round(cur["npxg"], 4)
+        cur["xgi"] = round(cur["xg"] + cur["xa"], 4)
+    return agg
 
 
 def normalize_position(fbref_pos: str | None) -> str:
@@ -283,6 +328,78 @@ def _write_events(rows: list[dict]) -> int:  # pragma: no cover - live DB write
                 .values(**values)
                 .on_conflict_do_nothing(
                     index_elements=["player_id", "season", "game_id"]
+                )
+            )
+            written += db.execute(stmt).rowcount or 0
+        db.commit()
+    finally:
+        db.close()
+    return written
+
+
+def ingest_fbref_xg_season(  # pragma: no cover - live network + browser (cache-backed)
+    season: str,
+    *,
+    no_cache: bool = False,
+    path_to_browser: str | None = None,
+    headless: bool = True,
+) -> tuple[int, int]:
+    """Per-match npxG/xG/xAG/shots from FBref summary → player_xg_stats (P3/P4).
+
+    Reuses the SAME summary pages the event scrape cached, so re-running on an
+    already-scraped season is a cache hit (no browser). Real point-in-time
+    per-GW xG (DGW matches summed per gameweek). Returns (rows_written, unmatched).
+    """
+    try:
+        import soccerdata as sd
+    except ImportError as exc:
+        raise ImportError(
+            "fbref xg ingest needs soccerdata (+ Chromium for uncached seasons). "
+            "See scripts/scrape_fbref.py."
+        ) from exc
+
+    sd_season = SEASON_MAP.get(season)
+    if not sd_season:
+        raise ValueError(f"No FBref season mapping for {season!r}")
+
+    kwargs: dict = {"leagues": FBREF_LEAGUE, "seasons": sd_season,
+                    "no_cache": no_cache, "headless": headless}
+    if path_to_browser:
+        kwargs["path_to_browser"] = path_to_browser
+    fbref = sd.FBref(**kwargs)
+    schedule = fbref.read_schedule()
+    summary = _flatten_columns(fbref.read_player_match_stats(stat_type="summary"))
+    gw_of = _schedule_gameweeks(schedule)
+    name_map = _build_name_map()
+
+    per_match: list[tuple[int, int, dict]] = []
+    unmatched = 0
+    for rec in summary.reset_index().to_dict("records"):
+        player_id = _match_player(str(rec.get("player", "")), name_map)
+        gw = gw_of.get(rec.get("game_id"))
+        if not player_id or gw is None:
+            unmatched += 1
+            continue
+        per_match.append((player_id, int(gw), map_xg_row(rec)))
+
+    written = _write_xg_rows(season, aggregate_xg_rows(per_match))
+    logger.info("FBref xg %s: %d player-GW rows written, %d unmatched", season, written, unmatched)
+    return written, unmatched
+
+
+def _write_xg_rows(  # pragma: no cover - live DB write
+    season: str, agg: dict[tuple[int, int], dict]
+) -> int:
+    db = get_session()
+    written = 0
+    try:
+        for (player_id, gw), fields in agg.items():
+            stmt = (
+                insert(PlayerXGStats)
+                .values(player_id=player_id, gameweek=gw, season=season, **fields)
+                .on_conflict_do_update(
+                    index_elements=["player_id", "gameweek", "season"],
+                    set_=fields,
                 )
             )
             written += db.execute(stmt).rowcount or 0
