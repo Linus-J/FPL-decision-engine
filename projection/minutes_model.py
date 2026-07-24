@@ -5,8 +5,7 @@ from pathlib import Path
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.metrics import brier_score_loss, log_loss
-from sklearn.model_selection import cross_val_score
+from sklearn.metrics import log_loss
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy import text
@@ -115,8 +114,11 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
         if pos not in df.columns:
             df[pos] = 0.0
 
-    df["is_available"] = (df["status"] == "a").astype(float)
-    df["cop_next"] = df["chance_of_playing_next_round"].fillna(100) / 100.0
+    # Availability (status / chance-of-playing) is NOT a learned feature (M1):
+    # it is ~constant in backfilled history so the model can't learn it, and it
+    # is applied as a deterministic override on the predicted bands instead
+    # (apply_availability_override). The raw `status` / `chance_of_playing_next_round`
+    # columns are left on the frame for that override to read.
 
     df = df.dropna(subset=["avg_minutes_5gw", "season_avg_minutes"])
 
@@ -145,10 +147,8 @@ FEATURE_COLS = [
     "now_cost",
     "selected_by_percent",
     # D4 (P2): cumulative ict_index + form proxy retired (rolling avg_* rates
-    # carry the signal). is_available/cop_next stay for now — availability
-    # becomes a deterministic override in P1, not a learned feature.
-    "is_available",
-    "cop_next",
+    # carry the signal). M1 (P1): availability (is_available/cop_next) removed
+    # as a learned feature — applied as a deterministic override instead.
     "pos_GKP",
     "pos_DEF",
     "pos_MID",
@@ -160,15 +160,86 @@ FEATURE_COLS = [
 
 assert_rate_only(FEATURE_COLS)
 
+# --- 3-way minutes bands (P1): P({0, 1–59, 60+}) --------------------------
+BAND_DNP, BAND_CAMEO, BAND_START = 0, 1, 2   # did-not-play / 1–59 / 60+
+
+
+def minutes_band(minutes: float | None) -> int:
+    if minutes is None or minutes <= 0:
+        return BAND_DNP
+    if minutes < FULL_GAME_MINUTES:
+        return BAND_CAMEO
+    return BAND_START
+
+
+def _bands_from_proba(proba_row, classes) -> tuple[float, float, float]:
+    """Map a classifier's proba row onto the fixed (P0, P1, P2) band vector,
+    tolerating a class being absent from the training slice (→ 0)."""
+    out = [0.0, 0.0, 0.0]
+    for cls, p in zip(classes, proba_row, strict=False):
+        out[int(cls)] = float(p)
+    return out[0], out[1], out[2]
+
+
+def apply_availability_override(
+    p0: float, p1: float, p2: float, status: str | None, cop: float | None
+) -> tuple[float, float, float]:
+    """Deterministic availability adjustment on the predicted bands (M1).
+
+    Availability is not learned (it is defaulted/constant in backfilled history),
+    so it is applied here, not as a feature:
+    - status i/u/s (injured/unavailable/suspended) → certain DNP (1, 0, 0);
+    - status 'd' (doubtful) → scale the playing mass by chance-of-playing (cop,
+      0–1), moving the rest to DNP;
+    - otherwise ('a'/None) → unchanged.
+    """
+    if status in ("i", "u", "s"):
+        return (1.0, 0.0, 0.0)
+    if status == "d":
+        c = 1.0 if cop is None else max(0.0, min(1.0, cop))
+        return (1.0 - c * (p1 + p2), c * p1, c * p2)
+    return (p0, p1, p2)
+
+
+def expected_appearance_points(p1: float, p2: float, sub: int = 1, full: int = 2) -> float:
+    """Expected appearance points from the band probabilities (1 for a cameo,
+    2 for 60+) — the minutes model's contribution to xPts (P10)."""
+    return p1 * sub + p2 * full
+
+
+def _fit_calibrated(base, X, y):
+    """Multiclass fit + probability calibration, robust to small/sparse slices
+    (the backtest trains per-GW). Falls back from CV-isotonic to prefit-sigmoid
+    to raw when there aren't enough per-class samples to calibrate."""
+    from collections import Counter
+
+    counts = Counter(y)
+    if len(counts) < 2:  # degenerate slice — nothing to calibrate
+        pipe = Pipeline([("scaler", StandardScaler()), ("clf", base)])
+        pipe.fit(X, y)
+        return pipe
+    min_class = min(counts.values())
+    if len(X) >= 100 and min_class >= 9:
+        pipe = Pipeline([
+            ("scaler", StandardScaler()),
+            ("clf", CalibratedClassifierCV(base, cv=3, method="isotonic")),
+        ])
+        pipe.fit(X, y)
+        return pipe
+    scaler = StandardScaler()
+    x_scaled = scaler.fit_transform(X)
+    base.fit(x_scaled, y)
+    cal = CalibratedClassifierCV(base, cv="prefit", method="sigmoid")
+    cal.fit(x_scaled, y)
+    return Pipeline([("scaler", scaler), ("clf", cal)])
+
 
 def train(save: bool = True, df_override: pd.DataFrame | None = None, fast: bool = False) -> Pipeline:
     df = df_override if df_override is not None else _load_training_data()
     df = _build_features(df)
 
-    target_started = (df["minutes"] >= FULL_GAME_MINUTES).astype(int)
-
+    y = df["minutes"].apply(minutes_band)
     X = df[FEATURE_COLS].astype(float)
-    y = target_started
 
     n_estimators = 50 if fast else 200
     base = GradientBoostingClassifier(
@@ -178,35 +249,19 @@ def train(save: bool = True, df_override: pd.DataFrame | None = None, fast: bool
         subsample=0.8,
         random_state=42,
     )
-    min_cv_samples = 100
-    if len(X) >= min_cv_samples:
-        pipeline = Pipeline([
-            ("scaler", StandardScaler()),
-            ("clf", CalibratedClassifierCV(base, cv=3, method="isotonic")),
-        ])
-    else:
-        from sklearn.preprocessing import StandardScaler as SS
-        scaler = SS()
-        X_scaled = scaler.fit_transform(X)
-        base.fit(X_scaled, y)
-        calibrated = CalibratedClassifierCV(base, cv="prefit", method="sigmoid")
-        calibrated.fit(X_scaled, y)
-        pipeline = Pipeline([("scaler", scaler), ("clf", calibrated)])
+    pipeline = _fit_calibrated(base, X, y)
 
     if not fast:
-        cv_scores = cross_val_score(pipeline, X, y, cv=5, scoring="neg_brier_score")
+        proba = pipeline.predict_proba(X)
+        band_dist = y.value_counts(normalize=True).round(3).to_dict()
         logger.info(
-            "Minutes model CV Brier score: %.4f ± %.4f",
-            -cv_scores.mean(), cv_scores.std(),
+            "Minutes model (3-way) train log-loss: %.4f",
+            log_loss(y, proba, labels=[BAND_DNP, BAND_CAMEO, BAND_START]),
         )
-
-    pipeline.fit(X, y)
-
-    train_preds = pipeline.predict_proba(X)[:, 1]
-    if not fast:
-        logger.info("Train log-loss: %.4f", log_loss(y, train_preds))
-        logger.info("Train Brier:    %.4f", brier_score_loss(y, train_preds))
-        logger.info("Trained on %d samples across %d players", len(df), df["player_id"].nunique())
+        logger.info(
+            "Trained on %d samples (band dist %s) across %d players",
+            len(df), band_dist, df["player_id"].nunique(),
+        )
 
     if save:
         MODEL_PATH.parent.mkdir(exist_ok=True)
@@ -224,29 +279,54 @@ def load() -> Pipeline:
         return pickle.load(f)
 
 
-def predict_start_probabilities(
-    player_recent_stats: pd.DataFrame,
-    model: Pipeline | None = None,
-) -> pd.Series:
+def _bands_frame(all_stats: pd.DataFrame, model: Pipeline | None) -> pd.DataFrame:
+    """Feature-build + 3-way predict + availability override, per input row."""
     if model is None:
         model = load()
+    df = _build_features(all_stats).copy()
+    proba = model.predict_proba(df[FEATURE_COLS].astype(float))
+    classes = list(model.classes_)
 
-    df = _build_features(player_recent_stats)
-    X = df[FEATURE_COLS].astype(float)
-    probs = model.predict_proba(X)[:, 1]
-    return pd.Series(probs, index=df.index, name="start_prob")
+    statuses = (df["status"] if "status" in df.columns
+                else pd.Series([None] * len(df), index=df.index))
+    cops = (df["chance_of_playing_next_round"] if "chance_of_playing_next_round" in df.columns
+            else pd.Series([None] * len(df), index=df.index))
+
+    p0s, p1s, p2s = [], [], []
+    for row, status, cp in zip(proba, statuses, cops, strict=False):
+        b0, b1, b2 = _bands_from_proba(row, classes)
+        cop = None if pd.isna(cp) else float(cp) / 100.0
+        b0, b1, b2 = apply_availability_override(b0, b1, b2, status, cop)
+        p0s.append(b0)
+        p1s.append(b1)
+        p2s.append(b2)
+    df["_p0"], df["_p1"], df["_p2"] = p0s, p1s, p2s
+    return df
+
+
+def predict_minutes_bands(
+    all_stats: pd.DataFrame,
+    model: Pipeline | None = None,
+) -> dict[int, tuple[float, float, float]]:
+    """Per player → (P(0 min), P(1–59), P(60+)) after the availability override,
+    taking each player's latest row. The full distribution the components need
+    (P5 conditions clean sheets on P(60+); appearance points on P1/P2)."""
+    df = _bands_frame(all_stats, model)
+    last = df.groupby("player_id")[["_p0", "_p1", "_p2"]].last()
+    return {int(pid): (r["_p0"], r["_p1"], r["_p2"]) for pid, r in last.iterrows()}
 
 
 def predict_batch(
     all_stats: pd.DataFrame,
     model: Pipeline | None = None,
 ) -> dict[int, float]:
-    if model is None:
-        model = load()
+    """Back-compatible scalar 'start probability' = P(60+), from the bands."""
+    return {pid: bands[2] for pid, bands in predict_minutes_bands(all_stats, model).items()}
 
-    df = _build_features(all_stats)
-    X = df[FEATURE_COLS].astype(float)
-    probs = model.predict_proba(X)[:, 1]
-    df = df.copy()
-    df["_prob"] = probs
-    return df.groupby("player_id")["_prob"].last().to_dict()
+
+def predict_start_probabilities(
+    player_recent_stats: pd.DataFrame,
+    model: Pipeline | None = None,
+) -> pd.Series:
+    df = _bands_frame(player_recent_stats, model)
+    return pd.Series(df["_p2"].values, index=df.index, name="start_prob")
