@@ -43,6 +43,21 @@ def test_sample_clean_sheet_points_matches_expectation():
     assert np.mean(draws) == pytest.approx(ref, abs=0.05)
 
 
+def test_sample_clean_sheet_points_gates_concede_penalty_on_played_any():
+    # a certain-DNP defender (played_60=False, played_any=False) must never
+    # be docked for goals conceded while they weren't on the pitch (P10 bug:
+    # the concede-penalty branch had no play-time gate at all).
+    rng = np.random.default_rng(0)
+    draws = [
+        CS.sample_clean_sheet_points(rng, 2.0, False, "DEF", conceded=3, played_any=False)
+        for _ in range(50)
+    ]
+    assert all(d == 0 for d in draws)
+    # played_any=True (a sub who came on) still gets docked normally
+    docked = CS.sample_clean_sheet_points(rng, 2.0, False, "DEF", conceded=4, played_any=True)
+    assert docked < 0
+
+
 # --- P4 assists -------------------------------------------------------------
 def _players():
     return [

@@ -16,11 +16,15 @@ touches the network. That live path is UNTESTED against a real browser here —
 "<Section> <Leaf>" and may need a one-line correction on the first live run
 (they are centralised here precisely so that correction is trivial).
 
-Coverage reality (the sanity harness's tolerance): FBref match tables carry a
-subset of FPL's Opta BPS metrics. Available → goals, assists, tackles,
-interceptions, blocks, take-ons, passing accuracy, cards, penalties, shots,
-saves. Not available → clearances, recoveries, crosses, key passes, big
-chances, errors-leading-to-goal/shot, own goals. Those default to 0.
+Coverage reality (the sanity harness's tolerance; verified against real 25/26
+cached match pages 2026-07-25 — the "may need a one-line correction" above
+already applied once: the live column is "Performance TklW" i.e. tackles WON,
+not "Tkl"). Available → goals, assists, tackles(won), interceptions,
+take-ons, passing accuracy, cards, penalties, shots, saves. Not available →
+blocks, clearances, recoveries, crosses, key passes, big chances,
+errors-leading-to-goal/shot, own goals — the modern FBref summary table simply
+has no such columns (confirmed by inspecting the raw flattened headers, not
+assumed). Those default to 0.
 """
 
 from __future__ import annotations
@@ -55,7 +59,7 @@ FBREF_SUMMARY_MAP: dict[str, str] = {
     "assists": "Performance Ast",
     "yellow_cards": "Performance CrdY",
     "red_cards": "Performance CrdR",
-    "tackles": "Performance Tkl",         # summary Tkl (won-tackles unavailable here)
+    "tackles": "Performance TklW",        # summary only carries tackles WON
     "interceptions": "Performance Int",
     "blocks": "Performance Blocks",
     "dribbles": "Take-Ons Succ",          # successful take-ons

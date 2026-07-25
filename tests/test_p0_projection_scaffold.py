@@ -35,16 +35,25 @@ def test_fixture_multiplier_missing_opponent_is_neutralish():
 
 
 # --- D3 regression: horizon GWs differ by fixture ---------------------------
+# P10 supersedes the fixture_multiplier heuristic with real per-fixture
+# odds-driven MC (projection/assemble.py) — _build_gw_projections is now a
+# thin wrapper around assemble.assemble_gw_projections plus the availability
+# freshness-override, so these two tests mock assemble's output directly.
 def test_build_gw_projections_is_fixture_specific(monkeypatch):
     history = pd.DataFrame({"player_id": [1, 1], "gameweek": [1, 2], "minutes": [90, 90]})
     players = pd.DataFrame([{"id": 1, "status": "a"}])
-    monkeypatch.setattr(bt, "minutes_batch", lambda h, m: {1: 0.9})
-    monkeypatch.setattr(bt, "points_batch", lambda h, m: {1: 5.0})
+    assembled = pd.DataFrame([
+        {"player_id": 1, "gameweek": 5, "xpts": 7.0, "xpts_mean": 7.0,
+         "xpts_var": 1.0, "start_probability": 0.9},
+        {"player_id": 1, "gameweek": 6, "xpts": 3.0, "xpts_mean": 3.0,
+         "xpts_var": 1.0, "start_probability": 0.9},
+    ])
+    monkeypatch.setattr(bt.assemble, "assemble_gw_projections", lambda *a, **k: assembled)
 
-    # GW5: weak opponent at home (easy); GW6: strong opponent away (hard)
-    opp_ctx = {(1, 5): (800.0, True), (1, 6): (1600.0, False)}
     proj = bt._build_gw_projections(
-        history, players, None, None, target_gw=5, horizon=2, opp_ctx=opp_ctx
+        history, players, minutes_model=None, target_gw=5, horizon=2,
+        all_stats=history, match_odds=pd.DataFrame(), defcon_events=pd.DataFrame(),
+        defcon_field_shares={},
     )
     xp5 = proj[proj["gameweek"] == 5]["xpts"].iloc[0]
     xp6 = proj[proj["gameweek"] == 6]["xpts"].iloc[0]
@@ -56,9 +65,17 @@ def test_build_gw_projections_is_fixture_specific(monkeypatch):
 def test_build_gw_projections_unavailable_player_zeroed(monkeypatch):
     history = pd.DataFrame({"player_id": [1], "gameweek": [1], "minutes": [90]})
     players = pd.DataFrame([{"id": 1, "status": "i"}])  # injured
-    monkeypatch.setattr(bt, "minutes_batch", lambda h, m: {1: 0.9})
-    monkeypatch.setattr(bt, "points_batch", lambda h, m: {1: 5.0})
-    proj = bt._build_gw_projections(history, players, None, None, 5, 2, {(1, 5): (800.0, True)})
+    assembled = pd.DataFrame([
+        {"player_id": 1, "gameweek": 5, "xpts": 7.0, "xpts_mean": 7.0,
+         "xpts_var": 1.0, "start_probability": 0.9},
+    ])
+    monkeypatch.setattr(bt.assemble, "assemble_gw_projections", lambda *a, **k: assembled)
+
+    proj = bt._build_gw_projections(
+        history, players, minutes_model=None, target_gw=5, horizon=2,
+        all_stats=history, match_odds=pd.DataFrame(), defcon_events=pd.DataFrame(),
+        defcon_field_shares={},
+    )
     assert (proj["xpts"] == 0.0).all()
 
 

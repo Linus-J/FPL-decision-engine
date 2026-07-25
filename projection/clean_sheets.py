@@ -56,6 +56,7 @@ def sample_clean_sheet_points(
     played_60: bool,
     position: str,
     conceded: int | None = None,
+    played_any: bool | None = None,
 ) -> int:
     """One MC draw of CS + concede points for a player (P10). Draws the
     opponent's goals once; CS bonus needs a clean sheet AND 60+ minutes.
@@ -64,15 +65,25 @@ def sample_clean_sheet_points(
     every player on the same team is scored against the SAME scenario instead
     of each independently redrawing the opponent's goals — the latter is the
     C2 defect (summed independent marginals ⇒ ≈0 teammate covariance).
+
+    ``played_any``: the concede penalty must also be gated on the player
+    having featured at all — a bench player with 0 minutes can't be docked
+    for goals conceded while they weren't on the pitch. Defaults to
+    ``played_60`` (old callers only ever passed one appearance flag, so this
+    reproduces their exact prior behaviour); P10 passes the real per-scenario
+    "played any minutes" flag, which is what surfaced the gap — a certain-DNP
+    player was still getting concede-penalty points every scenario.
     """
     if position not in _CS_ELIGIBLE:
         return 0
     if conceded is None:
         conceded = int(rng.poisson(max(0.0, lam_opponent)))
+    if played_any is None:
+        played_any = played_60
     pts = 0
     if played_60 and conceded == 0:
         pts += CS_POINTS.get(position, 0)
-    if position in _CONCEDE_POSITIONS:
+    if position in _CONCEDE_POSITIONS and played_any:
         units = conceded // SCORING.goals_conceded_per_penalty
         pts += units * SCORING.points_goals_conceded_penalty
     return pts

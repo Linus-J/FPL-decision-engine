@@ -119,7 +119,7 @@ def test_oldrules_reproduction_detects_disagreement():
 def test_map_summary_row_available_fields_and_derivations():
     raw = {
         "min": 90, "Performance Gls": 1, "Performance Ast": 0,
-        "Performance CrdY": 1, "Performance Tkl": 3, "Performance Int": 2,
+        "Performance CrdY": 1, "Performance TklW": 3, "Performance Int": 2,
         "Performance Blocks": 1, "Take-Ons Succ": 2,
         "Passes Att": 40, "Passes Cmp%": 88.5,
         "Performance Sh": 4, "Performance SoT": 1,          # → 3 off target

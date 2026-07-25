@@ -20,11 +20,8 @@ from data.db import get_session
 from optimiser.chips import Chip, recommend_chip
 from optimiser.squad import optimise_squad, optimise_starting_xi
 from optimiser.transfers import evaluate_transfers
-from projection.fixture_adjust import fixture_multiplier
-from projection.minutes_model import predict_batch as minutes_batch
+from projection import assemble
 from projection.minutes_model import train as train_minutes
-from projection.points_model import predict_batch as points_batch
-from projection.points_model import train as train_points
 from projection.rescore import load_bonus_2627_map, rescore_actuals, rescore_coverage_relevant
 
 logger = logging.getLogger(__name__)
@@ -124,79 +121,47 @@ def _actual_gw_points(all_stats: pd.DataFrame, gw: int, score_2627: bool = False
     return dict(zip(subset["player_id"], subset[col]))
 
 
-def _opponent_context(
-    season: str, all_stats: pd.DataFrame
-) -> dict[tuple[int, int], tuple[float | None, bool | None]]:
-    """Per (player_id, gameweek) → (opponent defence strength, was_home) for the
-    season, from the point-in-time fixture context on the stat row (T3b) joined
-    to TeamSeasonStrength. Feeds the per-GW fixture multiplier. The opponent
-    defends away when the player is home, and vice-versa."""
-    db = get_session()
-    try:
-        rows = db.execute(
-            text("""SELECT team_id, strength_defence_home, strength_defence_away
-                    FROM team_season_strength WHERE season = :s"""),
-            {"s": season},
-        ).fetchall()
-    finally:
-        db.close()
-    defence = {int(r[0]): (r[1], r[2]) for r in rows}
-
-    ctx: dict[tuple[int, int], tuple[float | None, bool | None]] = {}
-    for r in all_stats.itertuples():
-        opp = getattr(r, "opponent_team_id", None)
-        if opp is None or pd.isna(opp):
-            continue
-        was_home = getattr(r, "was_home", None)
-        was_home = None if (was_home is None or pd.isna(was_home)) else bool(was_home)
-        def_home, def_away = defence.get(int(opp), (None, None))
-        opp_def = def_away if was_home else def_home
-        ctx[(int(r.player_id), int(r.gameweek))] = (opp_def, was_home)
-    return ctx
-
-
 def _build_gw_projections(
     history: pd.DataFrame,
     players: pd.DataFrame,
     minutes_model,
-    points_model,
     target_gw: int,
     horizon: int,
-    opp_ctx: dict[tuple[int, int], tuple[float | None, bool | None]] | None = None,
+    all_stats: pd.DataFrame,
+    match_odds: pd.DataFrame,
+    defcon_events: pd.DataFrame,
+    defcon_field_shares: dict,
+    n_scenarios: int = assemble.DEFAULT_N_SCENARIOS,
+    seed: int = 42,
 ) -> pd.DataFrame:
+    """P10: MC-assembled per-fixture projections (real odds-implied λ per
+    horizon GW — superseding P0's ``fixture_multiplier`` heuristic, D3's
+    original fix — via ``assemble.assemble_gw_projections``)."""
     if history.empty:
         return pd.DataFrame()
 
-    opp_ctx = opp_ctx or {}
-    sp_by_player = minutes_batch(history, minutes_model)
-    xp_by_player = points_batch(history, points_model)
+    proj = assemble.assemble_gw_projections(
+        history, all_stats, minutes_model, target_gw, horizon,
+        match_odds, defcon_events, defcon_field_shares,
+        n_scenarios=n_scenarios, seed=seed,
+    )
+    if proj.empty:
+        return proj
 
-    rows = []
-    for _, player in players.iterrows():
-        pid = int(player["id"])
-        if player.get("status") in ("i", "u", "s"):
-            sp, base_xp = 0.0, 0.0
-        else:
-            sp = float(sp_by_player.get(pid, 0.5))
-            base_xp = float(xp_by_player.get(pid, 0.0))
+    # Freshness override: `players` is the LIVE snapshot as-of target_gw's
+    # deadline; assemble's minutes bands already apply the availability
+    # override from `history`'s OWN status column (as-of the last COMPLETED
+    # gw), which can be stale by up to a week if status changed since — this
+    # is the same belt-and-suspenders double-check the old code had.
+    unavailable = {
+        int(pid) for pid, status in zip(players["id"], players.get("status", []))
+        if status in ("i", "u", "s")
+    }
+    if unavailable:
+        mask = proj["player_id"].isin(unavailable)
+        proj.loc[mask, ["xpts", "xpts_mean", "xpts_var", "start_probability"]] = 0.0
 
-        # Per-GW fixture conditioning (fixes D3): each horizon GW is scaled by
-        # its own opponent, so projections differ by fixture instead of the base
-        # xp being broadcast flat across the horizon.
-        for gw_offset in range(horizon):
-            gw = target_gw + gw_offset
-            opp_def, was_home = opp_ctx.get((pid, gw), (None, None))
-            mult = fixture_multiplier(opp_def, was_home)
-            xp_gw = max(0.0, base_xp * mult)
-            rows.append({
-                "player_id": pid,
-                "gameweek": gw,
-                "xpts": xp_gw,
-                "xpts_mean": xp_gw,
-                "start_probability": sp,
-            })
-
-    return pd.DataFrame(rows)
+    return proj
 
 
 def _score_squad(
@@ -236,7 +201,9 @@ def run_backtest(
     horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
     all_stats = _load_all_stats(season)
     available_gws = sorted(all_stats["gameweek"].unique())
-    opp_ctx = _opponent_context(season, all_stats)
+    match_odds = assemble.load_match_odds(season)
+    defcon_events = assemble.load_defcon_events(season)
+    defcon_field_shares = assemble.compute_defcon_field_shares(season)
 
     if score_2627:
         db = get_session()
@@ -280,18 +247,19 @@ def run_backtest(
             logger.info("GW%d: insufficient training data (%d rows), skipping", gw, len(history))
             continue
 
-        logger.info("GW%d: training models on %d rows...", gw, len(history))
+        logger.info("GW%d: training minutes model on %d rows...", gw, len(history))
         minutes_model = train_minutes(df_override=history, save=False, fast=True)
-        points_model = train_points(df_override=history, save=False, fast=True)
 
         projections = _build_gw_projections(
             history=history,
             players=players,
             minutes_model=minutes_model,
-            points_model=points_model,
             target_gw=gw,
             horizon=horizon,
-            opp_ctx=opp_ctx,
+            all_stats=all_stats,
+            match_odds=match_odds,
+            defcon_events=defcon_events,
+            defcon_field_shares=defcon_field_shares,
         )
 
         if projections.empty:
@@ -539,7 +507,9 @@ def run_naive_xi_backtest(
     horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
     all_stats = _load_all_stats(season)
     available_gws = sorted(all_stats["gameweek"].unique())
-    opp_ctx = _opponent_context(season, all_stats)
+    match_odds = assemble.load_match_odds(season)
+    defcon_events = assemble.load_defcon_events(season)
+    defcon_field_shares = assemble.compute_defcon_field_shares(season)
 
     if score_2627:
         db = get_session()
@@ -572,11 +542,12 @@ def run_naive_xi_backtest(
             continue
 
         minutes_model = train_minutes(df_override=history, save=False, fast=True)
-        points_model = train_points(df_override=history, save=False, fast=True)
         projections = _build_gw_projections(
             history=history, players=players,
-            minutes_model=minutes_model, points_model=points_model,
-            target_gw=gw, horizon=horizon, opp_ctx=opp_ctx,
+            minutes_model=minutes_model,
+            target_gw=gw, horizon=horizon,
+            all_stats=all_stats, match_odds=match_odds,
+            defcon_events=defcon_events, defcon_field_shares=defcon_field_shares,
         )
         if projections.empty:
             logger.warning("GW%d: no projections, skipping", gw)
