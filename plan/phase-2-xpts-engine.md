@@ -118,9 +118,12 @@ Point-in-time SAFE inputs available: snapshots (T3), real FDR historical (T3b), 
 - **Gate:** reproducibility verified — two independent runs of the same window produced byte-identical results (deterministic: seeded GBMs `random_state=42` + deterministic CBC ILP solves). `tests/test_p_xi_harness.py` (2) regression-tests `_merge_squad_dynamic` — the pandas `_x`/`_y` column-collision bug caught during the live smoke run (merging the full player snapshot duplicated position/team_id/web_name; fixed to merge only the dynamic columns needed). Suite 151/151.
 - `--naive-xi` CLI flag on `scripts/backtest.py` runs this harness directly.
 
-### P-COV — Joint sampling + team covariance  *(C2)*
-- Per fixture, draw **shared team latents once per scenario** (team goals-for/against, CS indicator); condition each player's goals/assists/CS/minutes draws on the shared latent + common `scenario_id`. Shrinkage on the covariance estimate (~33 GW/season is noisy).
-- **Gate:** corr(CS points) between two same-team defenders > 0.5 in the sampled output (a summed-marginal model gives ≈0).
+### P-COV — Joint sampling + team covariance  ✅ DONE *(C2, `projection/covariance.py`)*
+- **`sample_team_goals(rng, team_lambda)`**: the one shared Poisson draw per team per scenario (goals-for using the team's own λ; goals-conceded using the opponent's λ) — callers pass the SAME drawn integer to every player on that team instead of each independently redrawing it, which is what produces the covariance (summing independent per-player marginals gives ≈0, the C2 defect).
+- **`split_multinomial(rng, team_total, players)`**: assigns the shared drawn total across players by weight × minutes_frac — same anchor as `goals.distribute_team_goals`/`assists.distribute_team_assists`, but multinomial-splitting an actual drawn integer rather than each player drawing their own Poisson. Feeds goals/assists.
+- **`clean_sheets.sample_clean_sheet_points`** extended with an optional `conceded` param — when given a pre-drawn shared value (P-COV), every player on the team scores against the identical scenario; when omitted, behaves exactly as before (draws its own, backward-compatible with existing P6-era call sites).
+- **Shrinkage on the covariance estimate**: deferred to P10 (the point where an actual empirical covariance matrix gets estimated from samples for Phase 3 — nothing to shrink yet at the primitive level here).
+- **Gate MET:** `tests/test_covariance.py::test_shared_latent_gives_correlated_cs_points_vs_independent_baseline` — two same-team DEF (p60=0.85, λ_opp=1.1, N=8000 scenarios): shared-latent corr(CS points) > 0.5, independent-redraw corr ≈0 (both asserted in the same test, directly reproducing the C2 gate language). Plus multinomial conservation/degenerate-case tests. Suite 157/157.
 
 ### P10 — Monte-Carlo assembly + exit gate  *(D1/D5)*
 - Sum component samples via P-COV joint scheme → per-player xPts distribution (`xpts_mean`, `xpts_var`, samples) + team covariance for Phase 3. Delete the monolithic regressor.

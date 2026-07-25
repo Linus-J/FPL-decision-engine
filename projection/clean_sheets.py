@@ -51,13 +51,24 @@ def expected_concede_points(lam_opponent: float, p_play: float, position: str) -
 
 
 def sample_clean_sheet_points(
-    rng: np.random.Generator, lam_opponent: float, played_60: bool, position: str
+    rng: np.random.Generator,
+    lam_opponent: float,
+    played_60: bool,
+    position: str,
+    conceded: int | None = None,
 ) -> int:
     """One MC draw of CS + concede points for a player (P10). Draws the
-    opponent's goals once; CS bonus needs a clean sheet AND 60+ minutes."""
+    opponent's goals once; CS bonus needs a clean sheet AND 60+ minutes.
+
+    ``conceded``: pass a pre-drawn team-level goals-conceded count (P-COV) so
+    every player on the same team is scored against the SAME scenario instead
+    of each independently redrawing the opponent's goals — the latter is the
+    C2 defect (summed independent marginals ⇒ ≈0 teammate covariance).
+    """
     if position not in _CS_ELIGIBLE:
         return 0
-    conceded = int(rng.poisson(max(0.0, lam_opponent)))
+    if conceded is None:
+        conceded = int(rng.poisson(max(0.0, lam_opponent)))
     pts = 0
     if played_60 and conceded == 0:
         pts += CS_POINTS.get(position, 0)
