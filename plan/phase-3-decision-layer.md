@@ -26,18 +26,39 @@ Phase 3 has a real prerequisite the plan text doesn't call out explicitly.
 
 ## Task graph (proposed)
 
-### P3-0 — Wire `assemble.py` into `pipeline.py` (live serving)
-Replace `points_model`/`cs_model`'s mean-only predict with `assemble.assemble_gw_projections`
-in `run_projections()`, writing real `xpts_mean`/`xpts_var` instead of the inert `0.0`
-default. Needs the live-horizon odds/defcon-events plumbing (P-FIX, previously deferred
-from P10). Without this, every other Phase 3 objective term is backtest-only theatre —
-the live 26/27 bot would still be mean-only underneath.
+### P3-0 — Wire `assemble.py` into `pipeline.py` (live serving)  ✅ DONE (`86e4d2b`)
+`run_projections()` now calls `assemble.assemble_gw_projections` instead of the old
+`points_model`/`cs_model`/`minutes_model.predict_batch` combo — real `xpts_mean`/
+`xpts_var` are written, not the inert `0.0` default. Built the live-horizon plumbing
+`assemble.py` needed but never had (P-FIX): `_build_live_fixture_context` (fixtures
+table + players' current team, since an unplayed fixture has no `player_gw_stats`
+row for the backtest-style lookup) and `_load_live_match_odds` (raw 1X2/O25 from
+`fixture_odds`, latest fetch at/before each target GW's own deadline — same
+leakage-free posture as `features.load_live_odds_asof`). Moved the shared
+`load_all_stats` query into `assemble.py` so backtest and live can't diverge.
+Removed the now-dead `_get_team_fixture_count`/`_apply_dgw_bgw_multipliers`/
+`_precompute_cs_probabilities`/`_load_player_recent_stats`.
+**Known, documented, NOT solved here:** GW1 cold start — an unplayed season has
+zero `player_gw_stats` rows for `assemble.py`'s rolling history, so `run_projections`
+detects this and returns empty rather than crashing (verified live against the real
+DB, 2026-07-26, pre-season). Real GW1 projections still need T7/P11, tracked
+separately. Suite 188/188 (6 new tests, temp-DB pattern).
 
-### P3-1 — Persist MC scenario samples (`ProjectionSample`)
-Add a persistence step so `sample_fixture`'s per-scenario arrays (shared `scenario_id`
-across teammates in the same fixture, already the right shape for covariance) get
-written, not discarded. Needed for a true portfolio-variance term (`w'Σw` over
-teammate covariance), not just a naive sum of independent per-player variances.
+### P3-1 — Persist MC scenario samples (`ProjectionSample`)  ✅ DONE (`2dca601`)
+`assemble_gw_projections` gained `persist_samples`/`season` params — when on, each
+fixture's raw per-scenario draws (previously computed then discarded after the
+mean/var reduction) get bulk-written. **Design point verified by test:** each fixture
+gets a disjoint `scenario_id` range within its gameweek (offset by `n_scenarios` per
+fixture already assembled that GW) — the schema has no fixture-grouping column, so
+without this a naive join on `(season, gameweek, scenario_id)` would accidentally
+correlate two players from DIFFERENT matches who happen to share a raw scenario
+index; only real teammates (same fixture) ever share a range now. Off by default
+(the 33-GW backtest walk-forward calls this hundreds of times and doesn't want tens
+of thousands of DB rows per call) — `pipeline.py` turns it on, tied to the same
+`persist` flag callers already use. **Storage/retention policy flagged, not solved**
+(same open item P0 originally noted — this table will grow fast under live use).
+Suite 191/191 (3 new tests, monkeypatched `sample_fixture` to isolate the
+persistence/offset wiring from MC-sampling correctness, already covered elsewhere).
 
 ### P3-2 — EO ingestion
 New `ownership_snapshots` table (per v2-build-plan §3.2: `player_id, snapshot_ts,
