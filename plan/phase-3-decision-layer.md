@@ -60,11 +60,23 @@ of thousands of DB rows per call) — `pipeline.py` turns it on, tied to the sam
 Suite 191/191 (3 new tests, monkeypatched `sample_fixture` to isolate the
 persistence/offset wiring from MC-sampling correctness, already covered elsewhere).
 
-### P3-2 — EO ingestion
-New `ownership_snapshots` table (per v2-build-plan §3.2: `player_id, snapshot_ts,
-overall_selected_pct, top10k_selected_pct, captaincy_pct_overall/top10k`). Source:
-FPL API top-10k sampling or a LiveFPL scrape (both free, per the resolved budget
-decision). Unlocks `differential_value ≈ your_pts − EO·field_pts`.
+### P3-2 — EO ingestion  ⚠️ DONE, UNVERIFIED AGAINST LIVE DATA (`ce01d9c`)
+`OwnershipSnapshot` table + `data/ingestors/ownership.py` (samples the "Overall"
+classic league standings for entry IDs, then those managers' GW picks, aggregating
+top-N ownership/captaincy %). `overall_selected_pct` reuses the already-ingested
+bootstrap-static `selected_by_percent`; `captaincy_pct_overall` has no free
+population-wide source and is left nullable (documented gap).
+**Real blocker found by directly probing the live FPL API (not assumed):** GW1's
+deadline is 2026-08-21 — zero gameweeks played this season, so the Overall league
+returns zero ranked entries right now, and the picks endpoint (`/entry/{id}/event/
+{gw}/picks/`) only serves the CURRENT season (confirmed — no way to address a past
+season's picks through this API). **EO sampling cannot produce real output until
+the season starts, regardless of how the ingestor is written** — this isn't a
+code gap, it's a data-availability one. Built and unit-tested (13 tests, pure
+aggregation math + schema round-trip) against the well-documented, stable FPL API
+shape, but NOT verified against a real populated response. Re-verify at GW1 —
+budget time for this in case the real response shape differs subtly from what's
+assumed.
 
 ### P3-3 — Objective v1 rewrite
 `optimiser/transfers.py` (keep its multi-period/FT-banking/wildcard structure) +
