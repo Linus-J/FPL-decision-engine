@@ -25,13 +25,16 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
+from sqlalchemy.dialects.sqlite import insert
 
 from config.strategy import DEFCON, SCORING
 from data.db import get_session
+from data.models import ProjectionSample
 from projection import bonus as bonus_mod
 from projection import clean_sheets, defcon, goals, saves
 from projection.assists import ASSIST_FRACTION, expected_assist_points
@@ -459,6 +462,8 @@ def assemble_gw_projections(
     defcon_field_shares: Mapping[str, Mapping[str, float]],
     n_scenarios: int = DEFAULT_N_SCENARIOS,
     seed: int = 42,
+    persist_samples: bool = False,
+    season: str | None = None,
 ) -> pd.DataFrame:
     """P10: replaces ``points_model.predict_batch`` as ``_build_gw_projections``'s
     xPts source. ``all_stats`` (unfiltered, ALL gameweeks) supplies fixture
@@ -470,9 +475,27 @@ def assemble_gw_projections(
     ``[target_gw, target_gw + horizon)`` — columns ``player_id``, ``gameweek``,
     ``xpts``, ``xpts_mean``, ``xpts_var``, ``start_probability`` — the same
     shape ``_build_gw_projections`` already emits, so it drops in without
-    changing the optimiser's read side."""
+    changing the optimiser's read side.
+
+    ``persist_samples`` (P3-1, requires ``season``): writes each fixture's raw
+    per-scenario draws to ``ProjectionSample`` instead of discarding them
+    after the mean/var reduction — the vehicle for real teammate covariance
+    (P-COV), since ``ProjectionSample.scenario_id`` is only meaningful shared
+    randomness for players drawn in the SAME fixture. Off by default (the
+    33-GW backtest walk-forward calls this hundreds of times and does not
+    want tens of thousands of DB rows per call) — the live-serving path
+    (``pipeline.py``) turns it on. Each fixture gets its own disjoint
+    scenario_id range within a gameweek (offset by ``n_scenarios`` per
+    fixture already assembled that GW) specifically so a consumer joining on
+    (season, gameweek, scenario_id) alone can't accidentally correlate two
+    players from DIFFERENT matches who happen to share a raw scenario index —
+    only real teammates (same fixture) ever share a scenario_id range.
+    Storage/retention policy is not addressed here (flagged, not solved —
+    same open item P0 originally noted)."""
     if history.empty:
         return pd.DataFrame()
+    if persist_samples and not season:
+        raise ValueError("persist_samples=True needs season (for the ProjectionSample rows)")
 
     feat = _build_rolling_features(history, defcon_events)
     bands = predict_minutes_bands(history, minutes_model)
@@ -485,6 +508,7 @@ def assemble_gw_projections(
     fixture_rows = fixture_rows.assign(was_home=fixture_rows["was_home"].fillna(False).astype(bool))
 
     rows = []
+    sample_rows: list[dict] = []
     for gw in target_gws:
         gw_fixtures = fixture_rows[fixture_rows["gameweek"] == gw]
         if gw_fixtures.empty:
@@ -492,6 +516,7 @@ def assemble_gw_projections(
         odds_gw = match_odds[match_odds["gameweek"] == gw]
         home_side = gw_fixtures[gw_fixtures["was_home"]]
         pairs = home_side[["team_id_season", "opponent_team_id"]].drop_duplicates()
+        scenario_offset = 0  # disjoint per-fixture range within this GW (P3-1)
 
         for home_team, away_team in pairs.itertuples(index=False):
             home_team, away_team = int(home_team), int(away_team)
@@ -536,5 +561,41 @@ def assemble_gw_projections(
                     "xpts": mean, "xpts_mean": mean, "xpts_var": var,
                     "start_probability": float(p2),
                 })
+                if persist_samples:
+                    sample_rows.extend(
+                        {
+                            "player_id": pid, "gameweek": gw, "season": season,
+                            "scenario_id": scenario_offset + i, "xpts": float(x),
+                        }
+                        for i, x in enumerate(arr)
+                    )
+            if persist_samples:
+                scenario_offset += n_scenarios
+
+    if persist_samples and sample_rows:
+        _write_projection_samples(sample_rows)
 
     return pd.DataFrame(rows)
+
+
+def _write_projection_samples(sample_rows: list[dict]) -> int:
+    """Bulk-writes P-COV scenario draws (P3-1). One INSERT for the whole
+    batch rather than per-row execute — a single gameweek's live projection
+    run can be tens of thousands of rows (n_scenarios × players × fixtures).
+    Returns the attempted row count (not a DB-confirmed count — the
+    executemany-style bulk insert's result doesn't expose a reliable
+    ``rowcount`` across dialects; ``on_conflict_do_nothing`` means the true
+    written count could be lower on a re-run, which is fine here — this
+    return value is informational/logging only, not relied on for control
+    flow)."""
+    db = get_session()
+    try:
+        created_at = datetime.utcnow()
+        for row in sample_rows:
+            row["created_at"] = created_at
+        stmt = insert(ProjectionSample).on_conflict_do_nothing()
+        db.execute(stmt, sample_rows)
+        db.commit()
+        return len(sample_rows)
+    finally:
+        db.close()

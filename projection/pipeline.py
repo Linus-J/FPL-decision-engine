@@ -221,6 +221,8 @@ def run_projections(
         defcon_field_shares=defcon_field_shares,
         n_scenarios=n_scenarios,
         seed=seed,
+        persist_samples=persist,  # P3-1: real teammate covariance for Phase 3
+        season=season,
     )
 
     if not projections_df.empty:
