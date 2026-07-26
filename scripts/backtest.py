@@ -235,6 +235,7 @@ def run_backtest(
                     players=players,
                     budget=budget,
                     horizon=horizon,
+                    season=season,
                 )
                 new_squad_ids = solution.squad["id"].tolist()
                 transfers_made = 0
@@ -278,6 +279,7 @@ def run_backtest(
                         players=players,
                         budget=current_cost,
                         horizon=horizon,
+                        season=season,
                     )
                     new_squad_ids = solution.squad["id"].tolist()
                     transfers_made = len([p for p in new_squad_ids if p not in set(current_squad_ids)])
@@ -293,6 +295,7 @@ def run_backtest(
                         players=players,
                         budget=current_cost,
                         horizon=1,
+                        season=season,
                     )
                     pre_free_hit_squad = current_squad_ids[:]
                     new_squad_ids = fh_solution.squad["id"].tolist()
@@ -335,6 +338,7 @@ def run_backtest(
                             players=players,
                             budget=budget,
                             horizon=horizon,
+                            season=season,
                         )
                         new_squad_ids = solution.squad["id"].tolist()
                         transfers_made = 0
@@ -345,7 +349,7 @@ def run_backtest(
             continue
 
         try:
-            xi_solution = optimise_starting_xi(squad_df, projections, gw)
+            xi_solution = optimise_starting_xi(squad_df, projections, gw, season=season)
         except RuntimeError as e:
             pos_counts = squad_df["position"].value_counts().to_dict() if "position" in squad_df.columns else {}
             logger.error("GW%d: starting XI infeasible — squad size=%d pos=%s — %s", gw, len(squad_df), pos_counts, e)
@@ -513,7 +517,7 @@ def run_naive_xi_backtest(
         if not squad_ids:
             try:
                 solution = optimise_squad(projections=projections, players=players,
-                                          budget=budget, horizon=horizon)
+                                          budget=budget, horizon=horizon, season=season)
             except Exception as e:
                 logger.error("GW%d: initial squad build failed — %s", gw, e)
                 continue
@@ -524,7 +528,7 @@ def run_naive_xi_backtest(
         squad_df = _merge_squad_dynamic(squad_static, players, squad_ids)
 
         try:
-            xi_solution = optimise_starting_xi(squad_df, projections, gw)
+            xi_solution = optimise_starting_xi(squad_df, projections, gw, season=season)
         except RuntimeError as e:
             logger.error("GW%d: starting XI infeasible — %s", gw, e)
             continue

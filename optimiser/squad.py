@@ -5,6 +5,7 @@ import pandas as pd
 import pulp
 
 from config.strategy import OPTIMISER, SQUAD, TRANSFERS
+from optimiser.captaincy import scenario_based_captain
 from optimiser.scoring import lambda_mu_for_risk_mode, risk_adjusted_score
 
 logger = logging.getLogger(__name__)
@@ -73,16 +74,26 @@ def optimise_squad(
     force_include_ids: list[int] | None = None,
     force_exclude_ids: list[int] | None = None,
     ownership: pd.DataFrame | None = None,
+    season: str | None = None,
 ) -> SquadSolution:
     """``ownership`` (P3-3, optional): a ``(player_id, top10k_selected_pct)``
     frame (P3-2) feeding the risk-adjusted objective's differential term.
     ``None`` (the current live reality — EO sampling can't produce real data
     pre-GW1) makes every player's EO 0%, which is a uniform rescale of the
     objective, not a ranking change — behaviour is identical to before
-    this parameter existed."""
+    this parameter existed.
+
+    ``season`` (P3-4, optional): enables scenario-based captaincy (see
+    ``optimiser/captaincy.py``) for the EARLIEST gameweek in the horizon —
+    the one whose captain choice is actually about to be locked in.
+    ``None`` (most callers — this function builds/rebuilds a SQUAD; final
+    captaincy is usually decided later, per-GW, by ``optimise_starting_xi``)
+    keeps the plain linear-argmax pick."""
     horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
     force_include_ids = set(force_include_ids or [])
     force_exclude_ids = set(force_exclude_ids or [])
+    horizon_gws = sorted(projections["gameweek"].unique())[:horizon]
+    target_gw = horizon_gws[0] if horizon_gws else None
 
     xpts_by_player = _multi_gw_xpts(projections, horizon)
     var_by_player = _multi_gw_var(projections, horizon)
@@ -220,6 +231,16 @@ def optimise_squad(
     captain_id = next(player_ids[i] for i in range(n) if pulp.value(captain[i]) > 0.5)
     vice_id = next(player_ids[i] for i in range(n) if pulp.value(vice[i]) > 0.5)
 
+    if season is not None and target_gw is not None:
+        xpts_by_id = dict(zip(df["id"], df["xpts_total"], strict=True))
+        var_by_id = dict(zip(df["id"], df["var_total"], strict=True))
+        captain_id = scenario_based_captain(
+            season, target_gw, list(starting_ids), xpts_by_id, var_by_id, mu
+        )
+        if captain_id == vice_id:
+            remaining = [pid for pid in starting_ids if pid != captain_id]
+            vice_id = max(remaining, key=lambda pid: xpts_by_id.get(pid, 0.0))
+
     squad_df = df[df["id"].isin(selected_ids)].copy()
     squad_df["is_starting"] = squad_df["id"].isin(starting_ids)
     squad_df["is_captain"] = squad_df["id"] == captain_id
@@ -278,13 +299,21 @@ def optimise_starting_xi(
     projections: pd.DataFrame,
     gw: int,
     ownership: pd.DataFrame | None = None,
+    season: str | None = None,
 ) -> SquadSolution:
     """``ownership`` (P3-3, optional, default None): see ``optimise_squad``'s
     docstring — ``None`` (every call site today, including the P-XI backtest
     harness) makes EO a uniform 0% for every candidate, which is a constant
     rescale of the objective and changes NEITHER the captain pick NOR the
     starting XI versus the pre-P3-3 pure-argmax behaviour — the P-XI exit
-    gate's already-reported numbers stay reproducible byte-for-byte."""
+    gate's already-reported numbers stay reproducible byte-for-byte.
+
+    ``season`` (P3-4, optional, default None): enables scenario-based
+    captaincy for this ``gw`` (see ``optimiser/captaincy.py``) — real joint
+    MC samples over the additive own-variance approximation, where P3-1 has
+    persisted them. At ``risk_mode="balanced"`` (mu=0, today's default) this
+    is a no-op regardless of ``season`` — the P-XI gate stays byte-for-byte
+    reproducible whether or not ``season`` is passed."""
     gw_proj = projections[projections["gameweek"] == gw][["player_id", "xpts"]].copy()
     if "xpts_var" in projections.columns:
         gw_var = projections[projections["gameweek"] == gw][["player_id", "xpts_var"]]
@@ -343,6 +372,16 @@ def optimise_starting_xi(
     starting_ids = {player_ids[i] for i in range(n) if pulp.value(starting[i]) > 0.5}
     captain_id = next(player_ids[i] for i in range(n) if pulp.value(captain[i]) > 0.5)
     vice_id = next(player_ids[i] for i in range(n) if pulp.value(vice[i]) > 0.5)
+
+    if season is not None:
+        xpts_by_id = dict(zip(df["id"], df["xpts"], strict=True))
+        var_by_id = dict(zip(df["id"], df["xpts_var"], strict=True))
+        captain_id = scenario_based_captain(
+            season, gw, list(starting_ids), xpts_by_id, var_by_id, mu
+        )
+        if captain_id == vice_id:
+            remaining = [pid for pid in starting_ids if pid != captain_id]
+            vice_id = max(remaining, key=lambda pid: xpts_by_id.get(pid, 0.0))
 
     squad_out = df.copy()
     squad_out["is_starting"] = squad_out["id"].isin(starting_ids)

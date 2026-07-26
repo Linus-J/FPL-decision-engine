@@ -104,9 +104,47 @@ Suite 226/226 (19 new tests, including an ILP-level test proving EO actually
 flips a captain choice between two equally-projected players under aggressive
 mode).
 
-### P3-4 — Scenario-based captaincy
-Replace the linear-argmax captain pick with selection over sampled scenarios
-(biggest weekly variance lever per the plan) — needs P3-1's real samples.
+### P3-4 — Scenario-based captaincy  ✅ DONE
+**Why linear argmax wasn't the end of the story:** doubling the top scorer is
+always weakly optimal for a MEAN objective, and P3-3's own-variance term
+(`mu*xpts_var`, additive per player) doesn't change that — it just reranks
+who counts as "top" before the same argmax runs. It's blind to the one thing
+that actually makes captaincy a real decision under a variance-aware
+objective: doubling a player adds `Var(2X) = 4*Var(X)` (not `2*Var(X)`) to
+the team total, and if that player shares a fixture with other starting-XI
+players, doubling also doubles their COVARIANCE contribution — invisible to
+a sum of independent per-player variances.
+**Implemented (`optimiser/captaincy.py`):** uses the real joint MC draws
+P3-1 persists (`ProjectionSample`). Fixture membership is recovered from
+each fixture's disjoint `scenario_id` range within a gameweek (an existing,
+tested invariant of `assemble.py`, not a new assumption) — players sharing
+an identical (min, max) scenario_id span were drawn in the same fixture, so
+cross-fixture covariance is exactly 0 and team-total variance decomposes
+additively across fixture groups; only the candidate captain's own group
+needs recomputing per candidate. `pick_captain` degrades EXACTLY to the
+additive own-variance approximation for any candidate with no persisted
+samples (cold start, or the 33-GW backtest walk-forward, which never
+persists samples per P3-1) — proved algebraically (the shared "baseline"
+term becomes a true additive constant across candidates when no group data
+exists anywhere) and confirmed by test, not assumed. At `mu == 0`
+(risk_mode="balanced", today's default) `scenario_based_captain` short-
+circuits to plain mean argmax without touching the DB at all.
+Wired into `optimise_squad`/`optimise_starting_xi` via an optional `season`
+param (threaded through every call site: `decision_engine.py`,
+`backtest.py`'s both harnesses, `cold_start.py`) — a post-ILP override of
+the captain (and vice, re-picked if it collided with the new captain) using
+the true team-total variance instead of the ILP's own additive-score
+argmax. **Verified the P-XI exit gate is unaffected:** re-ran the GW6–9
+naive-XI backtest against the live DB with `season` now threaded through
+every call site — predicted_xpts/captain/actual_pts came back byte-for-byte
+identical to the pre-P3-4 52.48 run (Keane/Senesi/Gabriel/Gabriel), because
+default config is balanced (mu=0) and backtest never persists samples
+either way — both independently sufficient for the no-op guarantee, and
+both hold. Suite 239/239 (13 new tests, including a synthetic-correlation
+test proving two candidates with IDENTICAL declared own-variance get
+different captaincy scores once one of them has a real positively-
+correlated fixture-mate — the exact gap the additive approximation can't
+see).
 
 ### P3-5 — Chips rework
 `chips.py` from threshold-vs-constant to scenario EV (`P(chip pays off)` over

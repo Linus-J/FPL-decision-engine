@@ -149,6 +149,6 @@ def build_initial_squad(season: str, budget: float | None = None):
     ).drop(columns=["player_id"], errors="ignore")
 
     solution = optimise_squad(
-        projections=projections, players=players, budget=budget, horizon=1
+        projections=projections, players=players, budget=budget, horizon=1, season=season
     )
     return solution, projections

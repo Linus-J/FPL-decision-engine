@@ -177,6 +177,7 @@ def run(
             players=players,
             budget=available_budget,
             horizon=1,
+            season=season,
         )
     else:
         transfer_plan = evaluate_transfers(
@@ -195,7 +196,7 @@ def run(
         ) if transfer_plan.transfers_in else squad_ids
 
         squad_df = players[players["id"].isin(new_squad_ids)].copy()
-        squad_solution = optimise_starting_xi(squad_df, projections, next_gw)
+        squad_solution = optimise_starting_xi(squad_df, projections, next_gw, season=season)
 
     xi_solution = squad_solution
 
