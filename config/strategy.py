@@ -285,6 +285,29 @@ class OptimiserConfig:
 
 
 # ---------------------------------------------------------------------------
+# DEPARTURE RISK (v2-build-plan §6.5) — squad-construction gate, LIVE from the
+# initial-15 build (not shadow-mode like the rest of the news layer): the
+# asymmetric cost of picking a rumoured/confirmed leaver into the initial 15
+# is high enough to act on immediately, not wait for A/B validation.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class DepartureRiskRules:
+    # p_leave >= this -> hard-exclude from the candidate pool entirely (never
+    # picked, and force-sold immediately if already owned). FPL status='u' /
+    # an element dropped from bootstrap is ground truth => p_leave=1.0,
+    # already well above this threshold.
+    hard_exclude_p_leave: float = 0.7
+    # p_leave below this -> no effect (too uncertain a rumour to act on).
+    rumour_floor_p_leave: float = 0.2
+    # Treat this GW range as a mini-preseason re-plan trigger (incoming
+    # signings enter cold-start, outgoing players get the departure gate
+    # applied proactively) — approximate, season-tunable.
+    january_window_start_gw: int = 20
+    january_window_end_gw: int = 24
+
+
+# ---------------------------------------------------------------------------
 # SINGLETON INSTANCES — import these everywhere
 # ---------------------------------------------------------------------------
 
@@ -308,3 +331,4 @@ SQUAD = SquadRules()
 DGW = DGWStrategy()
 CHIP_TIMING = ChipTimingThresholds()
 OPTIMISER = OptimiserConfig()
+DEPARTURE_RISK = DepartureRiskRules()

@@ -5,6 +5,7 @@ import pandas as pd
 import pulp
 
 from config.strategy import OPTIMISER, SQUAD, TRANSFERS
+from optimiser.departure_risk import confirmed_p_leave, is_hard_excluded
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,16 @@ def evaluate_transfers(
         candidate_pids |= set(projections["player_id"].unique())
 
     df = players[players["id"].isin(candidate_pids)].copy()
-    df = df[df["status"].isin(["a", "d"])]
+    # Status filter applies to NOT-currently-owned candidates only (never buy
+    # an unavailable/departed player). An OWNED player is kept regardless of
+    # status so a confirmed departure (status='u') can be explicitly modelled
+    # as a forced sale below, rather than silently dropped from the ILP's
+    # variable set entirely — the latter left the squad-size constraint to
+    # coincidentally force a replacement transfer in, but with no `tout`
+    # variable for the departed player at all, so they never appeared in the
+    # reported `transfers_out` (v2-build-plan §6.5 departure-risk gate fix).
+    owned_mask = df["id"].isin(current_squad_ids)
+    df = df[owned_mask | df["status"].isin(["a", "d"])]
     df = df.reset_index(drop=True)
 
     pid_list = df["id"].tolist()
@@ -74,7 +84,12 @@ def evaluate_transfers(
     costs = df["now_cost"].tolist()
     positions = df["position"].tolist()
     teams = df["team_id"].tolist()
+    statuses = df["status"].tolist()
     in_current = [1 if pid in set(current_squad_ids) else 0 for pid in pid_list]
+    confirmed_departure_ids = {
+        pid for pid, status, owned in zip(pid_list, statuses, in_current, strict=True)
+        if owned and is_hard_excluded(confirmed_p_leave(status))
+    }
 
     xpts_pw: dict[tuple[int, int], float] = {}
     for w, gw in enumerate(gws):
@@ -112,6 +127,16 @@ def evaluate_transfers(
         prob += ft[0] == 15
     else:
         prob += ft[0] == free_transfers
+
+    # Departure-risk gate (§6.5): a confirmed departure (status='u') already
+    # owned must be sold immediately, not merely made ineligible to buy back
+    # (the generic "can't tin an owned player at w=0" constraint below
+    # already prevents re-buying) — forcing tout==1 here (rather than
+    # omitting them from the model, the prior behaviour) means they
+    # correctly show up in the reported transfers_out and go through the
+    # normal hit/FT accounting.
+    for pid in confirmed_departure_ids:
+        prob += tout[(pid, 0)] == 1
 
     for w in range(H):
         for i, pid in enumerate(pid_list):
