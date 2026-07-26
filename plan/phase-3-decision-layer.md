@@ -97,6 +97,28 @@ Walk-forward vs benchmarks; report the simulated final-rank distribution, not me
 points — a risk-seeking bot can have a slightly lower mean with a fatter right tail
 and still be the better rank-optimising choice.
 
+### Departure-risk gate (§6.5)  ✅ DONE (`9531207`)
+Not originally in the P3-0..P3-5 numbering above, but flagged as *more urgent* than
+P3-4/P3-5 when asked "does anything else need to be done?" — unlike the rest of the
+Phase-4 news layer, this gate is meant to be **live from the initial-15 build**, not
+shadow-mode, because picking a confirmed departure into the squad is a costly,
+asymmetric mistake. `config/strategy.py::DepartureRiskRules` +
+`optimiser/departure_risk.py` (`confirmed_p_leave`, `stay_probability_multiplier`,
+`apply_departure_discount`, `hard_excluded_ids`).
+**Real bug found and fixed while wiring this up:** `optimise_squad` already correctly
+excluded `status='u'` players from new picks, but `evaluate_transfers` filtered ALL
+candidates — including already-OWNED ones — by status, so an owned player who became
+`status='u'` was silently dropped from the ILP's variable set entirely (no `tout`
+variable ever existed for them). The squad-size constraint happened to coincidentally
+force a replacement transfer in, but the departure itself never appeared in the
+reported `transfers_out`. Fixed: owned players stay in the candidate pool regardless
+of status, with `tout==1` explicitly forced for confirmed departures — correct
+hit/FT accounting, correct reporting. Suite 207/207 (9 new tests, including a
+synthetic 15-player squad scenario proving the fix).
+**Not built:** the rumour tier (`0.2 ≤ p_leave < 0.7`) has no data source —
+Phase 4's LLM news layer (RSS + Ollama credibility grading) doesn't exist yet. The
+discount mechanism is ready (`apply_departure_discount`), just unfed.
+
 ## Open sequencing question
 P3-0/P3-1 (live-serving + sample persistence) and P3-2 (EO ingestion) are independent —
 neither blocks the other. P3-3 needs both. Objective v1 (linear, additive terms) is
