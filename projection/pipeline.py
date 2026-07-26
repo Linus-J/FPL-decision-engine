@@ -5,10 +5,11 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.dialects.sqlite import insert
 
-from config.strategy import DGW, OPTIMISER
+from config.strategy import OPTIMISER
 from data.db import get_session
-from data.models import Gameweek, Player, PlayerProjection
-from projection import cs_model, minutes_model, points_model
+from data.models import Gameweek, PlayerProjection
+from projection import assemble
+from projection.minutes_model import train as train_minutes
 
 logger = logging.getLogger(__name__)
 
@@ -78,57 +79,6 @@ def _get_bgw_gameweeks(lookahead: int) -> set[int]:
         db.close()
 
 
-def _load_player_recent_stats(season: str = "2026-27") -> pd.DataFrame:
-    db = get_session()
-    try:
-        query = text("""
-            SELECT
-                s.player_id,
-                s.gameweek,
-                s.season,
-                s.minutes,
-                s.total_points,
-                s.goals_scored,
-                s.assists,
-                s.clean_sheets,
-                s.goals_conceded,
-                s.saves,
-                s.yellow_cards,
-                s.red_cards,
-                s.bonus,
-                s.bps,
-                s.value,
-                p.position,
-                p.team_id,
-                p.now_cost,
-                p.ict_index,
-                p.influence,
-                p.creativity,
-                p.threat,
-                p.form,
-                p.selected_by_percent,
-                p.status,
-                p.chance_of_playing_next_round,
-                COALESCE(x.xg, 0)          AS xg,
-                COALESCE(x.xa, 0)          AS xa,
-                COALESCE(x.xgi, 0)         AS xgi,
-                COALESCE(x.npxg, 0)        AS npxg,
-                COALESCE(x.shots, 0)       AS shots,
-                COALESCE(x.key_passes, 0)  AS key_passes
-            FROM player_gw_stats s
-            JOIN players p ON p.id = s.player_id
-            LEFT JOIN player_xg_stats x
-                ON x.player_id = s.player_id
-                AND x.gameweek  = s.gameweek
-                AND x.season    = s.season
-            WHERE s.season = :season
-            ORDER BY s.player_id, s.gameweek
-        """)
-        return pd.read_sql(query, db.bind, params={"season": season})
-    finally:
-        db.close()
-
-
 def _get_all_players() -> pd.DataFrame:
     db = get_session()
     try:
@@ -143,190 +93,145 @@ def _get_all_players() -> pd.DataFrame:
         db.close()
 
 
-def _get_team_fixture_count(gw: int) -> dict[int, int]:
+def _build_live_fixture_context(season: str, target_gws: list[int]) -> pd.DataFrame:
+    """(player_id, gameweek, team_id_season, opponent_team_id, was_home) for
+    the LIVE horizon, from the season-aware ``fixtures`` table joined to each
+    player's CURRENT team (P-FIX/P3-0). The backtest path gets this from a
+    player's own LATER ``player_gw_stats`` rows (safe — fixture info known in
+    advance, not an outcome), but those rows don't exist yet for an unplayed
+    fixture, so live serving needs its own source. Same shape as
+    ``assemble.load_all_stats``'s fixture columns — drops into
+    ``assemble_gw_projections``'s ``all_stats`` role directly.
+
+    DGW note: a player with two fixtures in one gameweek gets two rows here;
+    ``assemble_gw_projections`` currently dedupes to one (P12 defers proper
+    per-team DGW handling) — same known simplification the backtest path
+    already has, not solved here.
+    """
+    if not target_gws:
+        return pd.DataFrame(
+            columns=["player_id", "gameweek", "team_id_season", "opponent_team_id", "was_home"]
+        )
     db = get_session()
     try:
-        query = text("""
-            SELECT team_h_id AS team_id, COUNT(*) AS fixtures FROM fixtures WHERE gameweek = :gw GROUP BY team_h_id
-            UNION ALL
-            SELECT team_a_id AS team_id, COUNT(*) AS fixtures FROM fixtures WHERE gameweek = :gw GROUP BY team_a_id
+        placeholders = ",".join(f":gw{i}" for i in range(len(target_gws)))
+        params = {"season": season, **{f"gw{i}": gw for i, gw in enumerate(target_gws)}}
+        query = text(f"""
+            SELECT p.id AS player_id, f.gameweek,
+                   p.team_id AS team_id_season,
+                   CASE WHEN f.team_h_id = p.team_id THEN f.team_a_id ELSE f.team_h_id END
+                       AS opponent_team_id,
+                   CASE WHEN f.team_h_id = p.team_id THEN 1 ELSE 0 END AS was_home
+            FROM players p
+            JOIN fixtures f ON (f.team_h_id = p.team_id OR f.team_a_id = p.team_id)
+            WHERE f.season = :season AND f.gameweek IN ({placeholders})
         """)
-        rows = db.execute(query, {"gw": gw}).fetchall()
-        counts: dict[int, int] = {}
-        for team_id, cnt in rows:
-            counts[team_id] = counts.get(team_id, 0) + cnt
-        return counts
+        return pd.read_sql(query, db.bind, params=params)
     finally:
         db.close()
 
 
-def _apply_dgw_bgw_multipliers(
-    xpts: float,
-    gw: int,
-    team_id: int,
-    dgw_gws: set[int],
-    bgw_gws: set[int],
-    fixture_counts: dict[int, int],
-) -> float:
-    if gw in bgw_gws and fixture_counts.get(team_id, 1) == 0:
-        return xpts * DGW.bgw_xpts_multiplier
-    if gw in dgw_gws and fixture_counts.get(team_id, 1) > 1:
-        return xpts * DGW.dgw_xpts_multiplier
-    return xpts
-
-
-def _precompute_cs_probabilities(
-    all_players: pd.DataFrame,
-    target_gws: list[int],
-    season: str,
-    model,
-    recent_stats: pd.DataFrame,
-) -> dict[tuple[int, str, int], float]:
-    from projection.features import FDR_FEATURE_COLS, add_fdr_features, load_fixture_difficulty
-
-    defender_positions = {"GKP", "DEF"}
-    def_players = all_players[all_players["position"].isin(defender_positions)].copy()
-
-    if def_players.empty or recent_stats.empty:
-        return {}
-
-    team_ids = def_players["team_id"].unique().tolist()
-
-    team_stats = recent_stats[
-        recent_stats["player_id"].isin(def_players["id"])
-    ].copy()
-
-    fdr_df = load_fixture_difficulty(season=season)
-
-    rows = []
-    for team_id in team_ids:
-        team_history = team_stats[team_stats["team_id"] == team_id].sort_values("gameweek")
-
-        cs_history = (team_history["clean_sheets"] > 0).tolist()
-        gc_history = team_history["goals_conceded"].tolist()
-
-        cs_rate_3 = float(sum(cs_history[-3:]) / max(len(cs_history[-3:]), 1))
-        cs_rate_5 = float(sum(cs_history[-5:]) / max(len(cs_history[-5:]), 1))
-        gc_rate_3 = float(sum(gc_history[-3:]) / max(len(gc_history[-3:]), 1))
-        gc_rate_5 = float(sum(gc_history[-5:]) / max(len(gc_history[-5:]), 1))
-
-        team_fdr = fdr_df[fdr_df["player_id"].isin(
-            def_players[def_players["team_id"] == team_id]["id"].tolist()
-        )]
-
-        for gw in target_gws:
-            fdr_row = team_fdr[team_fdr["gameweek"] == gw]
-            is_home = float(fdr_row["is_home"].iloc[0]) if not fdr_row.empty else 0.5
-            opp_att = float(fdr_row["opp_attack_strength"].iloc[0]) if not fdr_row.empty else 1200.0
-            own_def = float(fdr_row["own_defence_strength"].iloc[0]) if not fdr_row.empty else 1200.0
-            def_vs_att = own_def / max(opp_att, 1)
-
-            for pos in ("GKP", "DEF"):
-                rows.append({
-                    "team_id": team_id,
-                    "position": pos,
-                    "gameweek": gw,
-                    "team_cs_rate_3gw": cs_rate_3,
-                    "team_cs_rate_5gw": cs_rate_5,
-                    "team_gc_rate_3gw": gc_rate_3,
-                    "team_gc_rate_5gw": gc_rate_5,
-                    "pos_GKP": 1.0 if pos == "GKP" else 0.0,
-                    "pos_DEF": 1.0 if pos == "DEF" else 0.0,
-                    "is_home": is_home,
-                    "opp_attack_strength": opp_att,
-                    "own_defence_strength": own_def,
-                    "defence_vs_attack": def_vs_att,
-                })
-
-    if not rows:
-        return {}
-
-    from projection.cs_model import FEATURE_COLS as CS_FEATURE_COLS
-    batch_df = pd.DataFrame(rows)
-    X = batch_df[CS_FEATURE_COLS].astype(float)
-    probs = model.predict_proba(X)[:, 1]
-
-    return {
-        (int(r["team_id"]), r["position"], int(r["gameweek"])): float(p)
-        for r, p in zip(rows, probs)
-    }
+def _load_live_match_odds(season: str, target_gws: list[int]) -> pd.DataFrame:
+    """Raw de-vigged 1X2 + O/U2.5 for the live horizon's fixtures, as-of each
+    target GW's own deadline (the latest ``fixture_odds`` fetch at/before that
+    deadline — same leakage-free posture as ``features.load_live_odds_asof``,
+    generalised across a whole horizon and returning the raw
+    ``team_goals_from_odds`` inputs instead of the derived CS/BTTS fields)."""
+    if not target_gws:
+        return pd.DataFrame(columns=[
+            "gameweek", "home_team_id", "away_team_id",
+            "home_win_prob", "draw_prob", "away_win_prob", "over25_prob",
+        ])
+    db = get_session()
+    try:
+        placeholders = ",".join(f":gw{i}" for i in range(len(target_gws)))
+        params = {"season": season, **{f"gw{i}": gw for i, gw in enumerate(target_gws)}}
+        query = text(f"""
+            SELECT f.gameweek, f.team_h_id AS home_team_id, f.team_a_id AS away_team_id,
+                   fo.home_win_prob, fo.draw_prob, fo.away_win_prob, fo.over25_prob
+            FROM fixtures f
+            JOIN gameweeks g ON g.id = f.gameweek AND g.season = f.season
+            JOIN fixture_odds fo ON fo.fixture_id = f.id
+                AND fo.fetched_at <= g.deadline_time
+                AND fo.fetched_at = (
+                    SELECT MAX(fo2.fetched_at) FROM fixture_odds fo2
+                    WHERE fo2.fixture_id = f.id AND fo2.fetched_at <= g.deadline_time
+                )
+            WHERE f.season = :season AND f.gameweek IN ({placeholders})
+        """)
+        return pd.read_sql(query, db.bind, params=params)
+    finally:
+        db.close()
 
 
 def run_projections(
     season: str = "2026-27",
     horizon: int | None = None,
     persist: bool = True,
+    n_scenarios: int | None = None,
+    seed: int = 42,
 ) -> pd.DataFrame:
+    """P3-0: live-serving projections via the P10 MC assembly
+    (``projection.assemble``) — replaces the old monolithic
+    ``points_model``/``minutes_model``/``cs_model`` combo, which wrote
+    ``xpts_mean``/``xpts_var`` as inert 0.0 on every row. Real per-fixture
+    odds-implied λ + the P-COV shared-latent joint sampling now apply live,
+    the same engine already validated in the backtest harness.
+
+    Known limitation NOT solved here: GW1 cold start. If ``season`` has no
+    played gameweeks yet, ``assemble_gw_projections`` has no rolling history
+    to condition on and returns nothing — this is the same gap T7's
+    cold-start harness / P11's prior-league priors exist to fill, tracked
+    separately, not addressed by this live-serving rewiring.
+    """
     horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
+    n_scenarios = n_scenarios or assemble.DEFAULT_N_SCENARIOS
     _, next_gw = _get_current_and_next_gw()
     target_gws = list(range(next_gw, next_gw + horizon))
 
-    dgw_gws = _get_dgw_gameweeks(horizon)
-    bgw_gws = _get_bgw_gameweeks(horizon)
+    logger.info("Running projections (P10 MC assembly) for GWs %s", target_gws)
 
-    logger.info(
-        "Running projections for GWs %s (DGWs: %s, BGWs: %s)",
-        target_gws, sorted(dgw_gws), sorted(bgw_gws),
+    history = assemble.load_all_stats(season)
+    if history.empty:
+        logger.warning(
+            "No played gameweeks yet for %s — cold start, no rolling history "
+            "for assemble.py to condition on. Returning no projections (see "
+            "T7/P11 for the separate cold-start path).",
+            season,
+        )
+        empty_cols = ["player_id", "gameweek", "xpts", "xpts_mean", "xpts_var", "start_probability"]
+        if persist:
+            _persist_projections(pd.DataFrame(columns=empty_cols))
+        return pd.DataFrame(columns=empty_cols)
+
+    min_model = train_minutes(df_override=history, save=False, fast=True)
+    fixture_context = _build_live_fixture_context(season, target_gws)
+    match_odds = _load_live_match_odds(season, target_gws)
+    defcon_events = assemble.load_defcon_events(season)
+    defcon_field_shares = assemble.compute_defcon_field_shares(season)
+
+    projections_df = assemble.assemble_gw_projections(
+        history=history,
+        all_stats=fixture_context,
+        minutes_model=min_model,
+        target_gw=next_gw,
+        horizon=horizon,
+        match_odds=match_odds,
+        defcon_events=defcon_events,
+        defcon_field_shares=defcon_field_shares,
+        n_scenarios=n_scenarios,
+        seed=seed,
     )
 
-    min_model = minutes_model.load()
-    pts_model = points_model.load()
-    cs_ml_model = cs_model.load()
-
-    recent_stats = _load_player_recent_stats(season)
-    all_players = _get_all_players()
-
-    if recent_stats.empty:
-        logger.warning("No current-season stats found — projections will rely on player metadata only")
-
-    cs_lookup = _precompute_cs_probabilities(
-        all_players=all_players,
-        target_gws=target_gws,
-        season=season,
-        model=cs_ml_model,
-        recent_stats=recent_stats,
-    )
-
-    start_prob_map = minutes_model.predict_batch(recent_stats, min_model)
-    xpts_map = points_model.predict_batch(recent_stats, pts_model)
-
-    fixture_counts_by_gw = {gw: _get_team_fixture_count(gw) for gw in target_gws}
-
-    rows: list[dict] = []
-
-    for _, player in all_players.iterrows():
-        player_id = int(player["id"])
-        team_id = int(player["team_id"])
-        position = player["position"]
-
-        start_prob = start_prob_map.get(player_id, 0.5)
-        base_xpts = xpts_map.get(player_id, 0.0)
-
-        if player["status"] in ("i", "u", "s"):
-            start_prob = 0.0
-            base_xpts = 0.0
-        elif player["status"] == "d":
-            cop = (player["chance_of_playing_next_round"] or 50) / 100.0
-            start_prob *= cop
-            base_xpts *= cop
-
-        for gw in target_gws:
-            adjusted_xpts = _apply_dgw_bgw_multipliers(
-                base_xpts, gw, team_id, dgw_gws, bgw_gws, fixture_counts_by_gw[gw]
-            )
-
-            cs_prob = cs_lookup.get((team_id, position, gw), 0.0)
-
-            rows.append({
-                "player_id": player_id,
-                "gameweek": gw,
-                "xpts": round(adjusted_xpts, 4),
-                "start_probability": round(start_prob, 4),
-                "cs_probability": round(cs_prob, 4),
-                "created_at": datetime.utcnow(),
-            })
-
-    projections_df = pd.DataFrame(rows)
+    if not projections_df.empty:
+        all_players = _get_all_players()
+        unavailable = set(
+            all_players.loc[all_players["status"].isin(["i", "u", "s"]), "id"].astype(int)
+        )
+        if unavailable:
+            mask = projections_df["player_id"].isin(unavailable)
+            projections_df.loc[mask, ["xpts", "xpts_mean", "xpts_var", "start_probability"]] = 0.0
+        projections_df["created_at"] = datetime.utcnow()
 
     if persist:
         _persist_projections(projections_df)
@@ -366,6 +271,12 @@ def _estimate_cs_probability(team_id: int, position: str, gw: int) -> float:
 
 
 def _persist_projections(df: pd.DataFrame) -> None:
+    """Persists the P10 MC assembly's output. ``cs_probability`` is left at
+    its column default (0.0) — assemble.py computes each player's
+    clean-sheet component internally (P5) but doesn't currently surface it
+    as a standalone output column; the only consumer is a reporting script
+    (scripts/plot_analysis.py), not core decision logic, so this is a
+    documented gap rather than a silent one, not a P3-0 blocker."""
     db = get_session()
     try:
         for _, row in df.iterrows():
@@ -375,8 +286,9 @@ def _persist_projections(df: pd.DataFrame) -> None:
                     player_id=int(row["player_id"]),
                     gameweek=int(row["gameweek"]),
                     xpts=float(row["xpts"]),
+                    xpts_mean=float(row.get("xpts_mean", row["xpts"])),
+                    xpts_var=float(row.get("xpts_var", 0.0)),
                     start_probability=float(row["start_probability"]),
-                    cs_probability=float(row["cs_probability"]),
                     created_at=row["created_at"],
                 )
                 .on_conflict_do_nothing()
@@ -399,6 +311,8 @@ def get_latest_projections(gw: int | None = None) -> pd.DataFrame:
                 pp.player_id,
                 pp.gameweek,
                 pp.xpts,
+                pp.xpts_mean,
+                pp.xpts_var,
                 pp.start_probability,
                 pp.cs_probability,
                 pp.created_at,

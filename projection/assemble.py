@@ -287,6 +287,73 @@ def load_match_odds(season: str) -> pd.DataFrame:
         db.close()
 
 
+def load_all_stats(season: str) -> pd.DataFrame:
+    """All ``player_gw_stats`` rows for a season, joined to the point-in-time
+    player state snapshot and per-GW xG stats. Shared by the backtest path
+    (``scripts/backtest.py``, historically this lived there as
+    ``_load_all_stats``) and the live-serving path (``projection/pipeline.py``)
+    so both feed ``assemble_gw_projections`` from the identical query shape —
+    moved here (P3-0) rather than duplicated, so a live/backtest divergence in
+    this join can't silently creep in.
+
+    For a live, in-progress season this naturally contains only PLAYED
+    gameweeks (``player_gw_stats`` has no rows for a game that hasn't
+    happened yet) — exactly the ``history`` role ``assemble_gw_projections``
+    needs. It does NOT carry future-fixture context, which is why the live
+    caller passes a separately-built fixture-context frame as ``all_stats``
+    instead of this one for that role (see ``pipeline.py``).
+    """
+    db = get_session()
+    try:
+        # Dynamic player attributes (ict/influence/creativity/threat/form/
+        # selected_by_percent/status/chance) come from the point-in-time
+        # snapshot as-of the gameweek deadline — NOT the mutable players.*
+        # columns, which would leak the latest value into historical training
+        # rows (Phase-1 leaks L1/L2). player_gw_stats/xg_stats stay as-is
+        # (already point-in-time). Static columns (position, team_id) come from
+        # players.
+        query = text("""
+            SELECT
+                s.player_id, s.gameweek, s.season,
+                s.minutes, s.total_points, s.goals_scored, s.assists,
+                s.clean_sheets, s.goals_conceded, s.saves,
+                s.yellow_cards, s.red_cards, s.bonus, s.bps,
+                s.value AS now_cost,
+                s.team_id_season, s.opponent_team_id, s.was_home,
+                p.position, p.team_id,
+                COALESCE(ps.ict_index, 0) AS ict_index,
+                COALESCE(ps.influence, 0) AS influence,
+                COALESCE(ps.creativity, 0) AS creativity,
+                COALESCE(ps.threat, 0) AS threat,
+                COALESCE(ps.form, 0) AS form,
+                COALESCE(ps.selected_by_percent, 0) AS selected_by_percent,
+                COALESCE(ps.status, 'a') AS status,
+                ps.chance_of_playing_next_round AS chance_of_playing_next_round,
+                COALESCE(x.xg, 0) AS xg, COALESCE(x.xa, 0) AS xa,
+                COALESCE(x.xgi, 0) AS xgi, COALESCE(x.npxg, 0) AS npxg,
+                COALESCE(x.shots, 0) AS shots, COALESCE(x.key_passes, 0) AS key_passes
+            FROM player_gw_stats s
+            JOIN players p ON p.id = s.player_id
+            JOIN gameweeks g ON g.id = s.gameweek AND g.season = s.season
+            LEFT JOIN player_state_snapshots ps ON ps.id = (
+                SELECT ps2.id FROM player_state_snapshots ps2
+                WHERE ps2.player_id = s.player_id
+                    AND ps2.season = s.season
+                    AND ps2.snapshot_ts < g.deadline_time
+                ORDER BY ps2.snapshot_ts DESC LIMIT 1
+            )
+            LEFT JOIN player_xg_stats x
+                ON x.player_id = s.player_id
+                AND x.gameweek = s.gameweek
+                AND x.season = s.season
+            WHERE s.season = :season
+            ORDER BY s.player_id, s.gameweek
+        """)
+        return pd.read_sql(query, db.bind, params={"season": season})
+    finally:
+        db.close()
+
+
 def load_defcon_events(season: str) -> pd.DataFrame:
     """Per (player, gw) raw defensive-action + dribbles fields from
     ``player_match_events`` — merged into the rolling-rate build alongside

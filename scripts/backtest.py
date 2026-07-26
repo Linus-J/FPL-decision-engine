@@ -27,56 +27,7 @@ from projection.rescore import load_bonus_2627_map, rescore_actuals, rescore_cov
 logger = logging.getLogger(__name__)
 
 
-def _load_all_stats(season: str) -> pd.DataFrame:
-    db = get_session()
-    try:
-        # Dynamic player attributes (ict/influence/creativity/threat/form/
-        # selected_by_percent/status/chance) come from the point-in-time
-        # snapshot as-of the gameweek deadline — NOT the mutable players.*
-        # columns, which would leak the latest value into historical training
-        # rows (Phase-1 leaks L1/L2). player_gw_stats/xg_stats stay as-is
-        # (already point-in-time). Static columns (position, team_id) come from
-        # players.
-        query = text("""
-            SELECT
-                s.player_id, s.gameweek, s.season,
-                s.minutes, s.total_points, s.goals_scored, s.assists,
-                s.clean_sheets, s.goals_conceded, s.saves,
-                s.yellow_cards, s.red_cards, s.bonus, s.bps,
-                s.value AS now_cost,
-                s.team_id_season, s.opponent_team_id, s.was_home,
-                p.position, p.team_id,
-                COALESCE(ps.ict_index, 0) AS ict_index,
-                COALESCE(ps.influence, 0) AS influence,
-                COALESCE(ps.creativity, 0) AS creativity,
-                COALESCE(ps.threat, 0) AS threat,
-                COALESCE(ps.form, 0) AS form,
-                COALESCE(ps.selected_by_percent, 0) AS selected_by_percent,
-                COALESCE(ps.status, 'a') AS status,
-                ps.chance_of_playing_next_round AS chance_of_playing_next_round,
-                COALESCE(x.xg, 0) AS xg, COALESCE(x.xa, 0) AS xa,
-                COALESCE(x.xgi, 0) AS xgi, COALESCE(x.npxg, 0) AS npxg,
-                COALESCE(x.shots, 0) AS shots, COALESCE(x.key_passes, 0) AS key_passes
-            FROM player_gw_stats s
-            JOIN players p ON p.id = s.player_id
-            JOIN gameweeks g ON g.id = s.gameweek AND g.season = s.season
-            LEFT JOIN player_state_snapshots ps ON ps.id = (
-                SELECT ps2.id FROM player_state_snapshots ps2
-                WHERE ps2.player_id = s.player_id
-                    AND ps2.season = s.season
-                    AND ps2.snapshot_ts < g.deadline_time
-                ORDER BY ps2.snapshot_ts DESC LIMIT 1
-            )
-            LEFT JOIN player_xg_stats x
-                ON x.player_id = s.player_id
-                AND x.gameweek = s.gameweek
-                AND x.season = s.season
-            WHERE s.season = :season
-            ORDER BY s.player_id, s.gameweek
-        """)
-        return pd.read_sql(query, db.bind, params={"season": season})
-    finally:
-        db.close()
+_load_all_stats = assemble.load_all_stats  # moved to assemble.py (P3-0) — shared with pipeline.py
 
 
 def _load_players_snapshot(season: str, target_gw: int) -> pd.DataFrame:
