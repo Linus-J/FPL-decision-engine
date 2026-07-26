@@ -462,6 +462,47 @@ class ProjectionSample(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class OwnershipSnapshot(Base):
+    """Effective ownership (P3-2, v2-build-plan §3.2) — feeds the rank-aware
+    objective's differential-value term (§5): ``your_pts - EO*field_pts``,
+    where the "field" that actually matters for rank is the top-10k, not the
+    whole 11M+ player base a casual manager competes against.
+
+    ``overall_selected_pct`` is real (FPL bootstrap-static's
+    ``selected_by_percent``, already ingested elsewhere — duplicated here so
+    one snapshot row carries the full picture for a given ``snapshot_ts``).
+    ``top10k_selected_pct``/``captaincy_pct_top10k`` come from sampling the
+    "Overall" classic league (id 314) standings + a sample of those
+    managers' picks for the gameweek — real but a SAMPLE, not the true
+    population value (the plan's own §3.2 wording: "aggregating a top-10k
+    mini-league sample"). ``captaincy_pct_overall`` has no free population-
+    wide source (would need sampling all ~11M managers) — left nullable,
+    NOT populated by the current ingestor; a documented gap, not silently 0.
+
+    UNVERIFIED AGAINST LIVE DATA as of authoring (2026-07-26): the 2026-27
+    season has zero played gameweeks, so the "Overall" league has zero
+    ranked entries and the sampling endpoints return empty — this schema
+    and its ingestor are built against the well-documented, stable shape of
+    FPL's public (undocumented but widely relied-upon) API, not verified
+    against a real populated response. Re-verify at GW1.
+    """
+
+    __tablename__ = "ownership_snapshots"
+    __table_args__ = (
+        UniqueConstraint("player_id", "snapshot_ts", name="uq_ownership_snapshot"),
+        Index("ix_ownership_snapshot_ts", "snapshot_ts"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.id"), nullable=False)
+    snapshot_ts: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    overall_selected_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    top10k_selected_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    captaincy_pct_overall: Mapped[float | None] = mapped_column(Float, nullable=True)
+    captaincy_pct_top10k: Mapped[float] = mapped_column(Float, default=0.0)
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class PlayerSetPieceRole(Base):
     __tablename__ = "player_setpiece_roles"
     __table_args__ = (UniqueConstraint("player_id", "season", name="uq_setpiece_player_season"),)
