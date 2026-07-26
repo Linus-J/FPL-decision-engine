@@ -164,10 +164,12 @@ def _sample_side(
         key_passes_ct = 0
         yellow_ct = 0
         red_ct = 0
+        dribbles_ct = 0
         if played_any:
             key_passes_ct = int(rng.poisson(max(0.0, p.get("key_pass_rate", 0.0) * scale)))
             yellow_ct = int(rng.random() < min(1.0, max(0.0, p.get("yellow_rate", 0.0))))
             red_ct = int(rng.random() < min(1.0, max(0.0, p.get("red_rate", 0.0))))
+            dribbles_ct = int(rng.poisson(max(0.0, p.get("dribble_rate", 0.0) * scale)))
             pts += yellow_ct * SCORING.points_yellow_card + red_ct * SCORING.points_red_card
 
         points_by_pid[pid] = pts
@@ -178,6 +180,7 @@ def _sample_side(
             "clean_sheet": 1 if (played_60 and conceded == 0) else 0,
             "saves": saves_ct, "key_passes": key_passes_ct,
             "yellow_cards": yellow_ct, "red_cards": red_ct,
+            "dribbles": dribbles_ct,
             **defcon_fields,
         }
     return points_by_pid, events_by_pid
@@ -285,15 +288,19 @@ def load_match_odds(season: str) -> pd.DataFrame:
 
 
 def load_defcon_events(season: str) -> pd.DataFrame:
-    """Per (player, gw) raw defensive-action fields from ``player_match_events``
-    — merged into the rolling-rate build alongside ``player_xg_stats``/
-    ``player_gw_stats`` (P7's rate, computed here per its own docstring)."""
+    """Per (player, gw) raw defensive-action + dribbles fields from
+    ``player_match_events`` — merged into the rolling-rate build alongside
+    ``player_xg_stats``/``player_gw_stats`` (P7's rate, computed here per its
+    own docstring). ``dribbles`` feeds the bonus/BPS ``successful_dribble``
+    channel (P10 finding: forwards were badly under-credited for bonus
+    without it — real FWD P(bonus>0) 15.1% vs 8.6% modelled)."""
     db = get_session()
     try:
         return pd.read_sql(
             text("""
                 SELECT player_id, gameweek, season,
-                       clearances, blocks, interceptions, tackles, recoveries
+                       clearances, blocks, interceptions, tackles, recoveries,
+                       dribbles
                 FROM player_match_events WHERE season = :season
             """),
             db.bind, params={"season": season},
@@ -323,10 +330,10 @@ def _build_rolling_features(history: pd.DataFrame, defcon_events: pd.DataFrame) 
         de["cbit"] = de["clearances"] + de["blocks"] + de["interceptions"] + de["tackles"]
         de["cbirt"] = de["cbit"] + de["recoveries"]
         df = df.merge(
-            de[["player_id", "gameweek", "season", "cbit", "cbirt"]],
+            de[["player_id", "gameweek", "season", "cbit", "cbirt", "dribbles"]],
             on=["player_id", "gameweek", "season"], how="left",
         )
-    for col in ("cbit", "cbirt"):
+    for col in ("cbit", "cbirt", "dribbles"):
         if col not in df.columns:
             df[col] = 0.0
         df[col] = df[col].fillna(0.0)
@@ -335,7 +342,7 @@ def _build_rolling_features(history: pd.DataFrame, defcon_events: pd.DataFrame) 
     rate_cols = {
         "xg": "goal_weight", "xa": "assist_weight", "key_passes": "key_pass_rate",
         "yellow_cards": "yellow_rate", "red_cards": "red_rate",
-        "cbit": "cbit_rate", "cbirt": "cbirt_rate",
+        "cbit": "cbit_rate", "cbirt": "cbirt_rate", "dribbles": "dribble_rate",
     }
     for src, out in rate_cols.items():
         if src not in df.columns:
@@ -349,7 +356,7 @@ def _build_rolling_features(history: pd.DataFrame, defcon_events: pd.DataFrame) 
         last["position"] == "DEF", last["cbit_rate"], last["cbirt_rate"]
     )
     cols = ["position", "team_id_season", "goal_weight", "assist_weight",
-            "key_pass_rate", "yellow_rate", "red_rate", "defcon_rate"]
+            "key_pass_rate", "yellow_rate", "red_rate", "defcon_rate", "dribble_rate"]
     return last[cols].fillna(0.0)
 
 
@@ -368,6 +375,7 @@ def _player_dicts(
             "goal_weight": row["goal_weight"], "assist_weight": row["assist_weight"],
             "key_pass_rate": row["key_pass_rate"], "yellow_rate": row["yellow_rate"],
             "red_rate": row["red_rate"], "defcon_rate": row["defcon_rate"],
+            "dribble_rate": row["dribble_rate"],
             "p0": p0, "p1": p1, "p2": p2,
         })
     return out

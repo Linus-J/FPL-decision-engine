@@ -23,23 +23,24 @@ from projection.bps_sim import award_bonus, compute_fixture_bonus, compute_playe
 MODELLED_BPS_FIELDS = frozenset({
     "position", "minutes", "goals", "assists", "clean_sheet", "saves",
     "clearances", "blocks", "interceptions", "tackles", "recoveries",
-    "key_passes", "yellow_cards", "red_cards",
+    "key_passes", "yellow_cards", "red_cards", "dribbles",
 })
 
 # Empirically calibrated 2026-07-26 against real 25/26 bonus-by-position
-# shares (player_gw_stats.bonus, minutes>0): our reduced-BPS model awarded GK
-# bonus at ~3x the real rate (P(bonus>0) 32.5% modelled vs 11.0% real). Root
-# cause: GK's `save` BPS channel (flat +2/save, 26/27 rule) is fully modelled
-# from real per-match data, while DEF/MID/FWD's competing defensive-action
-# channel is crippled by FBref's free summary table structurally lacking
-# clearances/blocks/recoveries (the SAME data gap behind the DefCon
-# underestimate — see plan/phase-2-xpts-engine.md P10). This scales GK's
-# saves down for BONUS RANKING ONLY (never touches FPL save-points, which
-# stay exact) — a compensating factor for a quantified, known data-coverage
-# gap, not a change to the real BPSWeights rules. 0.15 brought GK's modelled
-# P(bonus>0) to ~13%, closest to the 11% real rate in a one-GW calibration
-# sample; a fuller multi-GW recalibration is a reasonable follow-up.
-GK_BONUS_SAVE_SCALE = 0.15
+# rates (player_gw_stats.bonus, minutes>0). Originally 0.15, set when
+# DEF/MID/FWD's competing defensive-action channel was crippled by FBref's
+# free summary table lacking clearances/blocks/recoveries entirely (GK
+# P(bonus>0) was 32.5% modelled vs 11.0% real, ~3x inflated). RE-CALIBRATED
+# to 0.45 after WhoScored's real event stream (data/ingestors/whoscored.py)
+# patched those fields in — DEF's real CBI data made them dramatically more
+# competitive, which on its own pushed GK's modelled rate BELOW the real
+# rate (7.5% vs 11.0% at the old 0.15) — 0.45 brings it back to ~11-12%.
+# Never touches FPL save-points (only the bonus RANKING); not a change to
+# the real BPSWeights rules. NOTE: DEF is now somewhat OVER-credited for
+# bonus vs its own real rate (14.4% modelled vs 9.1% real) even after this
+# fix — a separate, smaller residual not addressed here (see the P10 plan
+# entry) — no compensating factor applied for that side yet.
+GK_BONUS_SAVE_SCALE = 0.45
 _GK_POSITIONS = frozenset({"GK", "GKP"})
 
 

@@ -82,3 +82,18 @@ def test_gk_bonus_save_scale_only_applies_to_gk_positions():
     gk_result = B.sample_fixture_bonus({1: gk_event, 2: competitor})
     def_result = B.sample_fixture_bonus({1: def_event, 2: competitor})
     assert gk_result[1] < def_result[1]
+
+
+def test_reduce_keeps_dribbles():
+    # P10 finding: real FWD P(bonus>0) was 15.1% vs 8.6% modelled -- dribbles
+    # (now sourced for free from WhoScored) were missing from MODELLED_BPS_FIELDS
+    ev = {"position": "FWD", "minutes": 90, "dribbles": 4, "big_chances_created": 2}
+    red = B.reduce_to_modelled(ev)
+    assert red["dribbles"] == 4
+    assert "big_chances_created" not in red  # still genuinely unavailable
+
+
+def test_dribbles_contribute_to_bps():
+    base = {"position": "FWD", "minutes": 90}
+    with_dribbles = {**base, "dribbles": 5}
+    assert B.player_bps(with_dribbles) > B.player_bps(base)
