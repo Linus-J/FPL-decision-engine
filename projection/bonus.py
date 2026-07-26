@@ -26,6 +26,22 @@ MODELLED_BPS_FIELDS = frozenset({
     "key_passes", "yellow_cards", "red_cards",
 })
 
+# Empirically calibrated 2026-07-26 against real 25/26 bonus-by-position
+# shares (player_gw_stats.bonus, minutes>0): our reduced-BPS model awarded GK
+# bonus at ~3x the real rate (P(bonus>0) 32.5% modelled vs 11.0% real). Root
+# cause: GK's `save` BPS channel (flat +2/save, 26/27 rule) is fully modelled
+# from real per-match data, while DEF/MID/FWD's competing defensive-action
+# channel is crippled by FBref's free summary table structurally lacking
+# clearances/blocks/recoveries (the SAME data gap behind the DefCon
+# underestimate — see plan/phase-2-xpts-engine.md P10). This scales GK's
+# saves down for BONUS RANKING ONLY (never touches FPL save-points, which
+# stay exact) — a compensating factor for a quantified, known data-coverage
+# gap, not a change to the real BPSWeights rules. 0.15 brought GK's modelled
+# P(bonus>0) to ~13%, closest to the 11% real rate in a one-GW calibration
+# sample; a fuller multi-GW recalibration is a reasonable follow-up.
+GK_BONUS_SAVE_SCALE = 0.15
+_GK_POSITIONS = frozenset({"GK", "GKP"})
+
 
 def reduce_to_modelled(event: Mapping) -> dict:
     """Keep only the BPS inputs our components produce (zero the rest) — what
@@ -35,8 +51,16 @@ def reduce_to_modelled(event: Mapping) -> dict:
 
 def sample_fixture_bonus(events_by_player: Mapping[int, Mapping]) -> dict[int, int]:
     """Awarded bonus (3/2/1) for a fixture from per-player (sampled) events —
-    the 26/27 BPS sim over reduced events. Called per scenario by P10."""
-    return compute_fixture_bonus(events_by_player)
+    the 26/27 BPS sim over reduced events, with the GK save-BPS calibration
+    (``GK_BONUS_SAVE_SCALE``) applied. Called per scenario by P10."""
+    adjusted = {
+        pid: (
+            {**ev, "saves": ev.get("saves", 0) * GK_BONUS_SAVE_SCALE}
+            if ev.get("position") in _GK_POSITIONS else ev
+        )
+        for pid, ev in events_by_player.items()
+    }
+    return compute_fixture_bonus(adjusted)
 
 
 def reduced_full_agreement(
