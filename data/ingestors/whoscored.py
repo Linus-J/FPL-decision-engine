@@ -58,6 +58,16 @@ DRIBBLE_TYPE = "TakeOn"
 UPDATE_FIELDS = (*EVENT_TYPE_FIELD.values(), "dribbles")
 
 
+def _to_naive(dt: datetime) -> datetime:
+    """Strip tzinfo if present. WhoScored's schedule dates come back
+    tz-aware straight from the scrape; ``Gameweek.deadline_time`` is written
+    tz-aware but round-trips through SQLite as naive, so ``assign_gameweek``
+    needs both sides naive to compare (this fix: TypeError comparing
+    offset-naive and offset-aware datetimes, discovered on the first live
+    run)."""
+    return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) is not None else dt
+
+
 def aggregate_match_events(events: pd.DataFrame) -> pd.DataFrame:
     """Raw WhoScored event rows (one per action, from ``read_events``) -> one
     row per (game_id, player_id, player) with our count fields. Pure — no
@@ -197,7 +207,10 @@ def ingest_whoscored_season(  # pragma: no cover - live network + browser only
     ws = sd.WhoScored(**ws_kwargs)
 
     schedule = ws.read_schedule().reset_index()
-    kickoff_of = dict(zip(schedule["game_id"], schedule["date"], strict=False))
+    kickoff_of = {
+        gid: _to_naive(dt)
+        for gid, dt in zip(schedule["game_id"], schedule["date"], strict=False)
+    }
 
     events = ws.read_events(output_fmt="events")
     agg = aggregate_match_events(events)

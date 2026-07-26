@@ -12,7 +12,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from data.ingestors.whoscored import aggregate_match_events, sum_by_gameweek
+from data.ingestors.whoscored import _to_naive, aggregate_match_events, sum_by_gameweek
 
 
 def _events(rows):
@@ -69,6 +69,31 @@ def test_aggregate_ignores_untracked_event_types():
 def test_aggregate_empty_input():
     out = aggregate_match_events(_events([]))
     assert out.empty
+
+
+def test_to_naive_strips_tz_and_leaves_naive_alone():
+    aware = pd.Timestamp("2025-08-15 15:00:00", tz="UTC")
+    assert _to_naive(aware) == pd.Timestamp("2025-08-15 15:00:00")
+    assert _to_naive(aware).tzinfo is None
+    naive = datetime(2025, 8, 15, 15, 0, 0)
+    assert _to_naive(naive) == naive
+
+
+def test_sum_by_gameweek_handles_tz_aware_kickoffs():
+    # the live bug: WhoScored's schedule dates come back tz-aware while
+    # deadlines round-trip through SQLite as naive -- assign_gameweek must
+    # not blow up when kickoff_of already has tz-aware values (belt-and-
+    # suspenders in case a caller forgets to normalise before this call)
+    agg = pd.DataFrame([
+        {"game_id": 1, "player": "Alice", "tackles": 1, "interceptions": 0,
+         "clearances": 0, "blocks": 0, "recoveries": 0, "dribbles": 0},
+    ])
+    kickoff_of = {1: _to_naive(pd.Timestamp("2025-08-16 15:00:00", tz="UTC"))}
+    deadlines = {5: datetime(2025, 8, 15)}
+    name_map = {"alice": 10}
+    totals, unmatched = sum_by_gameweek(agg, kickoff_of, deadlines, name_map)
+    assert unmatched == 0
+    assert totals[(10, 5)]["tackles"] == 1
 
 
 def test_sum_by_gameweek_matches_and_sums_dgw():
