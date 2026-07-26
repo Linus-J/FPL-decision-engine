@@ -78,11 +78,31 @@ shape, but NOT verified against a real populated response. Re-verify at GW1 —
 budget time for this in case the real response shape differs subtly from what's
 assumed.
 
-### P3-3 — Objective v1 rewrite
-`optimiser/transfers.py` (keep its multi-period/FT-banking/wildcard structure) +
-`optimiser/squad.py`: change the linear objective to
-`E[pts] + λ·differential_value + μ·variance`, reading EO (P3-2) and `xpts_var`/
-covariance (P3-1) as real inputs instead of unused config placeholders.
+### P3-3 — Objective v1 rewrite  ✅ DONE (`5afa33a`)
+**Found before implementing:** the plan's literal `differential_value` formula
+(`your_pts - EO*field_pts`, summed) is algebraically a no-op for the mean objective
+— `EO_i*xpts_i` is a constant w.r.t. your own selection, so maximising the
+difference picks EXACTLY the team you'd get from maximising raw `E[pts]` alone.
+Confirmed algebraically, not assumed — checked with the user before proceeding.
+The plan's own §5 wording ("benching a 60%-EO player is a short position")
+confirms the real intent is RANK-OUTCOME VARIANCE, not the mean pick.
+**Implemented instead (`optimiser/scoring.py`):** a linear v1 approximation —
+`differential_multiplier` reweights each player's score by ownership (does change
+relative rankings, unlike the literal formula), `risk_adjusted_score` adds
+`μ*xpts_var` (own-variance only; teammate COVARIANCE is quadratic in a 0/1
+selection and needs the v2 scenario-based objective the plan itself frames as an
+"upgrade" — P3-1 already persists the samples a v2 implementation would need).
+`lambda_mu_for_risk_mode` sets sign from `risk_mode` ("balanced" = (0,0), today's
+exact behaviour). Wired into `optimise_squad`/`optimise_starting_xi`/
+`evaluate_transfers` via an optional `ownership` param, default `None` everywhere
+including the P-XI harness — each function's TRUE xpts is still used for
+`total_xpts`/`xpts_gain` reporting, only the ILP's own objective coefficients use
+the risk-adjusted score. **Verified the P-XI exit gate is unaffected:** a GW6–9
+spot-check against the live DB produced byte-identical predicted_xpts/captain/
+actual_pts with and without this commit (git-stash A/B) — confirmed, not assumed.
+Suite 226/226 (19 new tests, including an ILP-level test proving EO actually
+flips a captain choice between two equally-projected players under aggressive
+mode).
 
 ### P3-4 — Scenario-based captaincy
 Replace the linear-argmax captain pick with selection over sampled scenarios
