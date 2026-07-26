@@ -272,16 +272,29 @@ class OptimiserConfig:
     # With hit_cost=-4 and buffer=2, we only hit when net gain >= 6 over horizon.
     hit_min_gain_buffer: float = 2.0
 
-    # Ownership differential cap — how far to deviate from template
-    # (higher = more contrarian, lower = safer template-following)
-    max_ownership_differential: float = 0.5  # 50pp below overall ownership
+    # Ownership-differential weight magnitude (P3-3, plan §5's λ) — was a
+    # dead field (read nowhere) until optimiser/scoring.py wired it in.
+    # Sign comes from risk_mode, not from this value directly: "safe" ->
+    # penalises differentials (prefer template); "aggressive" -> rewards
+    # them; "balanced" -> 0 (no EO effect at all, today's pre-P3-3
+    # behaviour). This is the MAGNITUDE only.
+    max_ownership_differential: float = 0.5
 
     # Whether to factor in price change predictions
     use_price_change_signals: bool = True
 
     # Risk mode: "safe" | "balanced" | "aggressive"
-    # Affects how much variance is tolerated in picks
+    # Sets the sign of BOTH max_ownership_differential and variance_weight
+    # (optimiser/scoring.py::lambda_mu_for_risk_mode) — "balanced" makes
+    # both a no-op, reducing the P3-3 objective to plain E[pts] exactly as
+    # before that work.
     risk_mode: str = "balanced"
+
+    # Variance weight magnitude (P3-3, plan §5's μ) — own-variance only
+    # (xpts_var per player); teammate COVARIANCE is quadratic in a 0/1
+    # selection and needs the v2 scenario-based objective, not this linear
+    # MILP. Sign comes from risk_mode, same as max_ownership_differential.
+    variance_weight: float = 0.0
 
 
 # ---------------------------------------------------------------------------

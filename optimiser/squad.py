@@ -5,6 +5,7 @@ import pandas as pd
 import pulp
 
 from config.strategy import OPTIMISER, SQUAD, TRANSFERS
+from optimiser.scoring import lambda_mu_for_risk_mode, risk_adjusted_score
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,18 @@ def _multi_gw_xpts(projections: pd.DataFrame, horizon: int) -> pd.Series:
     return subset.groupby("player_id")["xpts"].sum()
 
 
+def _multi_gw_var(projections: pd.DataFrame, horizon: int) -> pd.Series:
+    """P3-3: per-player summed xpts_var over the horizon (own-variance only —
+    see optimiser/scoring.py for why teammate covariance isn't here). Empty
+    Series (not an error) if the caller's projections predate P10's
+    distributional columns."""
+    if "xpts_var" not in projections.columns:
+        return pd.Series(dtype=float)
+    gws = sorted(projections["gameweek"].unique())[:horizon]
+    subset = projections[projections["gameweek"].isin(gws)]
+    return subset.groupby("player_id")["xpts_var"].sum()
+
+
 def optimise_squad(
     projections: pd.DataFrame,
     players: pd.DataFrame,
@@ -59,12 +72,20 @@ def optimise_squad(
     max_transfers: int | None = None,
     force_include_ids: list[int] | None = None,
     force_exclude_ids: list[int] | None = None,
+    ownership: pd.DataFrame | None = None,
 ) -> SquadSolution:
+    """``ownership`` (P3-3, optional): a ``(player_id, top10k_selected_pct)``
+    frame (P3-2) feeding the risk-adjusted objective's differential term.
+    ``None`` (the current live reality — EO sampling can't produce real data
+    pre-GW1) makes every player's EO 0%, which is a uniform rescale of the
+    objective, not a ranking change — behaviour is identical to before
+    this parameter existed."""
     horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
     force_include_ids = set(force_include_ids or [])
     force_exclude_ids = set(force_exclude_ids or [])
 
     xpts_by_player = _multi_gw_xpts(projections, horizon)
+    var_by_player = _multi_gw_var(projections, horizon)
 
     df = players.copy()
     df = df[df["status"].isin(["a", "d"])]
@@ -72,6 +93,20 @@ def optimise_squad(
     df = df[~df["id"].isin(force_exclude_ids)]
 
     df["xpts_total"] = df["id"].map(xpts_by_player).fillna(0.0)
+    df["var_total"] = df["id"].map(var_by_player).fillna(0.0)
+
+    lam, mu = lambda_mu_for_risk_mode(
+        OPTIMISER.risk_mode, OPTIMISER.max_ownership_differential, OPTIMISER.variance_weight
+    )
+    if ownership is not None and not ownership.empty:
+        eo_map = ownership.set_index("player_id")["top10k_selected_pct"]
+        df["eo_pct"] = df["id"].map(eo_map).fillna(0.0)
+    else:
+        df["eo_pct"] = 0.0
+    df["effective_score"] = [
+        risk_adjusted_score(x, v, e, lam, mu)
+        for x, v, e in zip(df["xpts_total"], df["var_total"], df["eo_pct"], strict=True)
+    ]
 
     if current_squad_ids:
         transfer_cost_per_extra = abs(TRANSFERS.hit_cost_points)
@@ -91,13 +126,14 @@ def optimise_squad(
     captain = [pulp.LpVariable(f"cap_{i}", cat="Binary") for i in range(n)]
     vice = [pulp.LpVariable(f"vic_{i}", cat="Binary") for i in range(n)]
 
-    xpts = df["xpts_total"].tolist()
+    scores = df["effective_score"].tolist()   # P3-3 risk-adjusted (objective);
+    # true xpts_total for reporting is read straight off `df`/`starting_xi`
     costs = df["now_cost"].tolist()
     positions = df["position"].tolist()
     teams = df["team_id"].tolist()
 
     prob += pulp.lpSum(
-        xpts[i] * (starting[i] + captain[i])
+        scores[i] * (starting[i] + captain[i])
         for i in range(n)
     )
 
@@ -145,7 +181,7 @@ def optimise_squad(
         starting2 = [pulp.LpVariable(f"sta2_{i}", cat="Binary") for i in range(n)]
         captain2 = [pulp.LpVariable(f"cap2_{i}", cat="Binary") for i in range(n)]
         vice2 = [pulp.LpVariable(f"vic2_{i}", cat="Binary") for i in range(n)]
-        prob2 += pulp.lpSum(xpts[i] * (starting2[i] + captain2[i]) for i in range(n))
+        prob2 += pulp.lpSum(scores[i] * (starting2[i] + captain2[i]) for i in range(n))
         prob2 += pulp.lpSum(selected2) == SQUAD.squad_size
         prob2 += pulp.lpSum(costs[i] * selected2[i] for i in range(n)) <= budget
         prob2 += pulp.lpSum(starting2) == 11
@@ -208,7 +244,13 @@ def optimise_squad(
     else:
         hits = 0
 
-    total_xpts = float(pulp.value(prob.objective))
+    # TRUE expected points (P3-3: the ILP's own objective value is now the
+    # risk-adjusted `scores`, not real xpts — report the real figure,
+    # computed straight from the starting XI + captain bonus).
+    total_xpts = float(
+        starting_xi["xpts_total"].sum()
+        + starting_xi.loc[starting_xi["id"] == captain_id, "xpts_total"].sum()
+    )
     total_cost = float(sum(
         df.loc[df["id"] == pid, "now_cost"].values[0]
         for pid in selected_ids
@@ -231,16 +273,45 @@ def optimise_squad(
     )
 
 
-def optimise_starting_xi(squad: pd.DataFrame, projections: pd.DataFrame, gw: int) -> SquadSolution:
+def optimise_starting_xi(
+    squad: pd.DataFrame,
+    projections: pd.DataFrame,
+    gw: int,
+    ownership: pd.DataFrame | None = None,
+) -> SquadSolution:
+    """``ownership`` (P3-3, optional, default None): see ``optimise_squad``'s
+    docstring — ``None`` (every call site today, including the P-XI backtest
+    harness) makes EO a uniform 0% for every candidate, which is a constant
+    rescale of the objective and changes NEITHER the captain pick NOR the
+    starting XI versus the pre-P3-3 pure-argmax behaviour — the P-XI exit
+    gate's already-reported numbers stay reproducible byte-for-byte."""
     gw_proj = projections[projections["gameweek"] == gw][["player_id", "xpts"]].copy()
+    if "xpts_var" in projections.columns:
+        gw_var = projections[projections["gameweek"] == gw][["player_id", "xpts_var"]]
+        gw_proj = gw_proj.merge(gw_var, on="player_id", how="left")
     df = squad.merge(gw_proj, left_on="id", right_on="player_id", how="left")
     df["xpts"] = df["xpts"].fillna(0.0)
+    df["xpts_var"] = df["xpts_var"].fillna(0.0) if "xpts_var" in df.columns else 0.0
+
+    lam, mu = lambda_mu_for_risk_mode(
+        OPTIMISER.risk_mode, OPTIMISER.max_ownership_differential, OPTIMISER.variance_weight
+    )
+    if ownership is not None and not ownership.empty:
+        eo_map = ownership.set_index("player_id")["top10k_selected_pct"]
+        df["eo_pct"] = df["id"].map(eo_map).fillna(0.0)
+    else:
+        df["eo_pct"] = 0.0
+    df["effective_score"] = [
+        risk_adjusted_score(x, v, e, lam, mu)
+        for x, v, e in zip(df["xpts"], df["xpts_var"], df["eo_pct"], strict=True)
+    ]
 
     player_ids = df["id"].tolist()
     n = len(player_ids)
     idx = {pid: i for i, pid in enumerate(player_ids)}
     positions = df["position"].tolist()
-    xpts = df["xpts"].tolist()
+    scores = df["effective_score"].tolist()  # P3-3 risk-adjusted (objective);
+    # true xpts for reporting is read straight off `df`/`starting_xi_df`
 
     prob = pulp.LpProblem("fpl_xi", pulp.LpMaximize)
 
@@ -248,7 +319,7 @@ def optimise_starting_xi(squad: pd.DataFrame, projections: pd.DataFrame, gw: int
     captain = [pulp.LpVariable(f"cap_{i}", cat="Binary") for i in range(n)]
     vice = [pulp.LpVariable(f"vic_{i}", cat="Binary") for i in range(n)]
 
-    prob += pulp.lpSum(xpts[i] * (starting[i] + captain[i]) for i in range(n))
+    prob += pulp.lpSum(scores[i] * (starting[i] + captain[i]) for i in range(n))
 
     prob += pulp.lpSum(starting) == 11
     prob += pulp.lpSum(captain) == 1
@@ -287,12 +358,18 @@ def optimise_starting_xi(squad: pd.DataFrame, projections: pd.DataFrame, gw: int
     bench_order = {pid: i for i, pid in enumerate(bench["id"])}
     squad_out["bench_order"] = squad_out["id"].map(bench_order).fillna(-1).astype(int)
 
+    starting_xi_df = squad_out[squad_out["is_starting"]]
+    total_xpts = float(
+        starting_xi_df["xpts"].sum()
+        + starting_xi_df.loc[starting_xi_df["id"] == captain_id, "xpts"].sum()
+    )
+
     return SquadSolution(
         squad=squad_out,
-        starting_xi=squad_out[squad_out["is_starting"]],
+        starting_xi=starting_xi_df,
         captain_id=captain_id,
         vice_captain_id=vice_id,
-        total_xpts=float(pulp.value(prob.objective)),
+        total_xpts=total_xpts,
         total_cost=float(squad["now_cost"].sum()),
         hits_taken=0,
     )

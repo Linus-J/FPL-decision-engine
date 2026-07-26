@@ -6,6 +6,7 @@ import pulp
 
 from config.strategy import OPTIMISER, SQUAD, TRANSFERS
 from optimiser.departure_risk import confirmed_p_leave, is_hard_excluded
+from optimiser.scoring import lambda_mu_for_risk_mode, risk_adjusted_score
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,12 @@ def evaluate_transfers(
     wildcard_active: bool = False,
     dgw_gws: set[int] | None = None,
     solver_time_limit: int | None = None,
+    ownership: pd.DataFrame | None = None,
 ) -> TransferPlan:
+    """``ownership`` (P3-3, optional, default None): see ``optimise_squad``'s
+    docstring — ``None`` (the current live reality — EO sampling can't
+    produce real data pre-GW1) makes EO a uniform 0% for every candidate, a
+    constant rescale that doesn't change which transfers get made."""
     horizon = OPTIMISER.transfer_planning_horizon_gws
     current_squad = players[players["id"].isin(current_squad_ids)].copy()
     budget = available_budget or float(current_squad["now_cost"].sum())
@@ -91,11 +97,28 @@ def evaluate_transfers(
         if owned and is_hard_excluded(confirmed_p_leave(status))
     }
 
-    xpts_pw: dict[tuple[int, int], float] = {}
+    lam, mu = lambda_mu_for_risk_mode(
+        OPTIMISER.risk_mode, OPTIMISER.max_ownership_differential, OPTIMISER.variance_weight
+    )
+    if ownership is not None and not ownership.empty:
+        eo_map = ownership.set_index("player_id")["top10k_selected_pct"]
+        eo_by_pid = {pid: float(eo_map.get(pid, 0.0)) for pid in pid_list}
+    else:
+        eo_by_pid = dict.fromkeys(pid_list, 0.0)
+    has_var = "xpts_var" in projections.columns
+
+    # xpts_gain/net_xpts_gain reporting reads straight from `projections` via
+    # _squad_xpts (true expected points) -- only the ILP's own objective
+    # coefficients need the risk-adjusted score.
+    scores_pw: dict[tuple[int, int], float] = {}
     for w, gw in enumerate(gws):
-        gw_proj = projections[projections["gameweek"] == gw].set_index("player_id")["xpts"]
+        gw_df = projections[projections["gameweek"] == gw].set_index("player_id")
+        gw_proj = gw_df["xpts"]
+        gw_var = gw_df["xpts_var"] if has_var else None
         for pid in pid_list:
-            xpts_pw[(pid, w)] = float(gw_proj.get(pid, 0.0))
+            x = float(gw_proj.get(pid, 0.0))
+            v = float(gw_var.get(pid, 0.0)) if gw_var is not None else 0.0
+            scores_pw[(pid, w)] = risk_adjusted_score(x, v, eo_by_pid[pid], lam, mu)
 
     prob = pulp.LpProblem("mp_transfers", pulp.LpMaximize)
 
@@ -186,8 +209,8 @@ def evaluate_transfers(
         prob += ft[w + 1] >= 1
 
     prob += pulp.lpSum(
-        xpts_pw[(pid, w)] * starting[(pid, w)]
-        + xpts_pw[(pid, w)] * captain[(pid, w)]
+        scores_pw[(pid, w)] * starting[(pid, w)]
+        + scores_pw[(pid, w)] * captain[(pid, w)]
         - hit[w] * abs(TRANSFERS.hit_cost_points)
         for pid in pid_list
         for w in range(H)
