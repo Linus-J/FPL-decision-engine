@@ -146,9 +146,62 @@ different captaincy scores once one of them has a real positively-
 correlated fixture-mate — the exact gap the additive approximation can't
 see).
 
-### P3-5 — Chips rework
+### P3-5 — Chips rework  ✅ DONE
 `chips.py` from threshold-vs-constant to scenario EV (`P(chip pays off)` over
 sampled scenarios), reusing P3-1's persisted samples.
+
+**Implementation:** each of TC/BB/FH/WC's old rule was `point_estimate_gain
+>= threshold` (a mean built from `projections["xpts"]`). `optimiser/
+chip_scenarios.py` (new) reuses `captaincy.py`'s real persisted joint MC
+draws to build an actual per-scenario GAIN DISTRIBUTION for each decision —
+`load_scenario_totals(season, gameweeks, player_ids)` sums real draws for a
+player set into one per-scenario total, composing across fixture groups (and
+across gameweeks, for Wildcard's multi-GW horizon) by POSITION rather than by
+raw `scenario_id` value, since `scenario_id` ranges are only jointly
+meaningful WITHIN one fixture (disjoint elsewhere, per P3-1) and reset to 0
+at the start of every gameweek (no shared latent across GWs either) — any
+FIXED pairing of independent draws is a valid joint sample of their sum, so
+pairing by each group's own rank is legitimate. `gain_distribution` builds
+the two sides' totals from the SAME underlying run, so a fixture shared
+between both sides (e.g. Wildcard keeping a player, or two squads both
+containing an Arsenal player) stays correlated rather than being treated as
+independent noise. `chips.py::_clears_threshold` then replaces the point
+check with `P(scenario_value >= threshold) >= min_probability` (four new
+`ChipTimingThresholds` fields, defaulted to 0.6, untuned pending backtesting)
+whenever real samples exist for that decision, so a chip whose MEAN clears
+the bar but is actually closer to a coin-flip can be correctly blocked.
+
+**Degrades exactly to pre-P3-5 behaviour when no real samples exist** (cold
+start; the backtest walk-forward, which never persists samples per P3-1; or
+`season=None`) — `_clears_threshold` falls back to the untouched point-
+estimate rule, verified by test and by a live-DB `run_backtest` GW6–9
+spot-check (predicted 60.47/67.72/69.62/77.03, captains
+Keane/Sarr/Sarr/N.Gonzalez, transfers 0/3/2/2) matching the pre-P3-5
+baseline exactly.
+
+**Real bug found and fixed while wiring this up:** `recommend_chip`'s real
+caller (`scripts/backtest.py`) passes `current_gw` as a `numpy.int64` (from a
+pandas groupby), not a plain Python `int` — `load_scenario_totals`'s initial
+`isinstance(gameweeks, int)` scalar-vs-sequence check missed it (numpy
+scalars aren't Python `int` instances) and raised `TypeError: 'numpy.int64'
+object is not iterable` for every GW past the cold-start build in a
+backtest run with `season` set. Fixed: check `isinstance(gameweeks, (int,
+np.integer))`. Caught by re-running `run_backtest` end-to-end before calling
+this done, not by the unit suite alone (which only exercised
+`chip_scenarios.py` with plain Python ints) — added a regression test with
+an explicit `np.int64` gameweek.
+
+Suite 260/260 (21 new tests across `test_chip_scenarios.py` and
+`test_chips.py` — the latter is `chips.py`'s first test coverage at all,
+since none existed pre-P3-5). Lint-clean (verified via git-stash A/B that
+the only 2 ruff findings in `chips.py` are pre-existing and untouched).
+**Not built:** TC's own "gain" definition (best-minus-second-candidate
+differential) is a pre-existing heuristic proxy for the true TC formula
+(marginal 1× of the captain's own points, since captaincy already doubles)
+— P3-5 scenario-ises the existing heuristic faithfully but does not correct
+its underlying formula, since that wasn't in scope and changing chip
+semantics deserves its own decision, not a silent side effect of a
+plumbing upgrade.
 
 ### Gate
 Walk-forward vs benchmarks; report the simulated final-rank distribution, not mean

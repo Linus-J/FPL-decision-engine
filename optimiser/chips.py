@@ -8,9 +8,29 @@ from sqlalchemy import text
 
 from config.strategy import CHIP_TIMING, CHIPS, SQUAD
 from data.db import get_session
+from optimiser.chip_scenarios import gain_distribution, load_scenario_totals
 from optimiser.squad import optimise_squad
 
 logger = logging.getLogger(__name__)
+
+
+def _clears_threshold(
+    point_value: float,
+    threshold: float,
+    scenario_values: pd.Series,
+    min_probability: float,
+) -> bool:
+    """The old rule was ``point_value >= threshold`` (point-estimate xpts vs
+    a fixed constant). P3-5: when real MC scenarios (P3-1) exist for the
+    decision, replace it with the actual ``P(scenario_value >= threshold) >=
+    min_probability`` — a genuine probability-of-payoff, not just whether the
+    mean clears the bar, so a reliable small gain can outrank a
+    coin-flip gain with the same mean. Falls back to the point-estimate rule
+    when no scenario data is available (cold start, or the backtest
+    walk-forward, which never persists samples per P3-1)."""
+    if scenario_values.empty:
+        return point_value >= threshold
+    return float((scenario_values >= threshold).mean()) >= min_probability
 
 
 @lru_cache(maxsize=1)
@@ -69,6 +89,7 @@ def recommend_chip(
     dgw_gws: set[int] | None = None,
     bgw_affected_count: int = 0,
     squad_age_gws: int = 99,
+    season: str | None = None,
 ) -> ChipRecommendation:
     dgw_gws = dgw_gws or set()
     horizon = CHIP_TIMING.wildcard_eval_horizon_gws
@@ -81,20 +102,37 @@ def recommend_chip(
     )
 
     if Chip.TRIPLE_CAPTAIN not in chips_used:
-        tc_gain = _evaluate_triple_captain(current_squad_ids, projections, current_gw)
-        if tc_gain >= CHIP_TIMING.triple_captain_min_gain:
+        tc_gain, best_id, second_id = _evaluate_triple_captain(
+            current_squad_ids, projections, current_gw
+        )
+        tc_scenarios = pd.Series(dtype=float)
+        if season is not None and best_id is not None and second_id is not None:
+            tc_scenarios = gain_distribution(season, current_gw, [best_id], [second_id])
+        if _clears_threshold(
+            tc_gain, CHIP_TIMING.triple_captain_min_gain, tc_scenarios,
+            CHIP_TIMING.triple_captain_min_payoff_probability,
+        ):
             logger.info("TC recommended: gain=%.2f", tc_gain)
             return ChipRecommendation(Chip.TRIPLE_CAPTAIN, f"TC gain {tc_gain:.1f} xPts", tc_gain)
 
     if Chip.BENCH_BOOST not in chips_used and bench_xpts is not None:
         dgw_active = bool(dgw_gws and current_gw in dgw_gws)
-        if dgw_active and bench_xpts >= CHIP_TIMING.bench_boost_min_bench_xpts:
-            logger.info("BB recommended: bench_xpts=%.2f in DGW%d", bench_xpts, current_gw)
-            return ChipRecommendation(
-                Chip.BENCH_BOOST,
-                f"DGW bench xPts {bench_xpts:.1f} exceeds threshold",
-                bench_xpts,
-            )
+        if dgw_active:
+            bb_scenarios = pd.Series(dtype=float)
+            if season is not None:
+                bench_ids = _bench_player_ids(current_squad_ids, projections, current_gw)
+                if bench_ids:
+                    bb_scenarios = load_scenario_totals(season, current_gw, bench_ids)
+            if _clears_threshold(
+                bench_xpts, CHIP_TIMING.bench_boost_min_bench_xpts, bb_scenarios,
+                CHIP_TIMING.bench_boost_min_payoff_probability,
+            ):
+                logger.info("BB recommended: bench_xpts=%.2f in DGW%d", bench_xpts, current_gw)
+                return ChipRecommendation(
+                    Chip.BENCH_BOOST,
+                    f"DGW bench xPts {bench_xpts:.1f} exceeds threshold",
+                    bench_xpts,
+                )
 
     if Chip.FREE_HIT not in chips_used and bgw_affected_count >= 5:
         fh_solution = optimise_squad(
@@ -104,10 +142,11 @@ def recommend_chip(
             horizon=1,
         )
         fh_gws = sorted(projections["gameweek"].unique())[:1]
+        fh_squad_ids = fh_solution.squad["id"].tolist()
         fh_xpts = float(
             projections[
                 projections["gameweek"].isin(fh_gws)
-                & projections["player_id"].isin(fh_solution.squad["id"].tolist())
+                & projections["player_id"].isin(fh_squad_ids)
             ]["xpts"].sum()
         )
         current_gw_xpts = float(
@@ -117,7 +156,15 @@ def recommend_chip(
             ]["xpts"].sum()
         )
         gain = fh_xpts - current_gw_xpts
-        if gain >= CHIP_TIMING.free_hit_single_gw_gain_threshold:
+        fh_scenarios = pd.Series(dtype=float)
+        if season is not None and fh_gws == [current_gw]:
+            fh_scenarios = gain_distribution(
+                season, current_gw, fh_squad_ids, current_squad_ids
+            )
+        if _clears_threshold(
+            gain, CHIP_TIMING.free_hit_single_gw_gain_threshold, fh_scenarios,
+            CHIP_TIMING.free_hit_min_payoff_probability,
+        ):
             logger.info("FH recommended: gain=%.2f (BGW blanks=%d)", gain, bgw_affected_count)
             return ChipRecommendation(Chip.FREE_HIT, f"BGW free hit gain {gain:.1f} xPts", gain)
 
@@ -131,14 +178,21 @@ def recommend_chip(
             current_squad_ids=current_squad_ids,
             free_transfers=15,
         )
+        wc_squad_ids = wc_solution.squad["id"].tolist()
         wc_gws_xpts = float(
             projections[
                 projections["gameweek"].isin(gws)
-                & projections["player_id"].isin(wc_solution.squad["id"].tolist())
+                & projections["player_id"].isin(wc_squad_ids)
             ]["xpts"].sum()
         )
         wc_gain = wc_gws_xpts - current_xpts
-        if wc_gain >= CHIP_TIMING.wildcard_pts_gain_threshold:
+        wc_scenarios = pd.Series(dtype=float)
+        if season is not None:
+            wc_scenarios = gain_distribution(season, gws, wc_squad_ids, current_squad_ids)
+        if _clears_threshold(
+            wc_gain, CHIP_TIMING.wildcard_pts_gain_threshold, wc_scenarios,
+            CHIP_TIMING.wildcard_min_payoff_probability,
+        ):
             logger.info("WC recommended: gain=%.2f over %d GWs", wc_gain, horizon)
             return ChipRecommendation(
                 Chip.WILDCARD,
@@ -149,20 +203,38 @@ def recommend_chip(
     return ChipRecommendation(None, "No chip threshold met", 0.0)
 
 
+def _bench_player_ids(
+    squad_ids: list[int], projections: pd.DataFrame, gw: int
+) -> list[int]:
+    """Approximates bench membership as "beyond the top 11 by xpts" among
+    ``squad_ids`` for this gameweek — the same approximation
+    ``decision_engine._bench_xpts`` already uses for the point-estimate
+    ``bench_xpts`` this function's caller receives, so the scenario gate
+    stays consistent with the metric it's gating."""
+    gw_proj = projections[
+        (projections["gameweek"] == gw) & projections["player_id"].isin(squad_ids)
+    ].sort_values("xpts", ascending=False)
+    if len(gw_proj) <= 11:
+        return []
+    return gw_proj.iloc[11:]["player_id"].tolist()
+
+
 def _evaluate_triple_captain(
     squad_ids: list[int],
     projections: pd.DataFrame,
     gw: int,
-) -> float:
+) -> tuple[float, int | None, int | None]:
     gw_proj = projections[
         (projections["gameweek"] == gw) & projections["player_id"].isin(squad_ids)
     ].sort_values("xpts", ascending=False)
 
     if len(gw_proj) < 2:
-        return 0.0
+        return 0.0, None, None
 
     best_xpts = float(gw_proj.iloc[0]["xpts"])
     second_xpts = float(gw_proj.iloc[1]["xpts"])
+    best_id = int(gw_proj.iloc[0]["player_id"])
+    second_id = int(gw_proj.iloc[1]["player_id"])
 
     tc_gain = best_xpts - second_xpts
-    return tc_gain
+    return tc_gain, best_id, second_id

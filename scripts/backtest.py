@@ -270,6 +270,7 @@ def run_backtest(
                     chips_used=chips_used,
                     bench_xpts=bench_xpts_val,
                     squad_age_gws=squad_age_gws,
+                    season=season,
                 )
                 chip_played = chip_rec.chip
 

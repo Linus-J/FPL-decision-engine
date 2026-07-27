@@ -98,23 +98,18 @@ def pick_captain(
     return best_pid
 
 
-def load_fixture_groups(
-    season: str, gameweek: int, player_ids: Sequence[int]
-) -> list[pd.DataFrame]:
-    """Loads the latest persisted MC run's samples for ``player_ids`` in this
-    (season, gameweek) and groups them by fixture. ``ProjectionSample`` has no
-    fixture column, so fixture membership is recovered from the disjoint
-    per-fixture ``scenario_id`` range ``assemble.py`` assigns (players sharing
-    an identical (min, max) scenario_id span were drawn in the same fixture —
-    a documented invariant, not a guess). ``created_at`` filters to a single
-    run: the live pipeline can re-run for the same gameweek before its
-    deadline, and a re-run's fresh RNG draws must never be paired scenario-by-
-    scenario with a DIFFERENT run's draws for another player (that would
-    correlate two unrelated random numbers as if they were the same joint
-    scenario)."""
+def load_latest_samples(season: str, gameweek: int, player_ids: Sequence[int]) -> pd.DataFrame:
+    """Loads the latest persisted MC run's raw samples for ``player_ids`` in
+    this (season, gameweek). ``created_at`` filters to a single run: the live
+    pipeline can re-run for the same gameweek before its deadline, and a
+    re-run's fresh RNG draws must never be paired scenario-by-scenario with a
+    DIFFERENT run's draws for another player (that would correlate two
+    unrelated random numbers as if they were the same joint scenario). Shared
+    by ``load_fixture_groups`` (below) and ``chip_scenarios.load_scenario_totals``.
+    Returns an empty DataFrame if nothing is persisted."""
     player_ids = list(dict.fromkeys(int(pid) for pid in player_ids))
     if not player_ids:
-        return []
+        return pd.DataFrame(columns=["player_id", "scenario_id", "xpts", "created_at"])
 
     db = get_session()
     try:
@@ -132,11 +127,25 @@ def load_fixture_groups(
         db.close()
 
     if df.empty:
-        return []
+        return df
 
     df["created_at"] = pd.to_datetime(df["created_at"])
     latest = df["created_at"].max()
-    df = df[df["created_at"] == latest]
+    return df[df["created_at"] == latest]
+
+
+def load_fixture_groups(
+    season: str, gameweek: int, player_ids: Sequence[int]
+) -> list[pd.DataFrame]:
+    """Loads the latest persisted MC run's samples for ``player_ids`` in this
+    (season, gameweek) and groups them by fixture. ``ProjectionSample`` has no
+    fixture column, so fixture membership is recovered from the disjoint
+    per-fixture ``scenario_id`` range ``assemble.py`` assigns (players sharing
+    an identical (min, max) scenario_id span were drawn in the same fixture —
+    a documented invariant, not a guess)."""
+    df = load_latest_samples(season, gameweek, player_ids)
+    if df.empty:
+        return []
 
     groups: dict[tuple[int, int], list[pd.Series]] = {}
     for pid, sub in df.groupby("player_id"):

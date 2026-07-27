@@ -251,6 +251,18 @@ class ChipTimingThresholds:
 
     triple_captain_min_gain: float = 6.0
 
+    # P3-5: minimum P(gain >= 0) over real persisted MC scenarios (P3-1)
+    # required, IN ADDITION to the point-estimate thresholds above, before a
+    # chip is recommended. Only applied when real samples exist for the
+    # gameweek (live serving); the backtest walk-forward never persists
+    # samples, so it always falls back to the point-estimate-only gates
+    # above unchanged. Initial defaults, not yet backtested — tune alongside
+    # the thresholds above.
+    wildcard_min_payoff_probability: float = 0.6
+    free_hit_min_payoff_probability: float = 0.6
+    bench_boost_min_payoff_probability: float = 0.6
+    triple_captain_min_payoff_probability: float = 0.6
+
 
 # ---------------------------------------------------------------------------
 # OPTIMISER BEHAVIOUR

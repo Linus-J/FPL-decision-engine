@@ -163,6 +163,7 @@ def run(
             bench_xpts=bench_pts,
             dgw_gws=dgw_gws,
             bgw_affected_count=bgw_affected,
+            season=season,
         )
 
     wildcard_active = chip_rec.chip == Chip.WILDCARD
