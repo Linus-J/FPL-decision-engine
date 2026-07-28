@@ -30,6 +30,7 @@ assumed). Those default to 0.
 from __future__ import annotations
 
 import logging
+import unicodedata
 from collections.abc import Mapping
 
 from sqlalchemy.dialects.sqlite import insert
@@ -198,26 +199,86 @@ def _flatten_columns(df) -> object:  # pragma: no cover - needs pandas + live df
     return df
 
 
+# Non-decomposing Latin letters NFKD can't strip to ASCII (they're independent
+# base characters, not a letter + combining accent, so NFKD+ascii-encode would
+# otherwise silently DROP them rather than transliterate) -- Turkish, Nordic,
+# Polish, Czech-ish characters that show up in real PL rosters (e.g. Ferdi
+# "Kadıoğlu" -- confirmed live: NFKD alone turns this into "Kadoglu", losing
+# the dotless-i entirely, vs the correct "Kadioglu" both external sources use).
+_NON_DECOMPOSING_TRANSLIT = str.maketrans({
+    "ı": "i", "İ": "I", "ğ": "g", "Ğ": "G", "ş": "s", "Ş": "S",
+    "ø": "o", "Ø": "O", "ł": "l", "Ł": "L", "đ": "d", "Đ": "D",
+})
+
+
+def _normalize_name(name: str) -> str:
+    """Lowercased, diacritic-stripped name for cross-source matching. NFKD
+    handles most Latin accents (é→e, ñ→n, ç→c, ...); ``_NON_DECOMPOSING_TRANSLIT``
+    covers the ones NFKD can't."""
+    translated = name.translate(_NON_DECOMPOSING_TRANSLIT)
+    decomposed = unicodedata.normalize("NFKD", translated)
+    return decomposed.encode("ascii", "ignore").decode().strip().lower()
+
+
 def _build_name_map() -> dict[str, int]:
     """Player display-name → players.id, mirroring the understat matcher."""
     db = get_session()
     try:
         name_map: dict[str, int] = {}
         for p in db.query(Player).all():
-            name_map[f"{p.first_name} {p.second_name}".lower()] = p.id
-            name_map[p.web_name.lower()] = p.id
+            name_map[_normalize_name(f"{p.first_name} {p.second_name}")] = p.id
+            name_map[_normalize_name(p.web_name)] = p.id
         return name_map
     finally:
         db.close()
 
 
 def _match_player(name: str, name_map: dict[str, int]) -> int | None:
-    key = name.strip().lower()
+    """Real bugs found 2026-07-28 (walk-forward gate investigation):
+
+    1. Plain substring containment misses any player whose STORED full legal
+       name carries a middle name or a second surname the external source
+       drops -- e.g. FBref/Understat's "Bruno Fernandes" vs our stored
+       "Bruno Borges Fernandes", or "Nico Gonzalez" vs stored "Gonzalez
+       Iglesias" (Iberian dual-surname convention) -- neither is a
+       CONTIGUOUS substring of the other, so both directions of the old
+       check failed and 21+ significant players (some of them this bot's
+       own most-favoured captains) silently got ZERO event/xG data for the
+       entire season. The token-subset fallback below catches this: a
+       commonly-used football name is almost always a SUBSET of the full
+       legal name's tokens, regardless of word order or what's dropped in
+       between.
+
+    2. A FAR WORSE, actively-corrupting bug in the OLD substring check
+       itself (pre-dating today, not introduced by fix #1): a short,
+       generic SINGLE-TOKEN ``web_name`` (e.g. "Gabriel", Arsenal's Gabriel
+       Magalhães) is trivially "in" any longer external name that happens
+       to start with the same common first name -- "Gabriel Martinelli"
+       and "Gabriel Jesus" were both silently merging their real xG/xA into
+       Arsenal's Gabriel MAGALHÃES, a centre-back, whose season xG totals
+       included single-match readings above 1.5 (striker-level, impossible
+       for a CB) -- confirmed live. Fixed by requiring at least 2 tokens on
+       the CANDIDATE side of the substring check; single-token web_names
+       can still match via the EXACT-match branch above (a bare "Gabriel"
+       query correctly resolves to him), just never via fuzzy containment
+       against a longer, different person's name.
+    """
+    key = _normalize_name(name)
     if key in name_map:
         return name_map[key]
+
     for cand, pid in name_map.items():
+        if len(cand.split()) < 2:
+            continue
         if key in cand or cand in key:
             return pid
+
+    key_tokens = set(key.split())
+    if len(key_tokens) >= 2:
+        for cand, pid in name_map.items():
+            cand_tokens = set(cand.split())
+            if len(cand_tokens) >= 2 and key_tokens <= cand_tokens:
+                return pid
     return None
 
 
