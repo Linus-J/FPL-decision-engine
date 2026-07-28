@@ -177,23 +177,6 @@ class TransferRules:
     max_hits_per_gw: int = 2
     ft_terminal_value: float = 2.0
 
-    # P3-6 (2026-07-28 walk-forward gate finding): structural risk discount
-    # applied ONLY to the weekly transfer ILP's objective
-    # (optimiser/transfers.py::evaluate_transfers), never to squad-building
-    # or captaincy -- a correction for an "optimiser's curse" effect, not a
-    # risk-mode preference. Searching the full player pool for whoever's
-    # CURRENT projection looks best, every single gameweek, is a biased
-    # (over-optimistic) estimator of that player's TRUE value -- repeating
-    # the search compounds the bias every week, unlike a one-off squad
-    # build. Discounting each candidate's own projected variance before
-    # ranking transfer options penalises noisy, statistically-fragile
-    # "current standout" projections more than stable ones, independent of
-    # OPTIMISER.risk_mode (which stays a pure preference dial elsewhere, and
-    # defaults to a no-op magnitude of 0.0). Untuned starting value pending
-    # backtesting; 0.0 disables it exactly (byte-identical to pre-P3-6
-    # behaviour).
-    transfer_variance_penalty: float = 0.1
-
 
 # ---------------------------------------------------------------------------
 # SQUAD STRUCTURE
@@ -324,6 +307,19 @@ class OptimiserConfig:
     # selection and needs the v2 scenario-based objective, not this linear
     # MILP. Sign comes from risk_mode, same as max_ownership_differential.
     variance_weight: float = 0.0
+
+    # Optimiser's-curse shrinkage (2026-07-28 data-completeness audit,
+    # superseding the narrower P3-6 transfer_variance_penalty): shrinks
+    # xpts toward its (gameweek, position) group mean before ANY selection
+    # step sees it (see projection.assemble.apply_curse_shrinkage) — an
+    # always-on bias correction, independent of OPTIMISER.risk_mode (which
+    # stays a pure preference dial). Confirmed empirically: the raw model is
+    # ~unbiased across the whole player pool, but the top-50 players by
+    # projected xpts each week showed a consistent +1.2-1.3 pt/player bias
+    # -- exactly the pool squad-building/captaincy/transfers all select
+    # from. False disables it exactly (byte-identical to pre-this-fix
+    # behaviour) for comparison/debugging.
+    curse_shrinkage_enabled: bool = True
 
 
 # ---------------------------------------------------------------------------

@@ -557,6 +557,99 @@ an open question, not resolved here.
 
 Suite 306/306, lint-clean on all changed files. Commits: TBD.
 
+### P3-7 — Optimiser's-curse shrinkage, generalised (2026-07-28) — root cause of the below-average-manager result
+
+User pushed back hard on the 49.8 pts/GW result: "not possible to use this work if we are worse than
+the average manager" (avg-manager reference ≈56 pts/GW). Root-caused rather than smoothed over.
+
+**Diagnosis.** v2's own per-GW `predicted` vs `actual` numbers from the walk-forward gate showed a
+**+12.6 pt/GW bias** (mean predicted 62.4 vs mean actual 49.8) with only **0.33 correlation** — v1's
+simpler static approach was roughly half as biased (+5.6) and much better correlated (0.52). Rather
+than assume the projection MODEL itself was broken, checked calibration across the whole player pool
+for 3 sample gameweeks by calling the same `assemble_gw_projections` the optimiser uses, directly:
+
+| slice | GW10 bias | GW20 bias | GW30 bias |
+|---|---|---|---|
+| All ~800 players | +0.01 | −0.03 | −0.12 |
+| Players who actually played (minutes>0) | −0.43 | −0.60 | −0.81 |
+| **Top-50 by projected xpts** (the pool an optimiser draws from) | **+0.43** | **+1.30** | **+1.20** |
+
+The model is essentially unbiased in aggregate — even slightly conservative for players who actually
+play. The bias appears, and grows over the season, specifically among whichever players the model is
+CURRENTLY most excited about: textbook **optimiser's curse**. Picking the argmax of many noisy
+estimates systematically overselects players whose estimate is inflated by noise, not true ability.
+
+Traced the mechanism precisely: `optimiser/scoring.py::risk_adjusted_score` already has a
+`mu * xpts_var` term, but at the default `risk_mode="balanced"`, `mu=0` — **zero curse correction**.
+P3-6 (earlier the same day) added `mu -= transfer_variance_penalty` (0.1) but ONLY inside
+`evaluate_transfers`, explicitly scoped there ("never to squad-building or captaincy") to avoid
+disturbing other reproducibility guarantees. That left `optimise_squad` and `optimise_starting_xi` —
+which pick the INITIAL squad, and EVERY WEEK's lineup and captain, for both v1 and v2 — completely
+uncorrected. This explains why v1 still showed a real (smaller) bias, and why v2's is roughly double:
+both inherit the same uncorrected squad-build/captaincy selection bias; v2 additionally compounds it
+with weekly transfers that only got a token 0.1-magnitude discount, ~10-15x too small relative to the
+measured ~1.2 pt/player bias.
+
+**Fix (design-and-implement, user's explicit choice over a quick recalibration or write-up-only).**
+New `projection/assemble.py::apply_curse_shrinkage(projections, players)`: empirical-Bayes shrinkage
+of `xpts` toward its **(gameweek, position) group mean**, weighted by each player's own `xpts_var`
+relative to the real between-player variance in that group — high-uncertainty players (rotation risk,
+new signings, edge-case fixtures) shrink further toward the mean; stable, low-variance nailed-on
+starters barely move. Applied ONCE at the projection-assembly boundary (in both `scripts/backtest.py`
+and the live `projection/pipeline.py`, after the unavailable-player zeroing so a genuinely unavailable
+player's xpts=0 doesn't get pulled back up), so every downstream consumer — squad-building,
+starting-XI, captaincy, transfers, AND live serving — sees the corrected value automatically instead
+of needing its own copy of the same fix. Original value preserved as `xpts_raw`; `xpts_mean`/
+`xpts_var` (the simulator's own honest per-scenario summary) are left untouched since the shrink
+factor is computed FROM `xpts_var`. Gated by a new `OPTIMISER.curse_shrinkage_enabled` flag
+(default `True`; `False` is byte-identical to pre-fix behaviour, same convention as P3-6). This
+**supersedes and removes** `TransferRules.transfer_variance_penalty` entirely — a single, generalised,
+self-calibrating correction replacing the narrower, arbitrarily-sized one.
+
+New tests: `tests/test_curse_shrinkage.py` (+9: variance-proportional shrinkage, `xpts_raw`
+preservation, `xpts_mean`/`xpts_var` left untouched, minimum-group-size and zero-between-variance
+no-ops, position/gameweek independence, graceful no-op when `players` lacks `position`). Two existing
+tests (`tests/test_p0_projection_scaffold.py`) initially broke on a minimal test fixture missing
+`position` — fixed by making the no-op path explicit rather than loosening the fixture, since a
+caller with no position data genuinely has nothing to group by.
+
+Suite 315/315, lint-clean. **First gate re-run showed the fix was badly miscalibrated**: predicted
+flatlined at ~22-24 pts/GW regardless of squad (vs actual bouncing 20-86) — the James-Stein-style
+per-player weighting by `xpts_var` was wrong. `xpts_var` is the MC simulator's OUTCOME variance (how
+spiky a player's week-to-week returns are — a explosive-returns forward legitimately has high
+`xpts_var` with a precisely-known mean), not the model's ESTIMATION uncertainty about that mean;
+checked live and mean `xpts_var` (~3.3-4.5 across positions) is comparable to or LARGER than the real
+between-player variance (~1.7-2.9), so the ratio shrank nearly every player toward the mean regardless
+of confidence, destroying the ranking signal instead of correcting a bias. **Reverted to a simpler,
+safer uniform shrinkage strength** (`CURSE_SHRINKAGE_STRENGTH = 0.15`, not weighted by `xpts_var` at
+all) — the 10 tests in `tests/test_curse_shrinkage.py` were rewritten to match. Killed the broken gate
+run mid-flight rather than let it finish and report a nonsense number.
+
+**Second gate re-run, with the corrected uniform shrinkage:**
+
+| benchmark | pre-P3-7 | post-P3-7 (uniform shrinkage) | Δ |
+|---|---|---|---|
+| v2 bot | 1642 (49.8 pts/GW) | 1617 (49.0 pts/GW) | −25 |
+| v1 bot (naive-XI) | 1617 (49.0 pts/GW) | 1629 (49.4 pts/GW) | +12 |
+| frozen template | 1631 (49.4 pts/GW) | 1631 (49.4 pts/GW) | 0 |
+
+v2's own predicted-vs-actual bias fell from **+12.6 to +9.3 pts/GW** (a ~26% reduction) — real,
+measurable progress on the diagnosed mechanism — but correlation between predicted and actual
+*also* fell, from 0.33 to 0.20, which is not fully understood and is flagged rather than explained
+away. **The headline, unresolved finding: all three approaches now cluster within 14 points of each
+other (49.0-49.4 pts/GW) — v2 no longer has a distinguishable edge over a squad picked once at GW6
+and never touched again, and none of the three comes close to the ~56 pts/GW avg-manager reference.**
+Since even the frozen template (built via the SAME curse-corrected `optimise_squad` call, then never
+revisited) sits at the same ~49.4, the remaining gap looks less like "the weekly optimiser makes bad
+transfers" and more like something upstream of weekly decision-making — the INITIAL squad-build
+quality, the projection model's absolute scale, or the avg-manager reference constant's own validity
+(flagged as an approximate, undocumented-source anchor back in the Gate section) are all still-open
+candidates, not yet distinguished from each other.
+
+Suite 316/316 (10 in test_curse_shrinkage.py + no regressions elsewhere), lint-clean. Commits: TBD.
+**This does not fully resolve the user's original concern** (still below the avg-manager reference)
+— reported honestly as partial, real progress plus a clearly-scoped open question, not a fix.
+
 ### Departure-risk gate (§6.5)  ✅ DONE (`9531207`)
 Not originally in the P3-0..P3-5 numbering above, but flagged as *more urgent* than
 P3-4/P3-5 when asked "does anything else need to be done?" — unlike the rest of the

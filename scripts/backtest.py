@@ -112,6 +112,14 @@ def _build_gw_projections(
         mask = proj["player_id"].isin(unavailable)
         proj.loc[mask, ["xpts", "xpts_mean", "xpts_var", "start_probability"]] = 0.0
 
+    # Optimiser's-curse correction (2026-07-28): shrink xpts toward the
+    # (gameweek, position) group mean before anything downstream picks off
+    # the raw values — after the unavailable-player zeroing above, so a
+    # genuinely unavailable player (xpts=0) doesn't get shrunk back up
+    # toward its group mean. See assemble.apply_curse_shrinkage.
+    if OPTIMISER.curse_shrinkage_enabled:
+        proj = assemble.apply_curse_shrinkage(proj, players)
+
     return proj
 
 

@@ -233,6 +233,11 @@ def run_projections(
         if unavailable:
             mask = projections_df["player_id"].isin(unavailable)
             projections_df.loc[mask, ["xpts", "xpts_mean", "xpts_var", "start_probability"]] = 0.0
+        # Optimiser's-curse correction (2026-07-28) — after the unavailable-
+        # player zeroing above, so a genuinely unavailable player (xpts=0)
+        # doesn't get shrunk back up toward its group mean.
+        if OPTIMISER.curse_shrinkage_enabled:
+            projections_df = assemble.apply_curse_shrinkage(projections_df, all_players)
         projections_df["created_at"] = datetime.utcnow()
 
     if persist:

@@ -602,6 +602,83 @@ def assemble_gw_projections(
     return pd.DataFrame(rows)
 
 
+MIN_SHRINKAGE_GROUP_SIZE = 3
+
+# Uniform shrinkage strength toward the (gameweek, position) group mean (see
+# apply_curse_shrinkage). Untuned starting value pending backtesting, same
+# convention as the P3-6 constant this supersedes; 0.0 disables shrinkage
+# exactly. Deliberately NOT derived from xpts_var (see the function
+# docstring for why a variance-RATIO shrink factor was tried and reverted).
+CURSE_SHRINKAGE_STRENGTH = 0.15
+
+
+def apply_curse_shrinkage(projections: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
+    """Shrinks ``xpts`` toward its (gameweek, position) group mean by a
+    fixed fraction (``CURSE_SHRINKAGE_STRENGTH``) — corrects the "optimiser's
+    curse" (2026-07-28 data-completeness audit finding): repeatedly picking
+    whoever's CURRENT projection looks highest systematically overselects
+    players whose estimate is inflated by noise rather than true ability.
+    Confirmed empirically against three sample gameweeks: while the raw
+    model is essentially unbiased across the whole player pool (bias ≈ 0),
+    the top-50 players BY PROJECTED xpts each week — exactly the pool an
+    optimiser draws from — showed a consistent +1.2 to +1.3 point/player
+    bias. P3-6 (2026-07-28, earlier the same day) discounted this only
+    inside the weekly transfer ILP via a flat, untuned
+    ``transfer_variance_penalty``; this supersedes it with a single
+    correction applied once at the projection-assembly boundary, so every
+    consumer (squad-building, starting-XI/captaincy, transfers, live
+    serving) sees the corrected value automatically instead of needing its
+    own copy of the same fix.
+
+    A first version weighted the shrinkage per-player by ``xpts_var``
+    relative to the group's between-player variance (textbook James-Stein
+    empirical-Bayes shrinkage) — reverted after a live walk-forward gate run
+    showed it collapsing `predicted` to a near-constant ~22-24 pts/GW
+    regardless of squad. Root cause: ``xpts_var`` is the MC simulator's
+    OUTCOME variance (how spiky a player's week-to-week returns are, e.g. a
+    explosive-returns forward legitimately has high xpts_var with a
+    precisely-known mean), not the model's ESTIMATION uncertainty about that
+    mean — conflating the two is wrong, and in practice mean per-player
+    xpts_var (checked live: ~3.3-4.5 across positions) is comparable to or
+    LARGER than the real between-player variance (~1.7-2.9), so the ratio
+    shrunk nearly every player toward the mean regardless of confidence,
+    destroying the ranking signal instead of correcting a bias. A flat,
+    uniform strength avoids this conflation entirely at the cost of not
+    adapting per-player — a deliberate, safer trade-off pending a real
+    estimation-uncertainty signal (e.g. multi-seed reassembly variance)
+    being available to shrink by instead.
+
+    The ORIGINAL (unshrunk) value is preserved as ``xpts_raw`` — ``xpts``
+    itself becomes the shrunk, decision-facing value; ``xpts_mean``/
+    ``xpts_var`` (the simulator's own honest per-scenario summary) are left
+    untouched.
+
+    A (gameweek, position) group with fewer than
+    ``MIN_SHRINKAGE_GROUP_SIZE`` players is left unshrunk for that group.
+    Returns ``projections`` unchanged (no-op, not even ``xpts_raw`` added)
+    if it's empty or ``players`` lacks ``position`` — a minimal test/caller
+    fixture without position data has nothing this can safely group by."""
+    if projections.empty or "position" not in players.columns:
+        return projections
+
+    out = projections.merge(
+        players[["id", "position"]], left_on="player_id", right_on="id", how="left"
+    ).drop(columns=["id"])
+    out["xpts_raw"] = out["xpts"]
+    shrunk = out["xpts"].copy()
+
+    for (_gw, _pos), group in out.groupby(["gameweek", "position"]):
+        if len(group) < MIN_SHRINKAGE_GROUP_SIZE:
+            continue
+        group_mean = group["xpts"].mean()
+        shrunk.loc[group.index] = (
+            group_mean + (1.0 - CURSE_SHRINKAGE_STRENGTH) * (group["xpts"] - group_mean)
+        )
+
+    out["xpts"] = shrunk
+    return out.drop(columns=["position"])
+
+
 def _write_projection_samples(sample_rows: list[dict]) -> int:
     """Bulk-writes P-COV scenario draws (P3-1). One INSERT for the whole
     batch rather than per-row execute — a single gameweek's live projection

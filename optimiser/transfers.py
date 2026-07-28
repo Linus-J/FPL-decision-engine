@@ -100,9 +100,10 @@ def evaluate_transfers(
     lam, mu = lambda_mu_for_risk_mode(
         OPTIMISER.risk_mode, OPTIMISER.max_ownership_differential, OPTIMISER.variance_weight
     )
-    # P3-6: always-on optimiser's-curse discount for the weekly transfer
-    # search, independent of risk_mode (see TransferRules.transfer_variance_penalty).
-    mu -= TRANSFERS.transfer_variance_penalty
+    # The optimiser's-curse correction now lives upstream, in
+    # projection.assemble.apply_curse_shrinkage (2026-07-28) — `projections`
+    # arrives here with `xpts` already shrunk, superseding the old P3-6
+    # transfer_variance_penalty (which only covered this one call site).
     if ownership is not None and not ownership.empty:
         eo_map = ownership.set_index("player_id")["top10k_selected_pct"]
         eo_by_pid = {pid: float(eo_map.get(pid, 0.0)) for pid in pid_list}
