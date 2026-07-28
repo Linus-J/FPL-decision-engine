@@ -160,9 +160,27 @@ The 102 brand-new 26/27 codes (foreign signings + promoted-team players) have **
 
 - **Gate:** (i) every one of the 102 new players gets a translated prior-league projection, not the flat position/price fallback; (ii) translation factors calibrated on the made-the-jump hold-out (predicted vs realised first-PL-season output, by source league); (iii) a known promoted-team standout from a prior season is ranked sensibly above a squad filler (sanity check).
 
-### P12 — Per-team DGW/BGW  *(D6)*
-- Per-team fixture counts per GW; `DGWStrategy` multipliers per-team.
-- **Gate:** a synthetic per-team DGW doubles only the doubling team's players.
+### P12 — Per-team DGW/BGW  ✅ DONE (`2cd558a`)
+- **Real bug found (not the originally-scoped "add multipliers" task):** `DGWStrategy`'s
+  `dgw_xpts_multiplier`/`bgw_xpts_multiplier` are dead config — never referenced outside
+  their own dataclass (P10's real per-fixture assembly superseded the old multiplier
+  heuristic entirely, per P0's docstring). The actual DGW/BGW behaviour is whatever falls
+  out of `assemble_gw_projections`'s fixture-row handling, and that had a live bug: its
+  scaffold deduped on `(player_id, gameweek)` alone, so a genuine double-gameweek player's
+  SECOND real fixture row (same gameweek, different opponent) was silently dropped before
+  sampling — DGW players were projected as if they only played once, not doubled.
+- **Fix:** dedupe on the fixture's own identity (`player_id, gameweek, opponent_team_id,
+  was_home`) instead, and merge same-gameweek fixture contributions per player into ONE
+  row — summing `xpts`/`xpts_mean`/`xpts_var` (independent fixtures' variances add) and
+  combining `start_probability` as `P(starts >= one fixture)` rather than overwriting.
+  Raw persisted MC samples (P3-1) are untouched — each fixture still gets its own disjoint
+  `scenario_id` range, which was already correct; only the aggregate reporting row needed
+  the fix, since a naive one-row-per-fixture emission would have corrupted downstream
+  1-row-per-player merges (e.g. `optimise_starting_xi`) via a one-to-many join.
+- **Gate:** `tests/test_dgw_assembly.py` (4) — DGW player's two fixtures summed into one
+  row; start-probability composed correctly; persisted samples stay per-fixture
+  (unmerged); a normal single-fixture player is byte-identical to pre-fix behaviour. Suite
+  264/264.
 
 ---
 
@@ -189,7 +207,37 @@ P0 ─ P-FIX (live horizon)      P-XI (harness) ─ re-baseline ─► gate
 1. **Distributional representation = Monte-Carlo samples** (unblocks Phase-3 scenario optimiser + P8; seeded).
 2. **Event data = FBref scrape first** (browser env) before P-RS/P7/P8; interim reduced-scoring fallback only if no browser env.
 
-## Decision 3 — Gate realism — ✅ CLOSED (2026-07-28): accept 52.48, stop chasing the residual 4.5
+## Real bug found 2026-07-28: `player_xg_stats.xg/xa/npxg` were ~0 for 98% of the league all season
+Discovered while building the Phase-3 walk-forward gate (`plan/phase-3-decision-layer.md` "Gate"):
+`run_backtest`'s full decision engine was captaining the SAME mid-priced player for 15+ consecutive
+gameweeks despite modest real output. Root-caused to `FBREF_XG_MAP` (`data/ingestors/fbref.py`) —
+`"Expected xG"`/`"Expected npxG"`/`"Expected xAG"` never existed as columns in FBref's real per-match
+summary table (verified live via `soccerdata`: the actual columns are only `Performance
+Gls/Ast/Sh/SoT/...`, no `Expected` block at all) — the SAME class of column-drift bug already found
+once for `tackles` (`Performance Tkl` → `Performance TklW`, P10), just never caught for xG because
+`map_xg_row`'s `if col in raw` silently no-ops instead of raising. Every FBref-sourced
+`player_xg_stats` row therefore got `xg=xa=npxg=0.0` by construction — a **known, documented,
+accepted** limitation per `understat_xg.py`'s own docstring ("the FREE solution to the xG gap...
+replaces the shots-only interim"), EXCEPT that `ingest_understat_xg_season` — the real fix — had
+apparently never actually been run against this DB: only 14 of 524 players had any nonzero `xg` at
+all, one of whom happened to be the exploited player. `split_multinomial` (`projection/
+covariance.py`) splits a team's ENTIRE odds-implied goal/assist total by relative weight share —
+when every real teammate measures at exactly 0.0 and one player has ANY nonzero value, that one
+player captures 100% of the team's goal probability regardless of magnitude (verified directly:
+Man City GW20, every outfield player except this one showed `goal_weight=assist_weight=0.0` exactly;
+he alone got `xpts=18.27` vs Haaland's `1.24`). Verified this was NOT a name-matching failure —
+re-ran Understat's matcher live (read-only) and it correctly matches 511/537 (95%) of real PL player
+names — the ingestion had simply never been executed for `2025-26`, not that it was broken.
+**Fixed:** ran `ingest_understat_xg_season("2025-26")` live (10,590 rows written, 593 unmatched
+raw records e.g. departed/loan players). Verified: distinct players with any real `xg>0` jumped
+14 → 414; Haaland now shows real elite-striker per-match xG (1.79, 1.37, 1.75, 1.25...) instead of
+zero. **Not fixed (flagged, not solved):** `_write_xg_rows` uses `on_conflict_do_update`
+unconditionally — if `ingest_xg_season` (FBref, still structurally producing `xg=0` always) is ever
+re-run for this season AFTER Understat, it will silently overwrite the real values back to zero.
+No run-order guard exists. A proper fix would stop FBref's ingest from writing `xg`/`xa`/`npxg` at
+all (only `shots` is real from that source) rather than relying on run order.
+
+## Decision 3 — Gate realism — 🔄 REOPENED (2026-07-28): closed on broken data, see below
 **Gate realism** — ≥57 is +17 over baseline. If components plateau below it, decide then whether to
 reduce the bar or extend scope (minutes/odds anchoring) before Phase 3.
 
@@ -205,6 +253,28 @@ pursue further: the plan already attributes the gap to a structural free-tier-da
 than a fixable code/calibration bug, and hand-tuning more magic scale constants against a single
 25/26 season sample without a held-out validation split risks overfitting to noise rather than
 closing a real gap. **52.48 pts/GW stands as the Phase-2 exit number**, Phase 3 proceeds on it.
+
+**Reopened 2026-07-28:** the 52.48 number above was computed with the `player_xg_stats` bug
+documented just above still live — i.e. with real npxG/xA data missing for 98% of the league the
+ENTIRE time this gate was iterated on (pre-P10 baseline through the dribbles/GK recalib run). The
+whole GK/DEF bonus-calibration chase was reasoning about the BONUS component in isolation while the
+GOALS/ASSISTS component's core inputs were silently broken underneath it — a materially different,
+larger-scope problem than "structural free-tier data ceiling" (that framing was about MISSING
+secondary channels like crosses/big-chances; this is about the PRIMARY xG signal itself being absent
+for nearly the whole league). Re-ran the P-XI harness (`run_naive_xi_backtest`, identical GW6-38
+window, P-RS scoring) with the real xG data now in place: **51.4 pts/GW** — essentially unchanged
+from 52.48 (a ~1pt difference, well within normal captaincy-reshuffling noise), NOT the large jump
+one might expect from fixing such a fundamental data gap. This is itself informative: it suggests
+the naive-XI harness's captaincy choices were already reasonably close to sane even under the old
+broken data (its captains were DEF/GK-heavy, which — per the bonus-calibration entries above — score
+via clean-sheet/appearance BPS rather than goals/assists, so they were largely insulated from the
+goals-attribution bug; the bug mattered far more to whichever specific attacking players had
+non-zero legacy `xg` and to any process, like `run_backtest`'s transfers, that actively searches
+across the full player pool for the best current projection). **Net effect: the accepted Phase-2
+number moves from 52.48 to 51.4 pts/GW** (still ~5.6 short of 57) — the underlying reasoning for NOT
+chasing the residual gap further (data-ceiling-attributed, diminishing returns from more magic
+calibration constants) still holds, now on a corrected baseline. Re-closed on this corrected number;
+no further action planned here.
 
 ## Cross-cutting
 - Every task on `v2`; conventional commits; one commit per task min.

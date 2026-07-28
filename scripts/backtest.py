@@ -358,6 +358,22 @@ def run_backtest(
         starting_ids = xi_solution.starting_xi["id"].tolist()
         captain_id = xi_solution.captain_id
 
+        # Own-variance-only team-total variance (P3-3-level approximation, no
+        # teammate covariance) + the captain-doubling correction
+        # (Var(2X)=4*Var(X) = Var(X) + 3*Var(X) already-counted-once) --
+        # feeds the walk-forward gate's per-GW MC simulation
+        # (scripts/walk_forward_gate.py). Not present pre-P10 projections.
+        if "xpts_var" in xi_solution.starting_xi.columns:
+            starting_var = xi_solution.starting_xi["xpts_var"].fillna(0.0)
+            captain_var = float(
+                xi_solution.starting_xi.loc[
+                    xi_solution.starting_xi["id"] == captain_id, "xpts_var"
+                ].sum()
+            )
+            predicted_var = float(starting_var.sum() + 3 * captain_var)
+        else:
+            predicted_var = 0.0
+
         actual = _actual_gw_points(all_stats, gw, score_2627=score_2627)
         actual_pts = _score_squad(
             new_squad_ids, starting_ids, captain_id, actual,
@@ -373,6 +389,7 @@ def run_backtest(
         results.append({
             "gameweek": gw,
             "predicted_xpts": round(xi_solution.total_xpts, 2),
+            "predicted_var": round(predicted_var, 4),
             "actual_pts": actual_pts,
             "hits": hits,
             "hit_penalty": hit_penalty,

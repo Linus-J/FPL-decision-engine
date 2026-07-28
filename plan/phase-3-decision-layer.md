@@ -203,10 +203,69 @@ its underlying formula, since that wasn't in scope and changing chip
 semantics deserves its own decision, not a silent side effect of a
 plumbing upgrade.
 
-### Gate
+### Gate  ⚠️ HARNESS BUILT, RESULT NOT YET PASSING (2026-07-28)
 Walk-forward vs benchmarks; report the simulated final-rank distribution, not mean
 points — a risk-seeking bot can have a slightly lower mean with a fatter right tail
 and still be the better rank-optimising choice.
+
+**Built:** `scripts/walk_forward_gate.py`. Benchmarks: **v2 bot** (this project's full
+`run_backtest` — transfers, chips, scenario captaincy) vs **v1 bot** (`run_naive_xi_backtest`,
+the Phase-2 P-XI harness — fixed squad, no transfers, weekly lineup/captain only) vs
+**frozen template** (new: squad AND lineup AND captain picked ONCE at `start_gw`, never
+revisited again — stricter than v1) vs the plan's own approximate **avg-manager (~56 pts/GW)**
+and **top-10k (~63 pts/GW)** reference constants, used as the two calibration anchors for a
+Normal population model (`ASSUMED_POPULATION_SIZE=9,000,000`, a documented assumption, not a
+scrape — no free source of the real manager-population score distribution exists). The v2 bot's
+own predictive uncertainty (`run_backtest`'s new `predicted_var` column — own-variance +
+captain-doubling correction, P3-3-level) drives a real Monte-Carlo simulated season-total/rank
+distribution; v1 and frozen template get single point-estimate ranks (no persisted variance in
+the same form).
+
+**Two real bugs found while building/running this** (beyond the P12 DGW fix, `2cd558a`, found in
+the same debugging pass and documented under its own P12 entry in `phase-2-xpts-engine.md`):
+1. The `player_xg_stats` season-wide xG bug — see `phase-2-xpts-engine.md`'s "Real bug found
+   2026-07-28" entry (reopened decision 3). Found because this gate's `run_backtest` phase was
+   captaining ONE mid-priced player for 15+ consecutive gameweeks with an escalating, ultimately
+   implausible predicted total (60 → 100+ over the season) while every teammate showed
+   `goal_weight=assist_weight=0.0` exactly. Fixed live (`ingest_understat_xg_season`, 10,590 rows).
+2. (unresolved, see below) `run_backtest`'s season-long total STILL trails both simpler baselines
+   even after the xG fix.
+
+**Result (2025-26, GW6-38, post-xG-fix):**
+
+| benchmark | season total | pts/GW | rank (point estimate, population-model) |
+|---|---|---|---|
+| v2 bot (full decision engine) | 1565 | 47.4 | ~8,999,196 (worst) |
+| frozen template (pick once, never touch) | 1666 | 50.5 | ~8,928,207 |
+| v1 bot (naive-XI, weekly lineup/captain only) | 1695 | 51.4 | ~8,807,541 |
+| avg manager (reference anchor) | 1848 | 56.0 | — |
+| top-10k pace (reference anchor) | 2079 | 63.0 | — |
+
+**Gate does not pass: the full decision engine underperforms a squad that is never touched at
+all.** This is NOT a rank-optimising risk-seeking tradeoff (the framing this gate was written to
+allow for) — v2 loses on mean points too. Ruled out as causes: hits (zero taken all season, per
+log), chip misuse (one Wildcard, one Triple Captain, both look like reasonable calls), solver
+failures (`ILP status: Optimal` throughout, no "rebuild from scratch" fallbacks fired), and the
+xG data bug above (fixed; captains are now real, sensible attacking players — Haaland, Fernandes,
+Gabriel, Enzo, Mbeumo, Cunha, Thiago — not a single exploited outlier).
+
+**Leading hypothesis, not yet fixed: an "optimiser's curse" in `evaluate_transfers`/
+`optimise_squad`'s transfer selection.** `predicted_xpts` runs consistently, substantially hot
+against `actual_pts` all season (e.g. GW9: predicted 87.2 vs actual 46; GW18: 72.2 vs 26) — a
+~24 pts/GW average overshoot (71.2 predicted vs 47.4 actual), well beyond normal calibration
+noise. v1's naive-XI harness, using the SAME per-player projection engine, shows a much smaller
+overshoot (60.3 predicted vs 51.4 actual, ~9 pts/GW) over the identical window. Since both harnesses
+draw on identical per-player projections, the extra bias is specific to the ACT of repeatedly
+searching the full player pool for "whoever the model currently likes best" every gameweek:
+argmax-of-a-noisy-estimate is a biased estimator of the TRUE best option (classic winner's-curse /
+optimiser's-curse phenomenon) — a fixed or rarely-changed squad only pays this selection bias once
+(at initial build), while a transfer engine that re-optimises weekly re-exposes itself to it every
+single week, systematically buying into short-window statistical flukes (5-game rolling rates) that
+regress after the transfer is made. **Not fixed — this is a genuine statistical/design problem
+(needs shrinkage/regularisation on the rolling-rate inputs feeding transfer decisions, or a higher
+minimum-gain threshold to filter out noise-chasing transfers, or out-of-sample validation of the
+transfer-gain estimate), not a quick patch, and changes live bot behaviour — flagged for a
+dedicated follow-up rather than an unreviewed fix under this investigation.**
 
 ### Departure-risk gate (§6.5)  ✅ DONE (`9531207`)
 Not originally in the P3-0..P3-5 numbering above, but flagged as *more urgent* than
