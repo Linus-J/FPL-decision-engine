@@ -100,6 +100,9 @@ def evaluate_transfers(
     lam, mu = lambda_mu_for_risk_mode(
         OPTIMISER.risk_mode, OPTIMISER.max_ownership_differential, OPTIMISER.variance_weight
     )
+    # P3-6: always-on optimiser's-curse discount for the weekly transfer
+    # search, independent of risk_mode (see TransferRules.transfer_variance_penalty).
+    mu -= TRANSFERS.transfer_variance_penalty
     if ownership is not None and not ownership.empty:
         eo_map = ownership.set_index("player_id")["top10k_selected_pct"]
         eo_by_pid = {pid: float(eo_map.get(pid, 0.0)) for pid in pid_list}

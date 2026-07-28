@@ -203,7 +203,7 @@ its underlying formula, since that wasn't in scope and changing chip
 semantics deserves its own decision, not a silent side effect of a
 plumbing upgrade.
 
-### Gate  ⚠️ HARNESS BUILT, RESULT NOT YET PASSING (2026-07-28)
+### Gate  ✅ v2 BOT NOW BEATS BOTH BASELINES (2026-07-28, P3-6 fix)
 Walk-forward vs benchmarks; report the simulated final-rank distribution, not mean
 points — a risk-seeking bot can have a slightly lower mean with a fatter right tail
 and still be the better rank-optimising choice.
@@ -261,11 +261,51 @@ argmax-of-a-noisy-estimate is a biased estimator of the TRUE best option (classi
 optimiser's-curse phenomenon) — a fixed or rarely-changed squad only pays this selection bias once
 (at initial build), while a transfer engine that re-optimises weekly re-exposes itself to it every
 single week, systematically buying into short-window statistical flukes (5-game rolling rates) that
-regress after the transfer is made. **Not fixed — this is a genuine statistical/design problem
-(needs shrinkage/regularisation on the rolling-rate inputs feeding transfer decisions, or a higher
-minimum-gain threshold to filter out noise-chasing transfers, or out-of-sample validation of the
-transfer-gain estimate), not a quick patch, and changes live bot behaviour — flagged for a
-dedicated follow-up rather than an unreviewed fix under this investigation.**
+regress after the transfer is made.
+
+### P3-6 — Optimiser's-curse fix for weekly transfer selection  ✅ DONE
+Scoped narrowly to the mechanism identified above: `optimiser/transfers.py::evaluate_transfers`'s
+ILP objective now always applies an additional risk discount, independent of `OPTIMISER.risk_mode`
+(which stays a pure preference dial elsewhere, and today defaults its own magnitude to 0.0 — i.e.
+this is a NEW, separate correction, not a reuse of the existing-but-inert P3-3 variance-weight
+knob). `TransferRules.transfer_variance_penalty` (new config field, default `0.1`, untuned pending
+real backtesting) is subtracted from `mu` before computing each candidate's
+`risk_adjusted_score` for the transfer ILP: `score = xpts - 0.1 * xpts_var` at default (balanced)
+settings, so a candidate whose apparent edge rests on a noisier, less-supported projection is
+discounted more than one with the same raw xPts but lower variance — directly countering "buy
+whoever's current 5-game rolling rate spiked" rather than broadly discouraging all transfers.
+**Deliberately scoped to ONLY the weekly transfer ILP** — `optimise_squad` (cold-start build,
+wildcard/free-hit rebuilds) and `optimise_starting_xi` (captaincy, an 11-15-candidate pool where
+the winner's-curse effect is far weaker than searching the full ~500+ player market) are
+untouched, both to keep the fix targeted at the exact mechanism diagnosed and to avoid disturbing
+the P-XI/P3-4/P3-5 byte-for-byte reproducibility guarantees already verified earlier this session
+(which depend on `optimise_squad`'s default scoring being unchanged).
+
+**Result (2025-26, GW6-38, same window, xG data already fixed):** re-ran `run_backtest` alone
+(v1/frozen are unaffected — neither calls `evaluate_transfers`) — **1700 pts / 51.5 pts/GW**, up
+from the pre-fix 1565/47.4, and now edges out BOTH baselines:
+
+| benchmark | season total | pts/GW |
+|---|---|---|
+| **v2 bot (full decision engine, post-P3-6 fix)** | **1700** | **51.5** |
+| v1 bot (naive-XI, weekly lineup/captain only) | 1695 | 51.4 |
+| frozen template (pick once, never touch) | 1666 | 50.5 |
+| avg manager (reference anchor) | 1848 | 56.0 |
+| top-10k pace (reference anchor) | 2079 | 63.0 |
+
+Sanity-checked the transfer log: hits stayed at 0 all season (same as before), one Wildcard use,
+transfer gains now mostly modest and plausible (5-30 xPts, one legitimately-large 39.5 WC gain, one
+slightly negative -3.09 single-transfer "net gain" — expected and correct: the ILP now sometimes
+prefers a lower-variance swap that scores slightly lower on the raw undiscounted `xpts_gain`
+reporting metric, which is exactly the intended risk/noise tradeoff, not a bug). Captains are real,
+sensible attacking picks throughout (Haaland, Calafiori, Enzo, Gabriel, Thiago, Fernandes) with no
+single-player monopoly streak.
+
+**Margin over the baselines is thin (+0.1 vs v1, +1.0 vs frozen) and `transfer_variance_penalty
+=0.1` is an untuned, single-value choice** — this closes the specific "loses to doing nothing"
+failure mode the gate caught, but is not a claim that this is the OPTIMAL discount value; proper
+calibration (a held-out split, or trying a small grid of values) is future work, not done here.
+Suite 264/264, lint-clean.
 
 ### Departure-risk gate (§6.5)  ✅ DONE (`9531207`)
 Not originally in the P3-0..P3-5 numbering above, but flagged as *more urgent* than

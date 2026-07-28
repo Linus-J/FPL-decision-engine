@@ -177,6 +177,23 @@ class TransferRules:
     max_hits_per_gw: int = 2
     ft_terminal_value: float = 2.0
 
+    # P3-6 (2026-07-28 walk-forward gate finding): structural risk discount
+    # applied ONLY to the weekly transfer ILP's objective
+    # (optimiser/transfers.py::evaluate_transfers), never to squad-building
+    # or captaincy -- a correction for an "optimiser's curse" effect, not a
+    # risk-mode preference. Searching the full player pool for whoever's
+    # CURRENT projection looks best, every single gameweek, is a biased
+    # (over-optimistic) estimator of that player's TRUE value -- repeating
+    # the search compounds the bias every week, unlike a one-off squad
+    # build. Discounting each candidate's own projected variance before
+    # ranking transfer options penalises noisy, statistically-fragile
+    # "current standout" projections more than stable ones, independent of
+    # OPTIMISER.risk_mode (which stays a pure preference dial elsewhere, and
+    # defaults to a no-op magnitude of 0.0). Untuned starting value pending
+    # backtesting; 0.0 disables it exactly (byte-identical to pre-P3-6
+    # behaviour).
+    transfer_variance_penalty: float = 0.1
+
 
 # ---------------------------------------------------------------------------
 # SQUAD STRUCTURE
