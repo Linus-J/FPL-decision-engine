@@ -369,6 +369,194 @@ also not something to wave away. The 23 remaining unmatched players (Ben White, 
 Kilman among them — real, relevant defenders) are a known, smaller residual gap. Suite 274/274,
 lint-clean. Commits `6a99ed5` (matcher fix).
 
+### Data-completeness audit, part 2 (2026-07-28) — systematic ingestor sweep + automated gates
+
+User pushed back ("this is a huge problem, check for data issues throughout the build") and asked
+for three things: a systematic audit of every ingestor for the same bug classes, automated
+data-quality gates going forward, and resolution of the 23 remaining unmatched Understat players.
+
+**23 unmatched players, root-caused and mostly fixed (21/23).** Broke into distinct classes, each
+verified against the real stored DB record before fixing (no guessing):
+- **Hyphen-vs-space disagreement** (3 players: Smith-Rowe, Aït-Nouri, Ben *Gannon*-Doak) — sources
+  disagree on hyphenation for compound names. Fixed generically: `_normalize_name` now flattens
+  hyphens to spaces, so the existing token-subset fallback sees each part as its own token.
+- **Reversed token-subset** (1 player: "Hamed **Junior** Traore") — the *external* source has an
+  extra given name ours doesn't, the mirror image of the original Bruno Fernandes case. The
+  token-subset fallback only checked one direction; added the reverse, with a uniqueness guard
+  (ambiguous matches return `None` rather than guessing — the same collision-safety principle as
+  the ≥2-token guard from the Gabriel fix).
+- **Serbo-Croatian đ/Đ mistransliteration** (1 player: Djordje/**Đorđe** Petrović) — the existing
+  translit table mapped đ→"d", dropping the "j" sound entirely ("Dorde" instead of "Djordje").
+  Corrected to đ→"dj" (the standard latinization), which resolves the case with zero special-casing.
+- **Nickname/spelling variants with no safe generic rule** (16 players: Ben *White*↔Benjamin, Matty
+  *Cash*↔Matthew, Joe *Gomez*↔Joseph, Max *Kilman*↔Maximilian, Dan *Ballard*↔Daniel, Fer
+  *López*↔Fernando, Yeremy *Pino*↔Yeremi, Yarmoliuk↔Yarmolyuk, Nayef *Aguerd*↔Naif, Abdukodir
+  *Khusanov*↔Abduqodir, Trey *Nyoni*↔Treymaurice, Ollie *Scarles*↔Oliver, Alex *Jiménez*↔Alejandro,
+  Josh *King*↔Joshua, Lucas Paquetá↔his full legal name, Lesley↔Chimuanya Ugochukwu). Added a small
+  curated alias dict (`_KNOWN_ALIASES` in `fbref.py`) mapping each verified external spelling to the
+  exact normalized form already in our name_map — deliberately NOT a fuzzy/edit-distance matcher,
+  since a low-confidence nickname guess risks reintroducing exactly the Gabriel-collision class of
+  bug this whole audit started from.
+- **Left unmatched, on purpose** (2 players): "Jota Silva" — our DB's only "Jota" record is a
+  *different* real player (Diogo Jota), and aliasing the two would risk a genuine collision, so it's
+  left unmatched rather than guessed. "Mathis Cherki" — Understat's own data doesn't cleanly resolve
+  to a real current PL player (our only "Cherki" is Rayan, a different first name); flagged as a
+  source-side anomaly for manual review, not fixed blind.
+
+New tests: `tests/test_fbref_name_matching.py` (+8: hyphen flattening, đ/Đ, reversed-subset match +
+its ambiguity guard, alias resolution) plus regression coverage below.
+
+**A second, actively-corrupting name-matcher bug found live in production code, not just the
+backtest.** `data/ingestors/understat.py` — a second, OLDER Understat ingestor, separate from
+`understat_xg.py` — carries its own local `_match_player`/`_build_fpl_name_map` with the *exact*
+unguarded-substring collision the Gabriel fix addressed (no ≥2-token guard at all). Unlike
+`understat_xg.py` (manual, soccerdata-only, never auto-run), **this module is wired into
+`scripts/run_agent.py` — the bot's real live decision entrypoint** — so the collision risk is
+live-production-facing, not a backtest artifact: this would silently re-corrupt captaincy data on
+every single live agent cycle once the 26-27 season starts. Fixed by dropping the local matcher
+entirely and reusing the shared, hardened one from `fbref.py` (`understat._match_player is
+fbref._match_player`, `understat._build_fpl_name_map is fbref._build_name_map`).
+
+**Same bug class, third instance, in `press_conference.py`'s news-sentiment matcher** (also wired
+into `run_agent.py`). `_extract_player_signals` matched a bare short name (web_name/second_name) via
+plain substring containment with zero guard, so a news sentence mentioning any "Gabriel" or "James"
+would attribute sentiment to whichever player's name happened to iterate first in the dict — same
+failure mode, different consumer (rotation/availability signal, not xG). Fixed: `_build_player_name_map`
+now drops any name shared by more than one real player entirely (rather than resolving to an
+arbitrary one), and `_extract_player_signals` uses word-boundary regex matching and checks the
+longest candidate name first, so a full "first second" match wins over a shorter substring of the
+same sentence. New tests: `tests/test_press_conference.py`, `tests/test_understat_legacy_matcher.py`.
+
+**A fourth suspected bug, investigated hard, turned out NOT to be a bug — recorded here so it isn't
+re-investigated from scratch.** `Team.id`/`Player.team_id` mirror FPL's own numeric team id, which
+is NOT a stable cross-season identity (FPL reassigns ids 1-20 fresh every season based on that
+season's actual 20 clubs; only `team.code` is stable). Right now `teams.id=7/11/12` are live-correctly
+named Coventry/Hull/Ipswich (promoted for 26-27), while a handful of departed players (Cucurella,
+Konaté, M.Salah — all confirmed absent from today's live bootstrap `elements`, i.e. genuinely no
+longer in the league) still carry those same numeric ids frozen from when they meant Chelsea/
+Liverpool. This LOOKED like a severe, systemic corruption (346/841 players' team_id disagreed with
+the frozen 2025-26 historical snapshot) but a precise test — comparing only players still present in
+TODAY's live feed against what live says RIGHT NOW — found just **4 genuinely stale rows** (Penders,
+Anselmino, Garnacho, Targett), fixed by simply re-running the existing `upsert_teams`/`upsert_players`
+pipeline (no code change needed; `team_id` already gets refreshed correctly on every live re-run for
+anyone still in the league). The other 342 "mismatches" were normal reality: real summer transfers
+plus the expected season-to-season id renumbering for departed players, not corruption. Also
+independently confirmed the walk-forward backtest is fully insulated from any of this either way —
+`team_season_strength`/`player_gw_stats` come from a completely separate, correctly season-scoped
+historical pipeline (`scripts/backfill_history.py`, sourced from the vaastav GitHub archive, not the
+live API) and never touch the raw `teams`/live `Player.team_id` at all. No architecture change made;
+building one would have solved a problem that didn't actually exist.
+
+**Automated data-quality gates, so this class of bug gets caught going forward instead of
+surfacing later as a captaincy anomaly.** New `data/quality_checks.py`: four small, pure, unit-tested
+checks — `check_name_match_coverage` (flags an external-source name-matching pass below a coverage
+floor — would have caught the season-wide xG gap immediately), `check_stat_column_not_dead` (flags a
+stat column that's almost always exactly zero — would have caught FBref's dead `Expected xG` mapping
+directly instead of it surfacing as a captaincy monopoly two bugs later), `check_team_id_matches_live`
+(the staleness check above, generalized), and `check_no_single_teammate_monopoly` (flags one player
+holding ≥95% of a team's goal/assist weight while teammates have nonzero weight too — would have
+caught the N.Gonzalez/Gabriel monopoly pattern generically, independent of root cause). New
+`scripts/data_quality_gate.py` wires the live-checkable ones (team-id freshness, Understat coverage)
+into a runnable gate (`DB_PATH=fpl_bot_v2.db uv run --extra events python scripts/data_quality_gate.py`,
+exit 1 on any error-severity issue) — not yet wired into `run_agent.py`'s automatic cycle, a natural
+next step.
+
+**One residual, deliberately unverified item:** `data/ingestors/odds_api.py`'s `_match_fixture` now
+requires BOTH team names to match (see below) rather than home-only, which removes most of the
+practical risk, but it still can't be exercised end-to-end because `fixture_odds` has 0 rows and
+verifying the live match would mean spending a real call against a paid, quota-limited API key
+(`THE_ODDS_API_KEY`) just to confirm team-name-format compatibility (FPL's short names like "Man
+City" vs. whatever The Odds API actually returns). Flagged for whoever runs live odds ingestion
+first to sanity-check.
+
+Re-ran the Understat xG ingest with the fixed matcher: 11,306 rows written (up from 10,852), 34 unmatched
+*rows* (down from the prior run; only 2 distinct players now, Jota Silva and Mathis Cherki, both
+deliberately left unmatched above). Refreshed the 4 stale `team_id` rows via a plain ingestion
+re-run.
+
+### Data-completeness audit, part 3 (2026-07-28) — parallel ingestor-audit agent, 6 more confirmed bugs
+
+Dispatched a second, independent pass (an `Explore`-agent audit) across the remaining 8 ingestor
+files while the walk-forward gate re-ran in the background, specifically hunting the same 6 bug
+classes (dead source columns, name-matcher collisions, dedup/duplicate bugs, unvalidated API
+responses, id/join mismatches, silent zero defaults). It came back with 6 confirmed defects,
+evidence-checked against the live DB/schema, ranked by severity — 2 were already fixed earlier in
+this session (independently re-confirmed, see below); 4 were new and are now fixed:
+
+1. **`odds_api.py::_extract_h2h` silently swapped home/away win probability for ~50% of fixtures.**
+   It sorted the two non-Draw outcome names ALPHABETICALLY and assigned the first to home, the
+   second to away — with no reference to which team was actually home. Traced downstream to a real
+   ML feature (`projection/features.py`'s `my_cs_prob`/`opp_cs_prob`, built from
+   `home_cs_prob`/`away_cs_prob` via `CASE WHEN was_home`). Fixed: now keyed directly by the real
+   home/away team names from the same odds-API event payload, no sorting at all.
+2. **`odds_api.py::_match_fixture` ignored the away team and kickoff time entirely** — matched
+   purely on home-team-name substring against ALL of that team's unfinished fixtures with no
+   ordering, so a team with more than one unfinished home fixture in the response window got every
+   odds snapshot attached to whichever fixture the unordered query happened to return first, while
+   its other fixture(s) silently got zero coverage. Fixed: now requires both home AND away names to
+   match, tie-breaking a genuine same-week double-header by nearest kickoff time.
+3. **`fpl_api.py::ingest_player_history` — the P12 double-gameweek bug, unfixed in this ingestor.**
+   `PlayerGameweekStats`'s unique key is `(player_id, gameweek, season)` with no fixture component,
+   but a genuine DGW player's FPL history has two entries with the same `round`; the old
+   `on_conflict_do_update` per-entry meant the second fixture's full stat line (goals/minutes/bps/
+   points/...) silently overwrote the first's rather than summing — one match's entire contribution
+   destroyed. Fixed via a new pure `_accumulate_gw_history` that sums genuinely-cumulative per-fixture
+   fields across same-round entries while keeping the LATEST entry's `selected`/`value` (those are
+   point-in-time snapshots, not per-fixture stats, so summing them would be wrong the other way).
+4. **`odds_api.py`'s `btts_prob` hardcoded to a literal `0.0`, never actually sourced.** `MARKETS`
+   never requests a BTTS market, so this was a dead-mapped fake "certain no BTTS" value, not a
+   documented gap. Downstream (`projection/features.py`) only falls back to 0.5 on NULL/NaN, so a
+   real live fixture would have fed a bogus "BTTS never happens" signal straight into projections
+   the moment `fixture_odds` ever got populated. Fixed: `FixtureOdds.btts_prob` is now nullable
+   (`data/models.py`), and `ingest_odds` writes `None` instead of `0.0` — the existing COALESCE/
+   fillna(0.5) fallback now actually fires as designed. Table was empty (0 rows), so the schema
+   change needed no data migration, just a drop+recreate.
+5. **Independently re-confirmed already-fixed:** `understat.py`'s local matcher (verified live: DB
+   web_name `"Onana"` is shared by two real, different players — Amadou Onana id 63 and André Onana
+   id 536 — and `"Wilson"` by four) and `press_conference.py`'s matcher (same surnames). Both were
+   already patched earlier in this session (part 2 above); re-verified live post-fix that
+   `_match_player("Amadou Onana", ...)` and `_match_player("Andre Onana", ...)` now correctly resolve
+   to 63/536 respectively, and that `press_conference._build_player_name_map()` correctly excludes
+   `"onana"`/`"wilson"`/`"sarr"`/`"phillips"`/`"patterson"`/`"king"`/`"johnson"`/`"gray"` as ambiguous
+   rather than silently picking one.
+6. **Confirmed clean, no fix needed:** `fbref_prior.py` (tries multiple flattened-column candidates
+   per field — the season-stats page genuinely has `Expected npxG`/`Expected xAG`, unlike the
+   already-fixed per-match dead-column bug), `injury_parser.py` and `midweek.py` (pure internal-ID
+   logic, no cross-source join), `ownership.py` (joins on `fpl_id`, same ID space both sides;
+   documents its one real gap, `captaincy_pct_overall`, explicitly rather than silently defaulting).
+
+New tests: `tests/test_odds_api.py` (+5, including one that itself caught a real
+naive-vs-aware-datetime `TypeError` in the kickoff-tiebreak code before it shipped),
+`tests/test_fpl_api_history.py` (+4).
+
+Re-ran the full walk-forward gate (GW6-38) a second time on top of all part-2 and part-3 fixes:
+
+| benchmark | part-2 result | part-3 result (this pass) | Δ |
+|---|---|---|---|
+| v2 bot (full decision engine) | 1634 (49.5 pts/GW) | **1642 (49.8 pts/GW)** | +8 |
+| v1 bot (naive-XI) | 1508 (45.7 pts/GW) | 1617 (49.0 pts/GW) | +109 |
+| frozen template | 1519 (46.0 pts/GW) | 1631 (49.4 pts/GW) | +112 |
+
+**Important, slightly uncomfortable honest finding: v2's margin over the static baselines
+collapsed** — from +126/+115 pts (v1/frozen) after part-2 to just **+25/+11 pts** now. None of the
+part-3 code fixes (odds swap/matching, DGW-history overwrite, btts_prob) should have moved this
+number at all — they're both live-only paths the 2025-26 backtest never touches (`fixture_odds` is
+empty and unused historically; `ingest_player_history` writes season="2026-27" only, never the
+2025-26 data `backfill_history.py`'s separate vaastav-CSV pipeline actually backtests against). The
+real cause is almost certainly the 21 newly-resolved Understat players (mostly solid, unglamorous
+defenders — Ben White, Matty Cash, Joe Gomez, Max Kilman, Dan Ballard among them): once their real
+underlying signal existed, the ONE-TIME squad optimised at GW6 for v1/frozen apparently picked a
+materially stronger fixed XI than before, while v2's own number barely moved. Captaincy stayed
+qualitatively sane throughout (Haaland 23x, Thiago 13x, B.Fernandes 10x, Enzo 9x across the whole
+run — no repeat of the 100+-week single-player monopoly from earlier bugs), so this isn't a new
+name-collision-style bug; it reads as a genuine result: **completing the underlying data made the
+static baselines catch up to v2 far more than it improved v2 itself.** Worth investigating further
+in its own pass (is the GW6 squad-optimisation step somehow capturing most of the season's real
+value in one shot, leaving little room for v2's ongoing transfer logic to add on top?) — flagged as
+an open question, not resolved here.
+
+Suite 306/306, lint-clean on all changed files. Commits: TBD.
+
 ### Departure-risk gate (§6.5)  ✅ DONE (`9531207`)
 Not originally in the P3-0..P3-5 numbering above, but flagged as *more urgent* than
 P3-4/P3-5 when asked "does anything else need to be done?" — unlike the rest of the

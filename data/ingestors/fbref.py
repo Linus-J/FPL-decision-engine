@@ -207,17 +207,26 @@ def _flatten_columns(df) -> object:  # pragma: no cover - needs pandas + live df
 # the dotless-i entirely, vs the correct "Kadioglu" both external sources use).
 _NON_DECOMPOSING_TRANSLIT = str.maketrans({
     "ı": "i", "İ": "I", "ğ": "g", "Ğ": "G", "ş": "s", "Ş": "S",
-    "ø": "o", "Ø": "O", "ł": "l", "Ł": "L", "đ": "d", "Đ": "D",
+    "ø": "o", "Ø": "O", "ł": "l", "Ł": "L",
+    # đ/Đ (Serbo-Croatian d-with-stroke) latinizes to "dj", not bare "d" --
+    # dropping the "j" broke "Đorđe" -> "Djordje" matching (real case: FBref's
+    # "Djordje Petrovic" vs our stored "Đorđe Petrović").
+    "đ": "dj", "Đ": "Dj",
 })
 
 
 def _normalize_name(name: str) -> str:
-    """Lowercased, diacritic-stripped name for cross-source matching. NFKD
-    handles most Latin accents (é→e, ñ→n, ç→c, ...); ``_NON_DECOMPOSING_TRANSLIT``
-    covers the ones NFKD can't."""
+    """Lowercased, diacritic-stripped, hyphen-flattened name for cross-source
+    matching. NFKD handles most Latin accents (é→e, ñ→n, ç→c, ...);
+    ``_NON_DECOMPOSING_TRANSLIT`` covers the ones NFKD can't. Hyphens are
+    flattened to spaces because sources disagree on hyphenation for compound
+    names (Understat's "Ben Doak" vs our stored "Ben Gannon-Doak"; "Rayan Ait
+    Nouri" vs our stored "Rayan Aït-Nouri") -- flattening lets the token-based
+    fallbacks below see each part as its own token either way."""
     translated = name.translate(_NON_DECOMPOSING_TRANSLIT)
     decomposed = unicodedata.normalize("NFKD", translated)
-    return decomposed.encode("ascii", "ignore").decode().strip().lower()
+    ascii_only = decomposed.encode("ascii", "ignore").decode()
+    return " ".join(ascii_only.replace("-", " ").lower().split())
 
 
 def _build_name_map() -> dict[str, int]:
@@ -231,6 +240,35 @@ def _build_name_map() -> dict[str, int]:
         return name_map
     finally:
         db.close()
+
+
+# Nickname / transliteration variants no generic rule can safely cover --
+# each verified against a real stored player record during the 2026-07-28
+# data-completeness audit (23 unmatched Understat players). Maps an
+# external-source spelling to the exact normalized form already in our
+# name_map, so it resolves through the ordinary exact/substring/subset
+# checks below rather than being special-cased itself. Deliberately NOT a
+# fuzzy/edit-distance matcher -- that would reintroduce the same collision
+# risk fix #2 below removes (a low-confidence nickname guess merging two
+# different players' stats is worse than leaving one unmatched).
+_KNOWN_ALIASES: dict[str, str] = {
+    "ben white": "benjamin white",
+    "matthew cash": "matty cash",
+    "joseph gomez": "joe gomez",
+    "joshua king": "josh king",
+    "oliver scarles": "ollie scarles",
+    "alejandro jimenez": "alex jimenez",
+    "treymaurice nyoni": "trey nyoni",
+    "yeremi pino": "yeremy pino",
+    "yehor yarmolyuk": "yehor yarmoliuk",
+    "naif aguerd": "nayef aguerd",
+    "abduqodir khusanov": "abdukodir khusanov",
+    "lucas paqueta": "lucas tolentino coelho de lima",
+    "chimuanya ugochukwu": "lesley ugochukwu",
+    "max kilman": "maximilian kilman",
+    "dan ballard": "daniel ballard",
+    "fernando lopez": "fer lopez gonzalez",
+}
 
 
 def _match_player(name: str, name_map: dict[str, int]) -> int | None:
@@ -247,7 +285,10 @@ def _match_player(name: str, name_map: dict[str, int]) -> int | None:
        entire season. The token-subset fallback below catches this: a
        commonly-used football name is almost always a SUBSET of the full
        legal name's tokens, regardless of word order or what's dropped in
-       between.
+       between. A second, reversed direction (candidate's tokens are a
+       subset of the QUERY's) catches the mirror case -- the external
+       source adds an extra given name ours doesn't have, e.g. Understat's
+       "Hamed Junior Traore" vs our stored "Hamed Traore".
 
     2. A FAR WORSE, actively-corrupting bug in the OLD substring check
        itself (pre-dating today, not introduced by fix #1): a short,
@@ -261,9 +302,13 @@ def _match_player(name: str, name_map: dict[str, int]) -> int | None:
        the CANDIDATE side of the substring check; single-token web_names
        can still match via the EXACT-match branch above (a bare "Gabriel"
        query correctly resolves to him), just never via fuzzy containment
-       against a longer, different person's name.
+       against a longer, different person's name. The token-subset fallback
+       (both directions) only ever returns a match when it is UNIQUE across
+       the whole name_map, for the same reason -- an ambiguous subset match
+       is treated as no match rather than a guess.
     """
     key = _normalize_name(name)
+    key = _KNOWN_ALIASES.get(key, key)
     if key in name_map:
         return name_map[key]
 
@@ -274,11 +319,18 @@ def _match_player(name: str, name_map: dict[str, int]) -> int | None:
             return pid
 
     key_tokens = set(key.split())
-    if len(key_tokens) >= 2:
-        for cand, pid in name_map.items():
-            cand_tokens = set(cand.split())
-            if len(cand_tokens) >= 2 and key_tokens <= cand_tokens:
-                return pid
+    if len(key_tokens) < 2:
+        return None
+
+    matches: set[int] = set()
+    for cand, pid in name_map.items():
+        cand_tokens = set(cand.split())
+        if len(cand_tokens) < 2:
+            continue
+        if key_tokens <= cand_tokens or cand_tokens <= key_tokens:
+            matches.add(pid)
+    if len(matches) == 1:
+        return matches.pop()
     return None
 
 

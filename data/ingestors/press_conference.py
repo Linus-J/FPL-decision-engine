@@ -40,18 +40,32 @@ def _extract_player_signals(
     body: str,
     player_name_map: dict[str, int],
 ) -> list[tuple[int, float, str]]:
+    """Real bug found 2026-07-28 (data-completeness audit): the old version
+    matched a player's bare name via plain substring containment with no
+    guard at all -- a short, common name like "Gabriel" or "James" would
+    silently attribute a sentence's sentiment to whichever player happened
+    to iterate first in the dict, even when it was actually about a
+    different, unrelated player who shares that name. This checks the
+    LONGEST candidate names first (so a full "first second" match wins over
+    a shorter substring of the same sentence) and uses word-boundary regex
+    matching instead of raw containment; `player_name_map` itself already
+    excludes any name shared by more than one real player (see
+    ``_build_player_name_map``), so an inherently ambiguous short name never
+    reaches this far."""
     sentences = re.split(r"[.!?]", body)
     results: list[tuple[int, float, str]] = []
+    names_longest_first = sorted(player_name_map, key=len, reverse=True)
 
     for sentence in sentences:
         sentence = sentence.strip()
         if len(sentence) < 10:
             continue
 
+        lowered = sentence.lower()
         matched_player_id: int | None = None
-        for name, player_id in player_name_map.items():
-            if name in sentence.lower():
-                matched_player_id = player_id
+        for name in names_longest_first:
+            if re.search(rf"\b{re.escape(name)}\b", lowered):
+                matched_player_id = player_name_map[name]
                 break
 
         if matched_player_id is None:
@@ -83,14 +97,22 @@ async def _fetch_articles(
 
 
 def _build_player_name_map() -> dict[str, int]:
+    """name -> player_id for scanning free-text news sentences. A name
+    shared by more than one real player (e.g. two different players both
+    called "Gabriel") is dropped entirely rather than resolved to whichever
+    one happened to be inserted last -- see ``_extract_player_signals``."""
     db = get_session()
     try:
         players = db.query(Player).filter(Player.status != "n").all()
-        name_map: dict[str, int] = {}
+        candidates: dict[str, set[int]] = {}
         for p in players:
-            name_map[p.web_name.lower()] = p.id
-            name_map[p.second_name.lower()] = p.id
-        return name_map
+            for key in (
+                p.web_name.lower(),
+                p.second_name.lower(),
+                f"{p.first_name} {p.second_name}".lower(),
+            ):
+                candidates.setdefault(key, set()).add(p.id)
+        return {name: ids.pop() for name, ids in candidates.items() if len(ids) == 1}
     finally:
         db.close()
 
@@ -141,7 +163,9 @@ async def ingest_press_signals(lookback_days: int = 3) -> int:
     finally:
         db.close()
 
-    logger.info("Press signals: %d player signals ingested from %d articles", inserted, len(articles))
+    logger.info(
+        "Press signals: %d player signals ingested from %d articles", inserted, len(articles)
+    )
     return inserted
 
 

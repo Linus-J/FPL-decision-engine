@@ -89,3 +89,50 @@ def test_match_player_token_subset_requires_all_tokens_present():
     # both -- the subset fallback must not match on partial overlap.
     name_map = {"nico gonzalez iglesias": 521}
     assert _match_player("Nico Silva", name_map) is None
+
+
+def test_normalize_name_flattens_hyphens_to_spaces():
+    # Real case found 2026-07-28: Understat's "Ben Doak" vs our stored
+    # "Ben Gannon-Doak", and "Rayan Ait Nouri" vs stored "Rayan Aït-Nouri" --
+    # sources disagree on hyphenation for compound names.
+    assert _normalize_name("Smith-Rowe") == "smith rowe"
+    assert _normalize_name("Aït-Nouri") == "ait nouri"
+
+
+def test_normalize_name_handles_serbo_croatian_d_stroke():
+    # Đ/đ latinizes to "Dj"/"dj", not bare "D"/"d" -- dropping the "j" broke
+    # FBref's "Djordje Petrovic" vs our stored "Đorđe Petrović".
+    assert _normalize_name("Đorđe Petrović") == "djordje petrovic"
+
+
+def test_match_player_hyphenated_surname_via_token_subset():
+    name_map = {"ben gannon doak": 163, "gannon doak": 163}
+    assert _match_player("Ben Doak", name_map) == 163
+
+
+def test_match_player_reversed_subset_extra_given_name_from_source():
+    # Real case: Understat reports "Hamed Junior Traore"; our stored record
+    # (from FPL) is just "Hamed Traore" -- the external source has the EXTRA
+    # token this time, the mirror image of the Bruno Fernandes case above.
+    name_map = {"hamed traore": 155, "h.traore": 155}
+    assert _match_player("Hamed Junior Traore", name_map) == 155
+
+
+def test_match_player_reversed_subset_is_ambiguous_returns_none():
+    # Two different, unrelated players each have a 2-token name that's a
+    # subset of the (4-token) query, with no contiguous-substring shortcut
+    # available (both skip a token in the middle) -- must not guess either.
+    name_map = {"alpha charlie": 1, "bravo delta": 2}
+    assert _match_player("Alpha Bravo Charlie Delta", name_map) is None
+
+
+def test_match_player_known_alias_resolves_nickname():
+    # Real case: Understat's "Ben White" vs our stored "Benjamin White" --
+    # not a generic rule, a verified curated alias.
+    name_map = {"benjamin white": 11, "white": 11}
+    assert _match_player("Ben White", name_map) == 11
+
+
+def test_match_player_known_alias_resolves_lucas_paqueta():
+    name_map = {"lucas tolentino coelho de lima": 769, "l.paqueta": 769}
+    assert _match_player("Lucas Paquetá", name_map) == 769

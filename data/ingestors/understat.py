@@ -7,7 +7,8 @@ import aiohttp
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session
-from data.models import Player, PlayerSetPieceRole, PlayerXGStats
+from data.ingestors.fbref import _build_name_map, _match_player
+from data.models import PlayerSetPieceRole, PlayerXGStats
 
 logger = logging.getLogger(__name__)
 
@@ -25,30 +26,16 @@ SEASON_MAP = {
 PENALTY_TAKER_THRESHOLD = 0.08
 SET_PIECE_TAKER_THRESHOLD = 1.5
 
-
-def _build_fpl_name_map() -> dict[str, int]:
-    db = get_session()
-    try:
-        players = db.query(Player).all()
-        name_map: dict[str, int] = {}
-        for p in players:
-            full = f"{p.first_name} {p.second_name}".lower()
-            web = p.web_name.lower()
-            name_map[full] = p.id
-            name_map[web] = p.id
-        return name_map
-    finally:
-        db.close()
-
-
-def _match_player(understat_name: str, name_map: dict[str, int]) -> int | None:
-    normalised = understat_name.strip().lower()
-    if normalised in name_map:
-        return name_map[normalised]
-    for key, player_id in name_map.items():
-        if normalised in key or key in normalised:
-            return player_id
-    return None
+# Real bug found 2026-07-28 (data-completeness audit): this module used to
+# carry its OWN local name matcher (`_build_fpl_name_map`/`_match_player`)
+# with the exact unguarded-substring collision the Gabriel Magalhães fix
+# (fbref.py) addressed -- a short single-token web_name like "Gabriel" would
+# silently absorb "Gabriel Martinelli"/"Gabriel Jesus"'s real xG. Unlike
+# understat_xg.py, THIS module is wired into scripts/run_agent.py's routine
+# live pipeline, so the collision risk was live-production-facing, not just
+# a backtest artifact. Now reuses the shared, hardened matcher instead of
+# its own copy.
+_build_fpl_name_map = _build_name_map
 
 
 async def _fetch_season_players(
@@ -85,7 +72,9 @@ async def ingest_understat_season(understat_season: str, db_season: str) -> None
         logger.info("Understat %s: no data available yet (season not started)", db_season)
         return
 
-    logger.info("Understat %s: %d players from season %s", db_season, len(players), understat_season)
+    logger.info(
+        "Understat %s: %d players from season %s", db_season, len(players), understat_season
+    )
 
     db = get_session()
     try:

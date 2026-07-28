@@ -360,57 +360,56 @@ def upsert_fixtures(raw_fixtures: list, season: str = "2026-27") -> None:
         db.close()
 
 
+# Genuinely cumulative per-fixture stats -- summed across a DGW's two
+# fixtures rather than the second overwriting the first (see
+# _accumulate_gw_history below).
+_SUM_HISTORY_FIELDS = (
+    "total_points", "minutes", "goals_scored", "assists", "clean_sheets",
+    "goals_conceded", "saves", "yellow_cards", "red_cards", "bonus", "bps",
+    "transfers_in", "transfers_out",
+)
+
+
+def _accumulate_gw_history(history: list[dict]) -> dict[int, dict]:
+    """FPL's per-element ``history`` -> one row per gameweek. Pure/testable.
+
+    Real bug found 2026-07-28 (data-completeness audit): the unique key on
+    ``PlayerGameweekStats`` is ``(player_id, gameweek, season)`` with no
+    fixture/opponent component, but a genuine double-gameweek player's
+    history has TWO entries with the same ``round`` -- the old caller wrote
+    each entry with its own ``on_conflict_do_update``, so the second
+    fixture's stat line silently overwrote (not summed with) the first,
+    destroying one match's entire contribution. ``selected``/``value`` are
+    point-in-time squad-value/ownership snapshots, not per-fixture stats, so
+    the LATEST entry's value is kept rather than summed.
+    """
+    by_gw: dict[int, dict] = {}
+    for entry in history:
+        gw = entry.get("round")
+        if not gw:
+            continue
+        acc = by_gw.setdefault(gw, dict.fromkeys(_SUM_HISTORY_FIELDS, 0))
+        for field in _SUM_HISTORY_FIELDS:
+            acc[field] += entry.get(field, 0) or 0
+        acc["selected"] = entry.get("selected", 0)
+        acc["value"] = entry.get("value", 0) / 10.0
+    return by_gw
+
+
 async def ingest_player_history(
     player_fpl_id: int, player_db_id: int, season: str = "2026-27"
 ) -> None:
     db = get_session()
     try:
         data = await fetch_player_summary(player_fpl_id)
-        for gw_entry in data.get("history", []):
-            gw = gw_entry.get("round")
-            if not gw:
-                continue
+        by_gw = _accumulate_gw_history(data.get("history", []))
+        for gw, vals in by_gw.items():
             stmt = (
                 insert(PlayerGameweekStats)
-                .values(
-                    player_id=player_db_id,
-                    gameweek=gw,
-                    season=season,
-                    total_points=gw_entry.get("total_points", 0),
-                    minutes=gw_entry.get("minutes", 0),
-                    goals_scored=gw_entry.get("goals_scored", 0),
-                    assists=gw_entry.get("assists", 0),
-                    clean_sheets=gw_entry.get("clean_sheets", 0),
-                    goals_conceded=gw_entry.get("goals_conceded", 0),
-                    saves=gw_entry.get("saves", 0),
-                    yellow_cards=gw_entry.get("yellow_cards", 0),
-                    red_cards=gw_entry.get("red_cards", 0),
-                    bonus=gw_entry.get("bonus", 0),
-                    bps=gw_entry.get("bps", 0),
-                    selected=gw_entry.get("selected", 0),
-                    transfers_in=gw_entry.get("transfers_in", 0),
-                    transfers_out=gw_entry.get("transfers_out", 0),
-                    value=gw_entry.get("value", 0) / 10.0,
-                )
+                .values(player_id=player_db_id, gameweek=gw, season=season, **vals)
                 .on_conflict_do_update(
                     index_elements=["player_id", "gameweek", "season"],
-                    set_={
-                        "total_points": gw_entry.get("total_points", 0),
-                        "minutes": gw_entry.get("minutes", 0),
-                        "goals_scored": gw_entry.get("goals_scored", 0),
-                        "assists": gw_entry.get("assists", 0),
-                        "clean_sheets": gw_entry.get("clean_sheets", 0),
-                        "goals_conceded": gw_entry.get("goals_conceded", 0),
-                        "saves": gw_entry.get("saves", 0),
-                        "yellow_cards": gw_entry.get("yellow_cards", 0),
-                        "red_cards": gw_entry.get("red_cards", 0),
-                        "bonus": gw_entry.get("bonus", 0),
-                        "bps": gw_entry.get("bps", 0),
-                        "selected": gw_entry.get("selected", 0),
-                        "transfers_in": gw_entry.get("transfers_in", 0),
-                        "transfers_out": gw_entry.get("transfers_out", 0),
-                        "value": gw_entry.get("value", 0) / 10.0,
-                    },
+                    set_=vals,
                 )
             )
             db.execute(stmt)

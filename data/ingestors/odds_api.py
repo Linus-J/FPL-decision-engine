@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import aiohttp
 from sqlalchemy import text
@@ -53,19 +53,28 @@ def _normalise(home: float, draw: float, away: float) -> tuple[float, float, flo
     return home / total, draw / total, away / total
 
 
-def _extract_h2h(bookmakers: list[dict]) -> tuple[float, float, float]:
+def _extract_h2h(
+    bookmakers: list[dict], home_team_name: str, away_team_name: str
+) -> tuple[float, float, float]:
+    """Real bug found 2026-07-28 (data-completeness audit): this used to sort
+    the two non-Draw outcome names ALPHABETICALLY and assign the first to
+    home, the second to away -- with no reference to which team is actually
+    home. Whenever the away team's name sorted before the home team's
+    (roughly half of all fixtures), home_win_prob/away_win_prob (and the
+    home_cs_prob/away_cs_prob derived from them) were silently swapped, with
+    no error or log line. Now keyed directly by the real home/away team
+    names from the same odds-API event payload."""
     for bm in bookmakers:
         for market in bm.get("markets", []):
             if market["key"] == "h2h":
                 outcomes = {o["name"]: _implied_prob(o["price"]) for o in market["outcomes"]}
-                home_teams = [k for k in outcomes if k not in ("Draw",)]
-                if len(home_teams) >= 2:
-                    names = sorted(home_teams)
-                    return _normalise(
-                        outcomes.get(names[0], 0.33),
-                        outcomes.get("Draw", 0.33),
-                        outcomes.get(names[1], 0.33),
-                    )
+                if home_team_name not in outcomes or away_team_name not in outcomes:
+                    continue
+                return _normalise(
+                    outcomes[home_team_name],
+                    outcomes.get("Draw", 0.33),
+                    outcomes[away_team_name],
+                )
     return 0.33, 0.33, 0.33
 
 
@@ -101,14 +110,51 @@ def _match_fixture(
     commence_time: str,
     db_fixtures: list[dict],
 ) -> int | None:
-    name_lower = home_team_name.lower()
-    for fix in db_fixtures:
+    """Real bug found 2026-07-28 (data-completeness audit): this used to
+    match on the HOME team name alone, against every one of that team's
+    still-unfinished fixtures, with no away-team check and no ordering --
+    a team with more than one unfinished home fixture in the response
+    window got all its odds attached to whichever fixture the (unordered)
+    query happened to return first, silently leaving its other fixture(s)
+    with zero odds coverage. Now requires BOTH team names to match, and
+    breaks ties (a genuine same-week double-header) by nearest kickoff
+    time to the odds event's own ``commence_time``."""
+    home_lower = home_team_name.lower()
+    away_lower = away_team_name.lower()
+
+    candidates = [
+        fix
+        for fix in db_fixtures
         if (
-            fix["team_h_name"].lower() in name_lower
-            or name_lower in fix["team_h_name"].lower()
-        ):
-            return fix["id"]
-    return None
+            fix["team_h_name"].lower() in home_lower
+            or home_lower in fix["team_h_name"].lower()
+        )
+        and (
+            fix["team_a_name"].lower() in away_lower
+            or away_lower in fix["team_a_name"].lower()
+        )
+    ]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]["id"]
+
+    try:
+        commence = datetime.fromisoformat(commence_time.replace("Z", "+00:00")).replace(tzinfo=None)
+    except (ValueError, AttributeError):
+        return candidates[0]["id"]
+
+    def _kickoff_delta(fix: dict) -> timedelta:
+        ko = fix.get("kickoff_time")
+        if ko is None:
+            return timedelta.max
+        if isinstance(ko, str):
+            ko = datetime.fromisoformat(ko)
+        if ko.tzinfo is not None:
+            ko = ko.replace(tzinfo=None)
+        return abs(ko - commence)
+
+    return min(candidates, key=_kickoff_delta)["id"]
 
 
 async def ingest_odds() -> int:
@@ -146,24 +192,30 @@ async def ingest_odds() -> int:
                 db_fixtures,
             )
             if fixture_id is None:
-                logger.debug("No fixture match for %s vs %s", event.get("home_team"), event.get("away_team"))
+                logger.debug(
+                    "No fixture match for %s vs %s", event.get("home_team"), event.get("away_team")
+                )
                 continue
 
             bookmakers = event.get("bookmakers", [])
-            home_win, draw, away_win = _extract_h2h(bookmakers)
+            home_win, draw, away_win = _extract_h2h(
+                bookmakers, event.get("home_team", ""), event.get("away_team", "")
+            )
             home_cs, away_cs = _cs_from_h2h(home_win, draw, away_win)
             over25 = _extract_over25(bookmakers)
 
             # Append-only (finding L4): one row per fetch, keyed
             # (fixture_id, fetched_at). Never UPDATE — the as-of read
             # (features.load_live_odds_asof) picks the latest ≤ deadline.
+            # btts_prob is left NULL (MARKETS never requests a BTTS market —
+            # see FixtureOdds.btts_prob) rather than a fake 0.0.
             stmt = sqlite_insert(FixtureOdds).values(
                 fixture_id=fixture_id,
                 home_win_prob=round(home_win, 3),
                 draw_prob=round(draw, 3),
                 away_win_prob=round(away_win, 3),
                 over25_prob=over25,
-                btts_prob=0.0,
+                btts_prob=None,
                 home_cs_prob=home_cs,
                 away_cs_prob=away_cs,
                 fetched_at=datetime.utcnow(),

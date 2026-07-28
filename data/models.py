@@ -375,7 +375,12 @@ class FixtureOdds(Base):
     draw_prob: Mapped[float] = mapped_column(Float, default=0.0)
     away_win_prob: Mapped[float] = mapped_column(Float, default=0.0)
     over25_prob: Mapped[float] = mapped_column(Float, default=0.0)
-    btts_prob: Mapped[float] = mapped_column(Float, default=0.0)
+    # Nullable (real bug found 2026-07-28): MARKETS never requests a BTTS
+    # market, so there is no real value to store. NULL means "we don't know"
+    # and lets the downstream COALESCE(..., 0.5)/.fillna(0.5) reads treat it
+    # as unknown; a hardcoded 0.0 silently fed those same reads a fake
+    # "BTTS never happens" signal because they only fall back on NULL/NaN.
+    btts_prob: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     home_cs_prob: Mapped[float] = mapped_column(Float, default=0.0)
     away_cs_prob: Mapped[float] = mapped_column(Float, default=0.0)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

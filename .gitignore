@@ -61,5 +61,10 @@ htmlcov/
 .coverage
 coverage.xml
 
-# opencode
+#ruff
+.ruff_cache/
+
+# coding agents
 .sisyphus/
+.omc/
+.claude/
