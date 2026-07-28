@@ -78,8 +78,39 @@ def _load_training_data() -> pd.DataFrame:
         db.close()
 
 
+def _trailing_dnp_streak(minutes: pd.Series) -> pd.Series:
+    """Consecutive-zero-minutes streak ending at each row (raw — the caller
+    shifts it by 1 before use as a leakage-free predictive feature)."""
+    is_zero = minutes == 0
+    run_id = (is_zero != is_zero.shift(fill_value=False)).cumsum()
+    streak = is_zero.groupby(run_id).cumsum()
+    return streak.where(is_zero, 0).astype(int)
+
+
 def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["player_id", "season", "gameweek"]).copy()
+
+    # Real bug found 2026-07-28 (data-completeness audit, user-driven trace
+    # review): `status`/`chance_of_playing` are constant ('a') throughout the
+    # backfilled history (merged_gw.csv structurally has no such columns —
+    # see backfill_history.py::compute_snapshot_rows), so
+    # apply_availability_override below NEVER fires during backtesting. That
+    # let genuinely-injured players (confirmed live: real minutes=0 for
+    # several straight gameweeks) get captained/started with an undiminished
+    # or even RISING projection, because the only signal left was diluted
+    # rolling-average minutes. `dnp_streak` is a real, leakage-free signal
+    # from ALREADY-PLAYED history (no new data source needed) — how many
+    # consecutive completed gameweeks a player had zero minutes — and drives
+    # a separate deterministic override (apply_recent_absence_override)
+    # exactly like the status override does, but from real data.
+    streak_grp = df.groupby(["player_id", "season"])
+    df["dnp_streak"] = streak_grp["minutes"].transform(_trailing_dnp_streak)
+    df["dnp_streak"] = (
+        df.groupby(["player_id", "season"])["dnp_streak"]
+        .transform(lambda x: x.shift(1))
+        .fillna(0)
+        .astype(int)
+    )
 
     for window in [3, 5]:
         grp = df.groupby(["player_id", "season"])
@@ -201,6 +232,37 @@ def apply_availability_override(
     return (p0, p1, p2)
 
 
+# Retention of the ML-predicted playing mass (P1+P2) given a confirmed
+# consecutive-zero-minutes streak from real, already-played history (see
+# _trailing_dnp_streak). 1 confirmed blank -> real uncertainty (could be
+# rotation, a minor knock, or the start of a longer injury) so only half the
+# playing mass survives; 2+ -> heavily discounted, since a player out for
+# multiple straight matches is statistically unlikely to be a safe near-term
+# pick. Untuned starting values pending backtesting, same convention as
+# other heuristic constants introduced this session.
+_DNP_STREAK_RETENTION = {0: 1.0, 1: 0.5}
+_DNP_STREAK_RETENTION_2PLUS = 0.15
+
+
+def apply_recent_absence_override(
+    p0: float, p1: float, p2: float, dnp_streak: int
+) -> tuple[float, float, float]:
+    """Deterministic band adjustment from a REAL, leakage-free signal (2026-07-28):
+    consecutive zero-minutes gameweeks in already-played history. Complements
+    apply_availability_override, which is a no-op throughout backtesting
+    because status/chance-of-playing are constant in the backfilled data —
+    this uses real minutes instead, so it actually has something to act on.
+    A player's FIRST blank gameweek can't be predicted this way (no prior
+    evidence yet, dnp_streak=0) — this only catches an absence that's
+    already confirmed by at least one completed gameweek."""
+    retention = _DNP_STREAK_RETENTION.get(dnp_streak, _DNP_STREAK_RETENTION_2PLUS)
+    if retention >= 1.0:
+        return (p0, p1, p2)
+    new_p1 = p1 * retention
+    new_p2 = p2 * retention
+    return (1.0 - new_p1 - new_p2, new_p1, new_p2)
+
+
 def expected_appearance_points(p1: float, p2: float, sub: int = 1, full: int = 2) -> float:
     """Expected appearance points from the band probabilities (1 for a cameo,
     2 for 60+) — the minutes model's contribution to xPts (P10)."""
@@ -291,10 +353,16 @@ def _bands_frame(all_stats: pd.DataFrame, model: Pipeline | None) -> pd.DataFram
                 else pd.Series([None] * len(df), index=df.index))
     cops = (df["chance_of_playing_next_round"] if "chance_of_playing_next_round" in df.columns
             else pd.Series([None] * len(df), index=df.index))
+    streaks = (df["dnp_streak"] if "dnp_streak" in df.columns
+               else pd.Series([0] * len(df), index=df.index))
 
     p0s, p1s, p2s = [], [], []
-    for row, status, cp in zip(proba, statuses, cops, strict=False):
+    for row, status, cp, streak in zip(proba, statuses, cops, streaks, strict=False):
         b0, b1, b2 = _bands_from_proba(row, classes)
+        # Real-history override first (2026-07-28) -- always has something to
+        # act on, unlike the status override below, which is a no-op
+        # throughout backtesting (see apply_recent_absence_override).
+        b0, b1, b2 = apply_recent_absence_override(b0, b1, b2, int(streak))
         cop = None if pd.isna(cp) else float(cp) / 100.0
         b0, b1, b2 = apply_availability_override(b0, b1, b2, status, cop)
         p0s.append(b0)

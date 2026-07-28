@@ -714,6 +714,64 @@ synthetic 15-player squad scenario proving the fix).
 Phase 4's LLM news layer (RSS + Ollama credibility grading) doesn't exist yet. The
 discount mechanism is ready (`apply_departure_discount`), just unfed.
 
+### P1-fix — Recent-absence override (2026-07-28) — the injury-reaction gap the user's own trace review found
+
+User reviewed the squad-trace artifact personally (as a real FPL manager) and found the real bug the
+statistical analysis alone hadn't surfaced: Gabriel Magalhães was captained GW12 while genuinely out
+injured, Rice captained GW19 injured, Ekitiké captained GW20 injured — and, more importantly, kept
+starting for MULTIPLE gameweeks into a confirmed absence rather than being dropped after the first
+blank.
+
+**Root-caused, not guessed.** Queried `player_state_snapshots` directly: **100% of 29,338 rows for
+the 2025-26 season show `status='a'`** — zero exceptions, for the entire backtest. `merged_gw.csv`
+(the vaastav-archive source `backfill_history.py` uses) structurally has no `status`/
+`chance_of_playing`/`news` columns at all — confirmed by fetching its real header. This was already
+flagged in `compute_snapshot_rows`'s own docstring ("status / chance_of_playing / news are NOT
+recoverable from merged_gw and default... documented residual skew") but nobody had checked whether
+that gap actually *mattered* until this review proved it does: `apply_availability_override` — the
+existing, correctly-designed deterministic safety net that forces certain-DNP on `status in
+('i','u','s')` — has literally never fired once in any backtest run this session, because the
+signal it reads is constant.
+
+A player's FIRST blank gameweek is genuinely unpredictable from any data source available here (no
+historical injury-news archive exists to check in advance) — Gabriel's GW11→GW12 real minutes went
+90→0 with zero prior signal, same for Rice/Ekitiké at their respective onset weeks. But the
+FOLLOW-UP reaction is where it's concretely broken and fixable: checked Ekitiké's real minutes
+(GW20=0, GW21=0) against what the model projected for GW22 — his xPts went **up** (4.2→6.2) with
+zero new positive evidence, and he stayed in the starting XI for 4 straight gameweeks through the
+whole blank.
+
+**Fix:** `projection/minutes_model.py` — new `_trailing_dnp_streak` (counts consecutive
+zero-minutes gameweeks ending at each row, leakage-free: computed on already-played history only,
+then shifted by 1 before use) feeds a new `apply_recent_absence_override(p0, p1, p2, dnp_streak)`,
+applied in `_bands_frame` alongside (before) the existing status override. 1 confirmed blank retains
+50% of the ML-predicted playing mass (real uncertainty — could be rotation, a minor knock, or a
+longer injury); 2+ retains only 15% (statistically unlikely to be a safe near-term pick). Untuned
+starting values, same convention as other heuristic constants this session. This needs no new data
+source — it's built entirely from real minutes already in `player_gw_stats`, exactly like the
+existing rolling-average features, just applied as an explicit deterministic override instead of
+relying on the GBM to implicitly learn it from a diluted 3-5 GW rolling mean (which was clearly too
+slow: two full zero-minute gameweeks weren't enough to stop the projection from *rising*).
+
+**Verified against the exact real cases the user flagged:** Ekitiké's GW22 decision (after 2
+confirmed blanks) now shows P(DNP)=0.878, appearance-points contribution collapsed from a
+near-certain-starter level to 0.173. Gabriel's GW13 decision (after 1 confirmed blank) shows
+P(DNP)=0.788, appearance-points down to 0.385 from whatever produced the original 3.4 xPts. Both
+directly address the reported cases.
+
+New tests: `tests/test_p1_minutes.py` (+6: streak counting incl. per-player-group reset, both
+retention tiers, the 2+-streak floor not scaling further with a longer streak). Suite 321/321,
+lint-clean on new code (pre-existing E501 debt in `minutes_model.py` confirmed untouched via diff).
+
+**Not yet addressed (raised in the same review, deferred by explicit user choice):** the second
+finding — Bruno Fernandes sold GW10 despite 4 straight solid, nailed-on gameweeks, replaced by
+Gakpo who proved less reliable (including his own real injury/rotation gap) — is a separate,
+transfer-churn/premium-retention problem, not an injury-data problem. Confirmed with real numbers
+(Fernandes 90 min/3-8-4-5 pts before the sale; Semenyo's sale looked more defensible, a real 2-game
+dip; Haaland's sale more debatable, ordinary star-striker variance). Flagged for a follow-up pass —
+likely a retention-inertia term in the transfer ILP objective, distinct from the curse-shrinkage fix
+(P3-7) which addresses selection bias, not switching cost.
+
 ## Open sequencing question
 P3-0/P3-1 (live-serving + sample persistence) and P3-2 (EO ingestion) are independent —
 neither blocks the other. P3-3 needs both. Objective v1 (linear, additive terms) is

@@ -8,6 +8,7 @@ smoke-tested on the live DB separately.
 
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 from projection import minutes_model as mm
@@ -57,3 +58,46 @@ def test_availability_features_removed_from_model():
     # M1: is_available/cop_next are no longer learned features
     assert "is_available" not in mm.FEATURE_COLS
     assert "cop_next" not in mm.FEATURE_COLS
+
+
+# --- Real bug found 2026-07-28 (user-driven squad-trace review): status is
+# constant ('a') throughout backfilled history, so apply_availability_override
+# never fires during backtesting -- genuinely-injured players (real minutes=0
+# for several straight gameweeks) kept getting captained/started. dnp_streak
+# is a real, leakage-free signal from already-played history instead. -------
+
+
+def test_trailing_dnp_streak_counts_consecutive_zeros():
+    minutes = pd.Series([90, 90, 0, 0, 0, 90, 45])
+    streak = mm._trailing_dnp_streak(minutes)
+    assert streak.tolist() == [0, 0, 1, 2, 3, 0, 0]
+
+
+def test_trailing_dnp_streak_resets_per_player_group():
+    df = pd.DataFrame({
+        "player_id": [1, 1, 1, 2, 2, 2],
+        "season": ["2025-26"] * 6,
+        "minutes": [90, 0, 0, 0, 0, 90],
+    })
+    streak = df.groupby(["player_id", "season"])["minutes"].transform(mm._trailing_dnp_streak)
+    assert streak.tolist() == [0, 1, 2, 1, 2, 0]
+
+
+def test_apply_recent_absence_override_no_streak_unchanged():
+    assert mm.apply_recent_absence_override(0.1, 0.2, 0.7, 0) == (0.1, 0.2, 0.7)
+
+
+def test_apply_recent_absence_override_one_blank_halves_playing_mass():
+    p0, p1, p2 = mm.apply_recent_absence_override(0.1, 0.2, 0.7, 1)
+    assert p1 == pytest.approx(0.1)
+    assert p2 == pytest.approx(0.35)
+    assert sum((p0, p1, p2)) == pytest.approx(1.0)
+
+
+def test_apply_recent_absence_override_two_plus_blanks_heavily_discounts():
+    p0, p1, p2 = mm.apply_recent_absence_override(0.1, 0.2, 0.7, 2)
+    assert p2 == pytest.approx(0.7 * mm._DNP_STREAK_RETENTION_2PLUS)
+    assert p0 > 0.8  # the real Ekitiké case: should be treated as very unlikely to start
+    # a longer streak (e.g. 5 straight blanks) is discounted exactly as hard,
+    # not progressively harder -- 2+ is already the floor.
+    assert mm.apply_recent_absence_override(0.1, 0.2, 0.7, 5) == (p0, p1, p2)
