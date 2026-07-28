@@ -307,6 +307,68 @@ failure mode the gate caught, but is not a claim that this is the OPTIMAL discou
 calibration (a held-out split, or trying a small grid of values) is future work, not done here.
 Suite 264/264, lint-clean.
 
+### Data-completeness audit (2026-07-28) — user-prompted, found a second real bug
+User questioned whether 51.5 pts/GW was suspiciously low and asked to verify data completeness.
+Audited match-odds coverage (`historical_fixture_odds`: 380/380 real fixtures, all 38 GWs — fine),
+DefCon/bonus event coverage (`player_match_events`: 11,182 rows, 98.6% of real playing gameweeks,
+503/517 players with some real CBIRT signal — fine), then checked for players missing ENTIRELY
+from `player_match_events`/`player_xg_stats` all season, the same failure signature as the earlier
+xG bug.
+
+**Found 21+ significant players — several of them this bot's OWN most-favoured captains —
+with ZERO event/xG data for the entire season**, including Bruno Fernandes (35 games, 3065 mins),
+Robertson, Mané, Martinelli, G.Jesus, N.Gonzalez. Root cause: the shared name matcher
+(`data/ingestors/fbref.py::_match_player`, used by `fbref.py`/`understat_xg.py`/`whoscored.py`)
+only checked exact match and contiguous-substring containment — a stored full legal name with an
+extra middle name or a second surname (Iberian dual-surname convention: "Nico **González Iglesias**"
+vs the football name "Nico González") breaks containment in BOTH directions, and Turkish/Nordic/
+Polish characters (ı/ğ/ø/ł) don't decompose under standard Unicode normalisation the way accented
+Latin letters do. Fixed with a token-subset fallback + a diacritic-normalisation helper.
+
+**Second, WORSE bug found while verifying the first fix: the pre-existing substring check was
+actively CORRUPTING data, not just missing it.** A short, generic single-token `web_name`
+("Gabriel", Arsenal's Gabriel Magalhães, a centre-back) is trivially "in" any longer external name
+starting with the same common first name — "Gabriel Martinelli" and "Gabriel Jesus" were silently
+merging their real xG/xA into Magalhães's totals. Confirmed live: his season xG was **13.98**, with
+single-match readings above 1.5 (striker-level, impossible for a CB). He has been one of THIS
+SESSION's most frequently favoured captains across multiple earlier backtests (the original 52.48
+gate run, P3-4/P3-5 verification, and the pre-cleanup walk-forward runs above). Fixed by requiring
+≥2 tokens on the candidate side of the substring check.
+
+Re-ingested `player_xg_stats` for 2025-26 from a clean wipe (10,852 rows, 513 distinct players).
+Gabriel's season xG dropped to **4.65** (one legitimate high match at 1.04) — a believable
+set-piece-threat-CB profile. 23 distinct players remain unmatched (mostly fringe/backup players;
+"Lucas Paquetá" specifically needs a manual alias — his football name has zero lexical relationship
+to his stored legal name, a heuristic can't catch that). Did NOT attempt a live FBref/WhoScored
+re-scrape (needs a browser; Chromium is available, but Gabriel's FBref-sourced event data already
+looked plausible — no confirmed contamination found there, unlike Understat).
+
+**Re-ran the full walk-forward gate on the cleaned data (GW6-38):**
+
+| benchmark | before cleanup | after cleanup | Δ |
+|---|---|---|---|
+| v2 bot (full decision engine) | 1700 (51.5 pts/GW) | **1634 (49.5 pts/GW)** | −66 |
+| v1 bot (naive-XI) | 1695 (51.4 pts/GW) | 1508 (45.7 pts/GW) | −187 |
+| frozen template | 1666 (50.5 pts/GW) | 1519 (46.0 pts/GW) | −147 |
+
+**All three benchmarks dropped in absolute terms** (removing an inflated free-lunch player lowers
+everyone's baseline), **but v2's margin over the other two widened substantially** — from +5/+34
+pts to **+126/+115 pts** over v1/frozen respectively. This is the important signal: v1 and the
+frozen template have no way to correct once they're captaining a wrongly-inflated player every
+week, while v2's active transfer logic (freshly improved by the P3-6 optimiser's-curse fix) can
+actually move away from a bad valuation once the underlying data stops lying to it. Captaincy is
+now qualitatively sane — Gabriel captained only ONCE across the whole v2 run (down from
+dominating nearly every prior backtest this session), replaced by Thiago (12x) and Haaland (10x);
+v1's fixed squad sensibly captains Haaland 19 times.
+
+**Honest remaining caveat:** 49.5 pts/GW is still below the plan's own avg-manager reference
+(~56) and well below top-10k pace (~63) on this one realised 2025-26 season. That's not
+necessarily a red flag on its own (a single season is one noisy draw, and the reference constants
+are themselves approximate, undocumented-source anchors — see the Gate section above) — but it's
+also not something to wave away. The 23 remaining unmatched players (Ben White, Matthew Cash, Max
+Kilman among them — real, relevant defenders) are a known, smaller residual gap. Suite 274/274,
+lint-clean. Commits `6a99ed5` (matcher fix).
+
 ### Departure-risk gate (§6.5)  ✅ DONE (`9531207`)
 Not originally in the P3-0..P3-5 numbering above, but flagged as *more urgent* than
 P3-4/P3-5 when asked "does anything else need to be done?" — unlike the rest of the
