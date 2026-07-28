@@ -144,6 +144,65 @@ def _score_squad(
     return total
 
 
+def _record_trace_gw(
+    trace: list[dict],
+    *,
+    gw: int,
+    xi_solution,
+    actual: dict[int, int],
+    new_squad_ids: list[int],
+    prev_squad_ids: list[int],
+    players: pd.DataFrame,
+    chip_played,
+    hits: int,
+    predicted_xpts: float,
+    actual_pts: int,
+    net_pts: int,
+    squad_cost,
+) -> None:
+    """One rich per-gameweek record for scripts/render_squad_trace.py. Reads
+    ``xi_solution.squad`` (the full 15, already carrying position/cost/xpts/
+    is_starting/is_captain/is_vice_captain/bench_order from optimise_starting_xi)
+    rather than re-deriving any of that. Transfers are a plain id-set diff
+    against ``prev_squad_ids`` (still the PRE-update squad at this call site,
+    regardless of which code path built ``new_squad_ids`` — initial build,
+    wildcard, free hit, or a normal transfer), so this doesn't need its own
+    copy of that branching logic."""
+    squad_full = xi_solution.squad.copy()
+    squad_full["actual_pts"] = squad_full["id"].map(actual).fillna(0).astype(int)
+
+    name_by_id = dict(zip(players["id"], players.get("web_name", players["id"]), strict=False))
+    cost_by_id = dict(
+        zip(players["id"], players.get("now_cost", [None] * len(players)), strict=False)
+    )
+
+    def _named(pid: int) -> dict:
+        return {
+            "id": int(pid),
+            "web_name": name_by_id.get(pid, str(pid)),
+            "cost": cost_by_id.get(pid),
+        }
+
+    prev_set = set(prev_squad_ids)
+    new_set = set(new_squad_ids)
+
+    trace.append({
+        "gameweek": gw,
+        "chip": chip_played.value if chip_played else None,
+        "hits": hits,
+        "transfers_in": [_named(pid) for pid in new_squad_ids if pid not in prev_set],
+        "transfers_out": [_named(pid) for pid in prev_squad_ids if pid not in new_set],
+        "squad": squad_full[[
+            "id", "web_name", "position", "now_cost", "xpts",
+            "is_starting", "is_captain", "is_vice_captain", "bench_order", "actual_pts",
+        ]].to_dict("records"),
+        "predicted_xpts": round(float(predicted_xpts), 2),
+        "actual_pts": int(actual_pts),
+        "net_pts": int(net_pts),
+        "squad_cost": round(float(squad_cost), 1) if squad_cost is not None else None,
+    })
+
+
 def run_backtest(
     season: str = "2024-25",
     start_gw: int = 6,
@@ -151,12 +210,20 @@ def run_backtest(
     horizon: int | None = None,
     budget: float = SQUAD.budget_total,
     score_2627: bool = False,
+    trace: list[dict] | None = None,
 ) -> pd.DataFrame:
     """``score_2627`` (P-RS): score the ACTUAL side under 26/27 rules (swap the
     as-played bonus for the recomputed_bonus.bonus_2627 sum — standard scoring
     and DefCon are unchanged 25/26->26/27) so the exit gate compares predicted
     and actual on one basis (finding C1). Player-GWs with no event coverage
-    keep their as-played total (never invents a 26/27 bonus)."""
+    keep their as-played total (never invents a 26/27 bonus).
+
+    ``trace`` (2026-07-28, human-readable squad-evolution audit): if given a
+    list, one rich dict per gameweek gets appended to it (full 15-man squad
+    with position/cost/xpts/actual points/starting-bench-captain flags,
+    named transfers in/out, chip, predicted/actual/net) — for
+    scripts/render_squad_trace.py. ``None`` (default) skips this entirely;
+    existing callers/tests see zero behaviour change."""
     horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
     all_stats = _load_all_stats(season)
     available_gws = sorted(all_stats["gameweek"].unique())
@@ -393,6 +460,17 @@ def run_backtest(
 
         captain_name = squad_df.loc[squad_df["id"] == captain_id, "web_name"].values
         captain_name = captain_name[0] if len(captain_name) else "?"
+
+        if trace is not None:
+            has_cost_col = "now_cost" in squad_df.columns
+            _record_trace_gw(
+                trace, gw=gw, xi_solution=xi_solution, actual=actual,
+                new_squad_ids=new_squad_ids, prev_squad_ids=current_squad_ids,
+                players=players, chip_played=chip_played, hits=hits,
+                predicted_xpts=xi_solution.total_xpts, actual_pts=actual_pts,
+                net_pts=net_pts,
+                squad_cost=squad_df["now_cost"].sum() if has_cost_col else None,
+            )
 
         results.append({
             "gameweek": gw,

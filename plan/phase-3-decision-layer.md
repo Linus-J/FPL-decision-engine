@@ -650,6 +650,48 @@ Suite 316/316 (10 in test_curse_shrinkage.py + no regressions elsewhere), lint-c
 **This does not fully resolve the user's original concern** (still below the avg-manager reference)
 — reported honestly as partial, real progress plus a clearly-scoped open question, not a fix.
 
+### Squad-evolution trace (2026-07-28) — human-readable audit, found a captaincy anomaly
+
+User asked for an easy, human-readable trace of the full season's squad/transfer/captaincy
+evolution specifically so they (a real FPL manager) could eyeball it for weird choices no summary
+statistic surfaces. Built `scripts/render_squad_trace.py` + a new optional `trace: list[dict] | None`
+parameter on `run_backtest` (default `None`, zero behaviour change for existing callers/tests) that
+captures the full 15-man squad, named transfers in/out, captain/vice, and predicted-vs-actual per
+gameweek. Renders Markdown; also generated a styled, collapsible HTML version for this session's
+delivery (dark "pitch-at-night" theme, `<details>`-based per-GW disclosure, anomaly flagging).
+
+**Found a real, concrete anomaly by inspecting it directly.** Haaland stayed in the squad
+continuously GW6→GW19 (only actually sold GW20) but was captained only through GW14. For 8 of the
+following gameweeks the armband went to a defender or backup-role midfielder priced under £8m
+instead — Nico O'Reilly (£5.2-5.3m DEF) three separate times, Gabriel Magalhães (£6.5-6.6m DEF)
+twice, plus Thiaw and Mavropanos (both sub-£5.2m DEF) — while Haaland (£14-15m) started every one
+of those weeks, uncaptained, sitting right there in the XI.
+
+**Traced the actual cause, not just the symptom.** Checked the model's OWN raw numbers for these
+exact gameweeks: the chosen captain's projected xPts (7.6-8.4) genuinely exceeded Haaland's own
+projected xPts (5.0-7.1) in the model's output — this is not a selection-logic bug that ignores a
+higher number, the underlying projection itself rates these defenders higher. Traced further into
+`_build_rolling_features`: Gabriel's rolling `defcon_rate` (mean CBIT count/match) was 12.2, above
+the `DefConRules.def_threshold` of 10 — meaning the model has him reliably crossing the 25/26
+Defensive Contribution threshold most matches, stacking with Arsenal's strong clean-sheet
+probability and Gabriel's genuine set-piece goal threat (a real, legitimate profile — his cleaned-up
+season xG post the earlier name-collision fix was 4.65, mostly headers). This is a real, defensible
+mechanism, not obviously a bug: a defender's DefCon+CS floor genuinely CAN look higher than a
+misfiring striker's current-form point estimate. **Whether the model over-credits that floor
+relative to a world-class striker's ceiling, or whether captaincy should weight ceiling more heavily
+than the current mean-argmax approach does, is exactly the kind of judgement call flagged for the
+user's own FPL-manager read** rather than resolved unilaterally here — delivered as an artifact with
+the pattern pre-flagged, not buried in 33 gameweeks of tables.
+
+Not yet fixed pending that read. If confirmed as a real miscalibration, the likely next step is
+either recalibrating the DefCon-crossing probability model (currently unclear whether it treats
+`defcon_rate` as a soft Poisson-style rate or a hard threshold-crossing indicator — not yet checked)
+or making captaincy selection ceiling-aware rather than pure mean-argmax (the scenario-based
+captaincy from P3-4 already has the machinery — real MC samples — to weight upside explicitly if
+that's the right call).
+
+Suite 316/316 unaffected (trace is additive/optional). Commits: TBD.
+
 ### Departure-risk gate (§6.5)  ✅ DONE (`9531207`)
 Not originally in the P3-0..P3-5 numbering above, but flagged as *more urgent* than
 P3-4/P3-5 when asked "does anything else need to be done?" — unlike the rest of the
