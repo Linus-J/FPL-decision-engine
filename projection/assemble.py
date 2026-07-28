@@ -502,9 +502,16 @@ def assemble_gw_projections(
 
     rng = np.random.default_rng(seed)
     target_gws = list(range(target_gw, target_gw + horizon))
+    # P12: dedupe on the fixture's own identity, NOT just (player_id, gameweek)
+    # -- a genuine double-gameweek player has TWO real rows here (same
+    # gameweek, different opponent_team_id/was_home), and both must survive
+    # so both fixtures get sampled; the old (player_id, gameweek) dedupe
+    # silently dropped a DGW player's second fixture entirely.
     fixture_rows = all_stats[all_stats["gameweek"].isin(target_gws)][
         ["player_id", "gameweek", "team_id_season", "opponent_team_id", "was_home"]
-    ].dropna(subset=["opponent_team_id"]).drop_duplicates(subset=["player_id", "gameweek"])
+    ].dropna(subset=["opponent_team_id"]).drop_duplicates(
+        subset=["player_id", "gameweek", "opponent_team_id", "was_home"]
+    )
     fixture_rows = fixture_rows.assign(was_home=fixture_rows["was_home"].fillna(False).astype(bool))
 
     rows = []
@@ -517,6 +524,14 @@ def assemble_gw_projections(
         home_side = gw_fixtures[gw_fixtures["was_home"]]
         pairs = home_side[["team_id_season", "opponent_team_id"]].drop_duplicates()
         scenario_offset = 0  # disjoint per-fixture range within this GW (P3-1)
+        # P12: a DGW player appears in >1 pair iteration this GW -- merge
+        # their per-fixture contributions into ONE row per (player_id, gw)
+        # (summing xpts/var, since independent fixtures' variances add;
+        # combining start_probability as P(starts >= one) rather than
+        # overwriting) so downstream 1-row-per-player consumers (e.g.
+        # optimise_starting_xi's merge) see the correct DOUBLED total
+        # instead of silent duplication or truncation to one fixture.
+        gw_row_by_pid: dict[int, dict] = {}
 
         for home_team, away_team in pairs.itertuples(index=False):
             home_team, away_team = int(home_team), int(away_team)
@@ -555,12 +570,19 @@ def assemble_gw_projections(
             for pid, arr in samples.items():
                 mean = float(arr.mean())
                 var = float(arr.var(ddof=1)) if n_scenarios > 1 else 0.0
-                p2 = bands.get(pid, (0.5, 0.0, 0.5))[2]
-                rows.append({
-                    "player_id": pid, "gameweek": gw,
-                    "xpts": mean, "xpts_mean": mean, "xpts_var": var,
-                    "start_probability": float(p2),
-                })
+                p2 = float(bands.get(pid, (0.5, 0.0, 0.5))[2])
+                if pid in gw_row_by_pid:
+                    prev = gw_row_by_pid[pid]
+                    prev["xpts"] += mean
+                    prev["xpts_mean"] += mean
+                    prev["xpts_var"] += var
+                    prev["start_probability"] = 1.0 - (1.0 - prev["start_probability"]) * (1.0 - p2)
+                else:
+                    gw_row_by_pid[pid] = {
+                        "player_id": pid, "gameweek": gw,
+                        "xpts": mean, "xpts_mean": mean, "xpts_var": var,
+                        "start_probability": p2,
+                    }
                 if persist_samples:
                     sample_rows.extend(
                         {
@@ -571,6 +593,8 @@ def assemble_gw_projections(
                     )
             if persist_samples:
                 scenario_offset += n_scenarios
+
+        rows.extend(gw_row_by_pid.values())
 
     if persist_samples and sample_rows:
         _write_projection_samples(sample_rows)
