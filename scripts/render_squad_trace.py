@@ -33,7 +33,16 @@ def _fmt_transfer_list(transfers: list[dict]) -> str:
     return ", ".join(f"{t['web_name']} (£{t['cost']:.1f}m)" for t in transfers)
 
 
-def _squad_table(squad: list[dict]) -> str:
+def _squad_table(squad: list[dict], chip: str | None) -> str:
+    """Real bug found 2026-07-28 (user's own report review): this used to
+    show every player's RAW actual points, including the captain -- so
+    summing the displayed column looked like it was missing the captain's
+    doubled contribution entirely, even though the underlying backtest
+    scoring (scripts/backtest.py::_score_squad) already applies it
+    correctly. Shows the actually-credited (2x, or 3x on a Triple Captain
+    gameweek) points for the captain instead, so the display is
+    self-consistent with the reported team total."""
+    multiplier = 3 if chip == "3xc" else 2
     rows = sorted(
         squad,
         key=lambda p: (
@@ -45,14 +54,16 @@ def _squad_table(squad: list[dict]) -> str:
     lines = ["| | Pos | Player | Cost | xPts | Actual |", "|---|---|---|---|---|---|"]
     for p in rows:
         tag = ""
+        credited_pts = p["actual_pts"]
         if p["is_captain"]:
-            tag = "(C)"
+            tag = f"(C x{multiplier})"
+            credited_pts = p["actual_pts"] * multiplier
         elif p["is_vice_captain"]:
             tag = "(VC)"
         bench_marker = "🪑 " if p["bench_order"] != -1 else ""
         lines.append(
             f"| {bench_marker}| {p['position']} | {p['web_name']} {tag} | "
-            f"£{p['now_cost']:.1f}m | {p['xpts']:.1f} | {p['actual_pts']} |"
+            f"£{p['now_cost']:.1f}m | {p['xpts']:.1f} | {credited_pts} |"
         )
     return "\n".join(lines)
 
@@ -98,7 +109,7 @@ def render_markdown(trace: list[dict], season: str) -> str:
             f"Predicted {row['predicted_xpts']:.1f} → "
             f"Actual {row['actual_pts']} (net {row['net_pts']})\n"
         )
-        out.append(_squad_table(row["squad"]))
+        out.append(_squad_table(row["squad"], row["chip"]))
         out.append("")
 
     return "\n".join(out)

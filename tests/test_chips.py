@@ -110,10 +110,16 @@ def _minimal_projections(gw: int, best_xpts: float, second_xpts: float) -> pd.Da
     })
 
 
-def _skip_bb_fh_wc_kwargs() -> dict:
+def _skip_bb_fh_wc_kwargs(current_gw: int = 5) -> dict:
     from optimiser.chips import Chip
+    # Mark BB/FH/WC as already used THIS half (same half as current_gw) so
+    # _chip_uses_remaining reports 0 for them, leaving only TC available.
     return {
-        "chips_used": {Chip.BENCH_BOOST, Chip.FREE_HIT, Chip.WILDCARD},
+        "chips_used": [
+            (Chip.BENCH_BOOST, current_gw),
+            (Chip.FREE_HIT, current_gw),
+            (Chip.WILDCARD, current_gw),
+        ],
         "squad_age_gws": 0,
     }
 
@@ -171,3 +177,70 @@ def test_recommend_chip_no_chip_when_nothing_qualifies():
         **_skip_bb_fh_wc_kwargs(),
     )
     assert rec.chip is None
+
+
+# --- _chip_uses_remaining / chips_used_this_season --------------------------
+# Real bugs found 2026-07-28 (user's own squad-trace review: "only one
+# wildcard chip was played when we should have 2 of each"). FPL 2025/26+
+# gives 1 use of EACH of the 4 chips per half of the season (2 total, no
+# carryover) -- confirmed against the Premier League's own 2025/26 changes
+# announcement. The project previously modelled only the wildcard this way;
+# the other three chips used a naive `not in a set` check that structurally
+# capped every chip at one use for the WHOLE season.
+
+@pytest.fixture(autouse=True)
+def _fixed_half_boundary(monkeypatch):
+    chips._get_wc_half_boundary.cache_clear()
+    monkeypatch.setattr(chips, "_get_wc_half_boundary", lambda: 19)
+    yield
+
+
+def test_chip_uses_remaining_unused_chip_has_one_available():
+    assert chips._chip_uses_remaining(chips.Chip.WILDCARD, [], current_gw=5) == 1
+
+
+def test_chip_uses_remaining_used_once_this_half_is_zero():
+    used = [(chips.Chip.WILDCARD, 5)]
+    assert chips._chip_uses_remaining(chips.Chip.WILDCARD, used, current_gw=10) == 0
+
+
+def test_chip_uses_remaining_used_in_first_half_available_again_second_half():
+    # The exact bug: a chip used once in the first half must be usable AGAIN
+    # in the second half -- previously every non-wildcard chip stayed
+    # permanently exhausted after one use, all season.
+    used = [(chips.Chip.TRIPLE_CAPTAIN, 10)]
+    assert chips._chip_uses_remaining(chips.Chip.TRIPLE_CAPTAIN, used, current_gw=25) == 1
+
+
+def test_chip_uses_remaining_unused_first_half_chip_is_lost_not_banked():
+    # FPL rule: no carryover -- NOT using your first-half chip does not give
+    # you 2 available in the second half.
+    used: list[tuple[chips.Chip, int]] = []
+    assert chips._chip_uses_remaining(chips.Chip.BENCH_BOOST, used, current_gw=25) == 1
+    # even after never using it in H1, using it once in H2 exhausts H2 too.
+    used = [(chips.Chip.BENCH_BOOST, 25)]
+    assert chips._chip_uses_remaining(chips.Chip.BENCH_BOOST, used, current_gw=30) == 0
+
+
+def test_chip_uses_remaining_applies_per_chip_independently():
+    used = [(chips.Chip.WILDCARD, 5)]
+    assert chips._chip_uses_remaining(chips.Chip.WILDCARD, used, current_gw=10) == 0
+    assert chips._chip_uses_remaining(chips.Chip.FREE_HIT, used, current_gw=10) == 1
+
+
+def test_chips_used_this_season_parses_chip_from_json_details():
+    # Real bug: the old version read a `chip_played` column decision_log
+    # never had (chip decisions are logged as decision_type="chip" with the
+    # chip name inside the JSON `details` string) -- this would KeyError the
+    # first time it ran against any real accumulated log.
+    log = pd.DataFrame([
+        {"gameweek": 5, "decision_type": "chip", "details": '{"chip": "wildcard", "reason": "x"}'},
+        {"gameweek": 12, "decision_type": "lineup", "details": '{"captain_id": 1}'},
+        {"gameweek": 25, "decision_type": "chip", "details": '{"chip": "3xc", "reason": "y"}'},
+    ])
+    used = chips.chips_used_this_season(log)
+    assert used == [(chips.Chip.WILDCARD, 5), (chips.Chip.TRIPLE_CAPTAIN, 25)]
+
+
+def test_chips_used_this_season_empty_log_returns_empty_list():
+    assert chips.chips_used_this_season(pd.DataFrame()) == []

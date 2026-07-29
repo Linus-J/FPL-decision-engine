@@ -1,3 +1,4 @@
+import json
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -59,22 +60,52 @@ class ChipRecommendation:
     expected_gain: float
 
 
-def chips_used_this_season(decision_log: pd.DataFrame) -> set[Chip]:
-    if decision_log.empty or "chip_played" not in decision_log.columns:
-        return set()
-    used = decision_log["chip_played"].dropna().unique()
-    return {Chip(c) for c in used if c}
+def chips_used_this_season(decision_log: pd.DataFrame) -> list[tuple[Chip, int]]:
+    """(chip, gameweek) for every chip actually played this season.
+
+    Real bug found 2026-07-28: this used to read a ``chip_played`` column
+    decision_log never had (chip decisions are logged as
+    ``decision_type="chip"`` with the chip name inside the JSON ``details``
+    column — see ``agent/decision_engine.py::_log_decision`` call sites) —
+    ``decision_log["chip_played"]`` would ``KeyError`` the first time this
+    ran against any real accumulated log, silently masked pre-launch only
+    because an EMPTY log short-circuits before touching the column. Also
+    returns a plain list, not a set: a chip can legitimately be played
+    twice a season (see ``_chip_uses_remaining``), and a set can't
+    represent that.
+    """
+    if decision_log.empty or "decision_type" not in decision_log.columns:
+        return []
+    chip_rows = decision_log[decision_log["decision_type"] == "chip"]
+    used: list[tuple[Chip, int]] = []
+    for _, row in chip_rows.iterrows():
+        try:
+            chip = Chip(json.loads(row["details"])["chip"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        used.append((chip, int(row["gameweek"])))
+    return used
 
 
-def _wildcards_remaining(used: set[Chip], current_gw: int) -> int:
-    wc_uses = sum(1 for c in used if c == Chip.WILDCARD)
+def _chip_uses_remaining(chip: Chip, used: list[tuple[Chip, int]], current_gw: int) -> int:
+    """FPL 2025/26+ rule (real bug found 2026-07-28 — the user's own review
+    flagged only one wildcard ever getting played across a full season):
+    each of the 4 chips gets exactly 1 use per half of the season (2
+    total), with NO carryover — an unused first-half chip is lost once the
+    GW19-deadline boundary passes, not banked for the second half.
+    Previously only the wildcard had this half-aware accounting
+    (``_wildcards_remaining``); the other three chips used a naive
+    ``chip not in chips_used`` check against a de-duplicating ``set``,
+    which structurally cannot represent "used once already, one more
+    available in the other half" — worse, feeding a `set` into a
+    multiplicity count silently caps every chip at one use for the whole
+    season regardless of what the config says."""
     half_boundary = _get_wc_half_boundary()
     if current_gw <= half_boundary:
-        available = 1
+        uses_this_half = sum(1 for c, gw in used if c == chip and gw <= half_boundary)
     else:
-        first_half_used = min(wc_uses, 1)
-        available = 2 - first_half_used - max(0, wc_uses - 1)
-    return max(0, available - wc_uses)
+        uses_this_half = sum(1 for c, gw in used if c == chip and gw > half_boundary)
+    return max(0, 1 - uses_this_half)
 
 
 def recommend_chip(
@@ -84,7 +115,7 @@ def recommend_chip(
     players: pd.DataFrame,
     available_budget: float,
     free_transfers: int,
-    chips_used: set[Chip],
+    chips_used: list[tuple[Chip, int]],
     bench_xpts: float | None = None,
     dgw_gws: set[int] | None = None,
     bgw_affected_count: int = 0,
@@ -101,7 +132,7 @@ def recommend_chip(
         ]["xpts"].sum()
     )
 
-    if Chip.TRIPLE_CAPTAIN not in chips_used:
+    if _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, chips_used, current_gw) > 0:
         tc_gain, best_id, second_id = _evaluate_triple_captain(
             current_squad_ids, projections, current_gw
         )
@@ -115,7 +146,8 @@ def recommend_chip(
             logger.info("TC recommended: gain=%.2f", tc_gain)
             return ChipRecommendation(Chip.TRIPLE_CAPTAIN, f"TC gain {tc_gain:.1f} xPts", tc_gain)
 
-    if Chip.BENCH_BOOST not in chips_used and bench_xpts is not None:
+    bb_remaining = _chip_uses_remaining(Chip.BENCH_BOOST, chips_used, current_gw) > 0
+    if bb_remaining and bench_xpts is not None:
         dgw_active = bool(dgw_gws and current_gw in dgw_gws)
         if dgw_active:
             bb_scenarios = pd.Series(dtype=float)
@@ -134,7 +166,8 @@ def recommend_chip(
                     bench_xpts,
                 )
 
-    if Chip.FREE_HIT not in chips_used and bgw_affected_count >= 5:
+    fh_remaining = _chip_uses_remaining(Chip.FREE_HIT, chips_used, current_gw) > 0
+    if fh_remaining and bgw_affected_count >= 5:
         fh_solution = optimise_squad(
             projections=projections,
             players=players,
@@ -168,7 +201,7 @@ def recommend_chip(
             logger.info("FH recommended: gain=%.2f (BGW blanks=%d)", gain, bgw_affected_count)
             return ChipRecommendation(Chip.FREE_HIT, f"BGW free hit gain {gain:.1f} xPts", gain)
 
-    wc_remaining = _wildcards_remaining(chips_used, current_gw)
+    wc_remaining = _chip_uses_remaining(Chip.WILDCARD, chips_used, current_gw)
     if wc_remaining > 0 and squad_age_gws >= CHIP_TIMING.wildcard_min_managed_gws:
         wc_solution = optimise_squad(
             projections=projections,

@@ -148,17 +148,24 @@ class BPSWeights:
 # ---------------------------------------------------------------------------
 # CHIP RULES
 # Chips available and how many of each per season.
-# 25/26 season had: 1x Wildcard per half, 1x Free Hit, 1x Bench Boost,
-# 1x Triple Captain. Update here if 26/27 adds/removes/changes chips.
+# Real bug found 2026-07-28 (user's own squad-trace review: "only one
+# wildcard chip was played when we should have 2 of each"). This module
+# previously claimed 25/26 gave 2x Wildcard but only 1x each of Free Hit/
+# Bench Boost/Triple Captain for the whole season -- WRONG, confirmed via
+# the Premier League's own 2025/26 changes announcement: 2025/26 is a major
+# rules change giving 1 of EACH of the 4 chips per half of the season (8
+# chips total), with NO carryover -- an unused first-half chip is lost at
+# the GW19 deadline, not banked for the second half. Update here if 26/27
+# changes this again.
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class ChipRules:
-    wildcards_total: int = 2             # total WCs per season
-    wildcard_first_half_deadline_gw: int = 19  # GW after which WC1 expires
-    free_hits_total: int = 1
-    bench_boosts_total: int = 1
-    triple_captains_total: int = 1
+    wildcards_total: int = 2             # total WCs per season (1 per half)
+    wildcard_first_half_deadline_gw: int = 19  # GW after which WC1/FH1/BB1/TC1 expire
+    free_hits_total: int = 2             # 1 per half, no carryover
+    bench_boosts_total: int = 2          # 1 per half, no carryover
+    triple_captains_total: int = 2       # 1 per half, no carryover
 
     # Can two chips be played in the same GW? (FPL rule: no)
     allow_chip_stacking: bool = False

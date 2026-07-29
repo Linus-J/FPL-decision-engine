@@ -248,7 +248,7 @@ def run_backtest(
     results = []
     current_squad_ids: list[int] = []
     free_transfers = 15
-    chips_used: set[Chip] = set()
+    chips_used: list[tuple[Chip, int]] = []
     free_hit_active = False
     pre_free_hit_squad: list[int] = []
     squad_age_gws = 0
@@ -362,7 +362,7 @@ def run_backtest(
                     hits = 0
                     squad_df = solution.squad
                     free_transfers = 1
-                    chips_used.add(Chip.WILDCARD)
+                    chips_used.append((Chip.WILDCARD, gw))
                     logger.info("GW%d: WILDCARD played — gain=%.1f xPts", gw, chip_rec.expected_gain)
 
                 elif chip_played == Chip.FREE_HIT:
@@ -379,12 +379,12 @@ def run_backtest(
                     hits = 0
                     squad_df = fh_solution.squad
                     free_hit_active = True
-                    chips_used.add(Chip.FREE_HIT)
+                    chips_used.append((Chip.FREE_HIT, gw))
                     logger.info("GW%d: FREE HIT played — gain=%.1f xPts", gw, chip_rec.expected_gain)
 
                 else:
                     if chip_played in (Chip.BENCH_BOOST, Chip.TRIPLE_CAPTAIN):
-                        chips_used.add(chip_played)
+                        chips_used.append((chip_played, gw))
                         logger.info("GW%d: %s played — gain=%.1f xPts", gw, chip_played.value, chip_rec.expected_gain)
 
                     transfer_plan = evaluate_transfers(
