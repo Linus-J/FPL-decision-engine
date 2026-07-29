@@ -287,6 +287,24 @@ class ChipTimingThresholds:
     bench_boost_min_payoff_probability: float = 0.6
     triple_captain_min_payoff_probability: float = 0.6
 
+    # 2026-07-30 (user's own squad-trace review: chips going completely
+    # unused all season "is just not acceptable"). Every chip's per-half
+    # threshold above was an all-or-nothing bar with no time-pressure —
+    # a chip that never quite cleared it simply evaporated, unused, at the
+    # half/season boundary. Within the final `panic_window_gws` gameweeks of
+    # its half, every chip's threshold is linearly shrunk toward
+    # `panic_threshold_shrink` (fraction of the normal bar) so a marginal,
+    # still-real opportunity is far more likely to clear it before expiring.
+    # As a genuine last resort — the user's own words: "at worst the default
+    # behaviour is to panic and use the triple captain on the last day" —
+    # `recommend_chip` force-plays Triple Captain on the half's very last
+    # gameweek if it's still unused and nothing else fired, since doubling
+    # that week's best captain candidate is close to always worth something,
+    # unlike Free Hit/Bench Boost/Wildcard, which need a real structural
+    # opportunity (a DGW/BGW/rebuild) to be worth anything at all.
+    panic_window_gws: int = 3
+    panic_threshold_shrink: float = 0.3
+
 
 # ---------------------------------------------------------------------------
 # OPTIMISER BEHAVIOUR

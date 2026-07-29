@@ -179,6 +179,127 @@ def test_recommend_chip_no_chip_when_nothing_qualifies():
     assert rec.chip is None
 
 
+# --- panic decay / last-resort force (2026-07-30, user's own review: chips ---
+# going completely unused all season "is just not acceptable"; "at worst the
+# default behaviour is to panic and use the triple captain on the last day
+# before the chips reset"). Half boundary fixed at 19 by the autouse
+# `_fixed_half_boundary` fixture above.
+
+def test_panic_shrink_is_full_strength_outside_the_window():
+    assert chips._panic_shrink(10) == pytest.approx(1.0)  # 9 GWs from expiry
+    assert chips._panic_shrink(16) == pytest.approx(1.0)  # exactly at the window edge (3 left)
+
+
+def test_panic_shrink_decays_linearly_inside_the_window():
+    # 2 GWs left: frac=2/3 -> 0.3 + (2/3)*0.7
+    assert chips._panic_shrink(17) == pytest.approx(0.3 + (2 / 3) * 0.7)
+    # 0 GWs left (the expiry GW itself) -> the floor value exactly
+    assert chips._panic_shrink(19) == pytest.approx(0.3)
+
+
+def test_current_half_expiry_gw_first_vs_second_half():
+    assert chips._current_half_expiry_gw(10) == 19
+    assert chips._current_half_expiry_gw(19) == 19
+
+
+def test_recommend_chip_tc_blocked_far_from_expiry_but_passes_near_it_via_decay():
+    # gain=4.0 is below the normal 6.0 TC threshold and stays blocked far
+    # from expiry, but the SAME gain clears the panic-shrunk threshold once
+    # the half is nearly over -- proving the decay itself, not just the
+    # final hard force, lets a real marginal opportunity through.
+    far_projections = _minimal_projections(10, best_xpts=9.0, second_xpts=5.0)
+    far = chips.recommend_chip(
+        current_gw=10, current_squad_ids=[1, 2], projections=far_projections,
+        players=pd.DataFrame(), available_budget=100.0, free_transfers=1, season=None,
+        **_skip_bb_fh_wc_kwargs(current_gw=10),
+    )
+    assert far.chip is None
+
+    near_projections = _minimal_projections(18, best_xpts=9.0, second_xpts=5.0)
+    near = chips.recommend_chip(
+        current_gw=18, current_squad_ids=[1, 2], projections=near_projections,
+        players=pd.DataFrame(), available_budget=100.0, free_transfers=1, season=None,
+        **_skip_bb_fh_wc_kwargs(current_gw=18),
+    )
+    assert near.chip == chips.Chip.TRIPLE_CAPTAIN
+    # decay let the normal TC gate fire here, not the last-resort force
+    assert "Panic" not in near.reason
+
+
+def test_recommend_chip_panic_forces_tc_on_expiry_gw_when_nothing_else_clears():
+    # gain=1.0 is below even the panic-shrunk threshold (6.0*0.3=1.8) at the
+    # literal expiry GW -- only the final "use it or lose it" force should fire.
+    projections = _minimal_projections(19, best_xpts=5.0, second_xpts=4.0)
+    rec = chips.recommend_chip(
+        current_gw=19, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
+        available_budget=100.0, free_transfers=1, season=None,
+        **_skip_bb_fh_wc_kwargs(current_gw=19),
+    )
+    assert rec.chip == chips.Chip.TRIPLE_CAPTAIN
+    assert "Panic" in rec.reason
+
+
+def test_recommend_chip_no_panic_force_away_from_expiry():
+    projections = _minimal_projections(10, best_xpts=5.0, second_xpts=4.0)  # gain=1.0
+    rec = chips.recommend_chip(
+        current_gw=10, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
+        available_budget=100.0, free_transfers=1, season=None,
+        **_skip_bb_fh_wc_kwargs(current_gw=10),
+    )
+    assert rec.chip is None
+
+
+# --- DGW-triggered Free Hit (2026-07-30, user's own review: "the free hit --
+# is usually handy during double game weeks where it is not worth triple
+# captaining"). Previously Free Hit only ever triggered on a BGW rationale.
+
+def _dgw_free_hit_pool() -> tuple[pd.DataFrame, pd.DataFrame, list[int]]:
+    positions = ["GKP"] * 4 + ["DEF"] * 8 + ["MID"] * 8 + ["FWD"] * 5
+    rows = []
+    for i, position in enumerate(positions):
+        pid = i + 1
+        rows.append({
+            "id": pid, "position": position, "now_cost": 4.5,
+            "team_id": 1 + (i % 8), "status": "a", "start_probability": 0.9,
+            "web_name": f"p{pid}",
+        })
+    players = pd.DataFrame(rows)
+
+    # A well-spread, formation-valid 15 (2 GKP, 5 DEF, 5 MID, 3 FWD) with a
+    # big DGW-week haul; everyone else (including the "current" squad) blanks.
+    great_ids = [1, 2, 5, 6, 7, 8, 9, 13, 14, 15, 16, 17, 21, 22, 23]
+    gw = 10
+    projections = pd.DataFrame([
+        {"player_id": pid, "gameweek": gw, "xpts": 10.0 if pid in great_ids else 2.0}
+        for pid in players["id"]
+    ])
+    current_squad_ids = [pid for pid in players["id"] if pid not in great_ids][:10]
+    return players, projections, current_squad_ids
+
+
+def test_recommend_chip_free_hit_triggers_on_dgw_without_bgw_blanks():
+    players, projections, current_squad_ids = _dgw_free_hit_pool()
+    rec = chips.recommend_chip(
+        current_gw=10, current_squad_ids=current_squad_ids, projections=projections,
+        players=players, available_budget=100.0, free_transfers=1, season=None,
+        chips_used=[(chips.Chip.WILDCARD, 10)], squad_age_gws=0,
+        dgw_gws={10}, bgw_affected_count=0,
+    )
+    assert rec.chip == chips.Chip.FREE_HIT
+    assert "DGW" in rec.reason
+
+
+def test_recommend_chip_free_hit_does_not_trigger_without_dgw_or_bgw():
+    players, projections, current_squad_ids = _dgw_free_hit_pool()
+    rec = chips.recommend_chip(
+        current_gw=10, current_squad_ids=current_squad_ids, projections=projections,
+        players=players, available_budget=100.0, free_transfers=1, season=None,
+        chips_used=[(chips.Chip.WILDCARD, 10)], squad_age_gws=0,
+        dgw_gws=set(), bgw_affected_count=0,
+    )
+    assert rec.chip is None
+
+
 # --- _chip_uses_remaining / chips_used_this_season --------------------------
 # Real bugs found 2026-07-28 (user's own squad-trace review: "only one
 # wildcard chip was played when we should have 2 of each"). FPL 2025/26+
