@@ -7,6 +7,7 @@ silent 0.0), and confirmed leavers (status 'u') are dropped.
 
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -93,3 +94,50 @@ def test_projection_sources_and_no_silent_zero(temp_session):
 def test_price_prior_monotonic_in_price():
     assert cs._price_prior("MID", 10.0) > cs._price_prior("MID", 5.0)
     assert cs._price_prior("FWD", 4.0) >= cs._MIN_XPTS
+
+
+def _seed_full_pool(Local):
+    """A large-enough pool (2 GKP, 5 DEF, 5 MID, 3+ FWD per club-limit) for
+    optimise_squad to actually build a legal 15, one confirmed leaver mixed
+    in, so the departure gate's effect is visible in the final squad too."""
+    positions = ["GKP"] * 4 + ["DEF"] * 8 + ["MID"] * 8 + ["FWD"] * 5
+    s = Local()
+    try:
+        for i, position in enumerate(positions):
+            s.add(Player(
+                fpl_id=i + 1, code=i + 1, first_name="P", second_name=str(i + 1),
+                web_name=f"Leaver{i}" if i == 0 else f"p{i}",
+                team_id=1 + (i % 8), position=position, now_cost=4.5,
+                status="u" if i == 0 else "a",
+            ))
+        s.commit()
+    finally:
+        s.close()
+
+
+def test_build_initial_squad_uses_injected_players_not_live_bootstrap(temp_session, monkeypatch):
+    # 2026-07-30 (user's own request: "we need to have and test a method to
+    # start from GW1... for the realtime 26/27 season which is
+    # approaching"). build_initial_squad must be usable against a POINT-IN-
+    # TIME historical snapshot (e.g. a completed season's real GW1 roster),
+    # not just the live bootstrap -- otherwise the only way to validate it
+    # is by waiting for the real season to start.
+    _seed_full_pool(temp_session)
+
+    def _boom():
+        raise AssertionError("load_current_players() must not be called when players is given")
+
+    monkeypatch.setattr(cs, "load_current_players", _boom)
+
+    s = temp_session()
+    try:
+        injected = pd.read_sql(
+            "SELECT id, web_name, position, now_cost, status, team_id FROM players", s.bind
+        )
+    finally:
+        s.close()
+
+    solution, projections = cs.build_initial_squad("2026-27", players=injected)
+    assert len(solution.squad) == 15
+    assert "Leaver0" not in solution.squad["web_name"].tolist()  # departure gate still applied
+    assert not projections.empty

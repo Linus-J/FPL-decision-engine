@@ -129,8 +129,19 @@ def project_cold_start(
     return pd.DataFrame(rows)
 
 
-def build_initial_squad(season: str, budget: float | None = None):
+def build_initial_squad(
+    season: str, budget: float | None = None, players: pd.DataFrame | None = None
+):
     """Construct the GW1 initial 15 from prior-season data only.
+
+    ``players`` defaults to the live bootstrap (``load_current_players``) —
+    the real path this project's own agent uses on the actual 26/27 season's
+    opening day. Passing a point-in-time snapshot instead (e.g.
+    ``scripts.backtest._load_players_snapshot(season, 1)``) lets this same
+    function be validated against a COMPLETED historical season's real GW1
+    roster/prices rather than today's live bootstrap — 2026-07-30, the
+    user's own request ("we need to have and test a method to start from
+    GW1... for the realtime 26/27 season which is approaching").
 
     Returns (SquadSolution, projections_df). Imports the optimiser lazily so the
     projection layer stays testable without PuLP.
@@ -139,7 +150,9 @@ def build_initial_squad(season: str, budget: float | None = None):
     from optimiser.squad import optimise_squad
 
     budget = SQUAD.budget_total if budget is None else budget
-    players = apply_departure_gate(load_current_players())
+    if players is None:
+        players = load_current_players()
+    players = apply_departure_gate(players)
     prior = load_prior_season_features(prior_season_of(season))
     projections = project_cold_start(players, prior)
 
