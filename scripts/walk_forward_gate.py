@@ -94,6 +94,7 @@ from projection import assemble
 from projection.minutes_model import train as train_minutes
 from projection.rescore import load_bonus_2627_map, rescore_actuals
 from scripts.backtest import (
+    _actual_gw_minutes,
     _actual_gw_points,
     _build_gw_projections,
     _load_all_stats,
@@ -157,6 +158,11 @@ def run_frozen_template(
     squad_ids = solution.squad["id"].tolist()
     starting_ids = xi_solution.starting_xi["id"].tolist()
     captain_id = xi_solution.captain_id
+    vice_captain_id = xi_solution.vice_captain_id
+    positions = dict(zip(xi_solution.squad["id"], xi_solution.squad["position"], strict=False))
+    bench_order_map = dict(
+        zip(xi_solution.squad["id"], xi_solution.squad["bench_order"], strict=False)
+    )
     logger.info(
         "Frozen template built at GW%d: £%.1fm, captain=%s (never revisited)",
         start_gw, solution.total_cost,
@@ -169,7 +175,12 @@ def run_frozen_template(
         if gw < start_gw or gw > end_gw:
             continue
         actual = _actual_gw_points(all_stats, gw, score_2627=score_2627)
-        pts = _score_squad(squad_ids, starting_ids, captain_id, actual)
+        actual_minutes = _actual_gw_minutes(all_stats, gw)
+        pts = _score_squad(
+            squad_ids, starting_ids, captain_id, actual,
+            vice_captain_id=vice_captain_id,
+            minutes=actual_minutes, positions=positions, bench_order=bench_order_map,
+        )
         results.append({"gameweek": gw, "actual_pts": pts})
 
     df = pd.DataFrame(results)

@@ -18,7 +18,7 @@ from sqlalchemy import text
 from config.strategy import OPTIMISER, SQUAD, TRANSFERS
 from data.db import get_session
 from optimiser.chips import Chip, recommend_chip
-from optimiser.squad import optimise_squad, optimise_starting_xi
+from optimiser.squad import STARTING_MAX, STARTING_MIN, optimise_squad, optimise_starting_xi
 from optimiser.transfers import evaluate_transfers
 from projection import assemble
 from projection.minutes_model import train as train_minutes
@@ -139,6 +139,14 @@ def _actual_gw_points(all_stats: pd.DataFrame, gw: int, score_2627: bool = False
     return subset.groupby("player_id")[col].sum().to_dict()
 
 
+def _actual_gw_minutes(all_stats: pd.DataFrame, gw: int) -> dict[int, int]:
+    """Actual minutes played for a GW, summed per player (same DGW-summing
+    rationale as ``_actual_gw_points`` — a double-gameweek player's minutes
+    across both fixtures, used by ``_apply_autosubs`` to decide who blanked)."""
+    subset = all_stats[all_stats["gameweek"] == gw]
+    return subset.groupby("player_id")["minutes"].sum().to_dict()
+
+
 def _build_gw_projections(
     history: pd.DataFrame,
     players: pd.DataFrame,
@@ -190,6 +198,62 @@ def _build_gw_projections(
     return proj
 
 
+def _apply_autosubs(
+    squad_ids: list[int],
+    starting_ids: list[int],
+    positions: dict[int, str],
+    bench_order: dict[int, int],
+    minutes: dict[int, int],
+) -> list[int]:
+    """Real bug found 2026-07-30 (user's own report review): the backtest
+    never modelled FPL's auto-substitution rule, so a starting pick that
+    ended up not playing simply scored 0 — understating every benchmark's
+    realistic total versus what an actual manager holding that squad would
+    get. Mirrors FPL's real algorithm: the bench GK comes on unconditionally
+    if the starting GK gets 0 minutes (keeper-for-keeper, no formation
+    constraint); each outfield bench player who DID play is then tried in
+    ``bench_order`` priority against the blanking (0-minute) starters,
+    swapped in only if the resulting XI still satisfies ``STARTING_MIN``/
+    ``STARTING_MAX`` per position (same-position blanks are tried first,
+    since that swap is always formation-neutral). A bench player who also
+    has 0 minutes can never be subbed on, same as real FPL."""
+    starting = list(starting_ids)
+    bench = [pid for pid in squad_ids if pid not in set(starting_ids)]
+    bench.sort(key=lambda pid: bench_order.get(pid, 99))
+
+    starting_gks = [pid for pid in starting if positions.get(pid) == "GKP"]
+    if starting_gks and minutes.get(starting_gks[0], 0) == 0:
+        bench_gk = next((pid for pid in bench if positions.get(pid) == "GKP"), None)
+        if bench_gk is not None and minutes.get(bench_gk, 0) > 0:
+            starting = [bench_gk if pid == starting_gks[0] else pid for pid in starting]
+            bench.remove(bench_gk)
+
+    def _position_counts(ids: list[int]) -> dict[str, int]:
+        counts = {"GKP": 0, "DEF": 0, "MID": 0, "FWD": 0}
+        for pid in ids:
+            counts[positions.get(pid, "MID")] += 1
+        return counts
+
+    for sub_id in [pid for pid in bench if positions.get(pid) != "GKP"]:
+        if minutes.get(sub_id, 0) <= 0:
+            continue
+        blanks = [
+            pid for pid in starting
+            if minutes.get(pid, 0) == 0 and positions.get(pid) != "GKP"
+        ]
+        if not blanks:
+            continue
+        sub_pos = positions.get(sub_id)
+        blanks.sort(key=lambda pid: 0 if positions.get(pid) == sub_pos else 1)
+        for blank_id in blanks:
+            trial = [sub_id if pid == blank_id else pid for pid in starting]
+            counts = _position_counts(trial)
+            if all(STARTING_MIN[p] <= counts[p] <= STARTING_MAX[p] for p in STARTING_MIN):
+                starting = trial
+                break
+    return starting
+
+
 def _score_squad(
     squad_ids: list[int],
     starting_ids: list[int],
@@ -197,16 +261,36 @@ def _score_squad(
     actual_points: dict[int, int],
     bench_boost: bool = False,
     triple_captain: bool = False,
+    vice_captain_id: int | None = None,
+    minutes: dict[int, int] | None = None,
+    positions: dict[int, str] | None = None,
+    bench_order: dict[int, int] | None = None,
 ) -> int:
+    """``minutes``/``positions``/``bench_order`` are optional (all three
+    required together) so existing call sites without them keep the old,
+    no-autosub behaviour rather than silently changing under them."""
+    effective_starting = starting_ids
+    effective_captain = captain_id
+    if minutes is not None and positions is not None and bench_order is not None:
+        effective_starting = _apply_autosubs(
+            squad_ids, starting_ids, positions, bench_order, minutes
+        )
+        if (
+            minutes.get(captain_id, 1) == 0
+            and vice_captain_id is not None
+            and minutes.get(vice_captain_id, 0) > 0
+        ):
+            effective_captain = vice_captain_id
+
     captain_multiplier = 3 if triple_captain else 2
     total = 0
-    for pid in starting_ids:
+    for pid in effective_starting:
         pts = actual_points.get(pid, 0)
-        if pid == captain_id:
+        if pid == effective_captain:
             pts *= captain_multiplier
         total += pts
     if bench_boost:
-        bench = [pid for pid in squad_ids if pid not in set(starting_ids)]
+        bench = [pid for pid in squad_ids if pid not in set(effective_starting)]
         total += sum(actual_points.get(pid, 0) for pid in bench)
     return total
 
@@ -522,10 +606,17 @@ def run_backtest(
             predicted_var = 0.0
 
         actual = _actual_gw_points(all_stats, gw, score_2627=score_2627)
+        actual_minutes = _actual_gw_minutes(all_stats, gw)
+        positions = dict(zip(xi_solution.squad["id"], xi_solution.squad["position"], strict=False))
+        bench_order_map = dict(
+            zip(xi_solution.squad["id"], xi_solution.squad["bench_order"], strict=False)
+        )
         actual_pts = _score_squad(
             new_squad_ids, starting_ids, captain_id, actual,
             bench_boost=(chip_played == Chip.BENCH_BOOST),
             triple_captain=(chip_played == Chip.TRIPLE_CAPTAIN),
+            vice_captain_id=xi_solution.vice_captain_id,
+            minutes=actual_minutes, positions=positions, bench_order=bench_order_map,
         )
         hit_penalty = hits * abs(TRANSFERS.hit_cost_points)
         net_pts = actual_pts - hit_penalty
@@ -626,11 +717,12 @@ def run_naive_xi_backtest(
     **No transfers, no chips, no hits** — this isolates the projection quality
     from the decision layer (Phase 3).
 
-    No auto-substitutions: a starting pick that ends up not playing scores 0,
-    same as ``run_backtest``'s ``_score_squad`` — kept identical to the
-    baseline's scoring mechanism, not a de-scoped shortcut, so the two numbers
-    stay comparable. DGW handling is whatever ``player_gw_stats``/projections
-    already carry (P12 refines the DGW xPts multiplier upstream).
+    Uses the same real FPL auto-substitution rule as ``run_backtest``'s
+    ``_score_squad`` (2026-07-30 fix) — a blanking starter is replaced by the
+    highest-priority bench player who played, subject to formation legality
+    — so the two numbers stay comparable on a like-for-like scoring basis.
+    DGW handling is whatever ``player_gw_stats``/projections already carry
+    (P12 refines the DGW xPts multiplier upstream).
 
     ``score_2627=True`` scores the actual side under 26/27 rules (P-RS) — the
     exit-gate call. ``score_2627=False`` reproduces the Phase-1 baseline.
@@ -711,7 +803,16 @@ def run_naive_xi_backtest(
 
         starting_ids = xi_solution.starting_xi["id"].tolist()
         actual = _actual_gw_points(all_stats, gw, score_2627=score_2627)
-        actual_pts = _score_squad(squad_ids, starting_ids, xi_solution.captain_id, actual)
+        actual_minutes = _actual_gw_minutes(all_stats, gw)
+        positions = dict(zip(xi_solution.squad["id"], xi_solution.squad["position"], strict=False))
+        bench_order_map = dict(
+            zip(xi_solution.squad["id"], xi_solution.squad["bench_order"], strict=False)
+        )
+        actual_pts = _score_squad(
+            squad_ids, starting_ids, xi_solution.captain_id, actual,
+            vice_captain_id=xi_solution.vice_captain_id,
+            minutes=actual_minutes, positions=positions, bench_order=bench_order_map,
+        )
 
         captain_name = squad_df.loc[squad_df["id"] == xi_solution.captain_id, "web_name"]
         results.append({
