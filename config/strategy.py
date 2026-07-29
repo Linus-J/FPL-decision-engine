@@ -184,6 +184,23 @@ class TransferRules:
     max_hits_per_gw: int = 2
     ft_terminal_value: float = 2.0
 
+    # 2026-07-29 (user's own squad-trace review, real numbers): Bruno
+    # Fernandes was sold at GW10 despite 4 straight nailed-on, solidly-
+    # scoring gameweeks (90 min, 3/8/4/5 pts), replaced by Gakpo, who
+    # proved less reliable (including his own real injury/rotation gap) --
+    # a premium, proven performer churned for a WITHIN-FREE-TRANSFER swap
+    # that the hit-cost mechanism has zero power to discourage (it only
+    # taxes transfers BEYOND the free allowance). This is the P3-7
+    # optimiser's-curse pattern surviving in a different shape: even
+    # curse-shrunk projections still carry noise, and a proven track
+    # record has value beyond what one week's projection captures. A
+    # flat, always-on cost per transfer made (independent of hits) forces
+    # every swap -- free or not -- to clear a real bar, not just a
+    # marginal, noise-sized edge. Untuned starting value pending
+    # backtesting, same convention as other heuristic constants this
+    # session; 0.0 disables it exactly.
+    transfer_switching_cost: float = 1.5
+
 
 # ---------------------------------------------------------------------------
 # SQUAD STRUCTURE

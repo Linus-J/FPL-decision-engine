@@ -61,6 +61,66 @@ def _load_players_snapshot(season: str, target_gw: int) -> pd.DataFrame:
         db.close()
 
 
+def _fixture_count_by_gw(all_stats: pd.DataFrame) -> dict[int, int]:
+    """Real distinct-match count per gameweek (home-perspective rows only,
+    so each match counts once), derived from already-loaded historical
+    fixture context (``team_id_season``/``opponent_team_id``/``was_home``).
+
+    Real bug found 2026-07-29: ``run_backtest`` never passed ``dgw_gws``/
+    ``bgw_affected_count`` to ``recommend_chip`` at all (both silently
+    defaulted to "no DGW, no BGW blanks", always) — Bench Boost's and Free
+    Hit's entire logic is gated behind those being non-empty/nonzero, so
+    neither could ever even be EVALUATED during backtesting, regardless of
+    threshold calibration. The obvious fix (read ``Gameweek.is_dgw``/
+    ``is_bgw``) doesn't work for historical seasons: those columns are only
+    ever populated by the LIVE ``fpl_api.py::upsert_fixtures`` path for the
+    current season — confirmed live, all 38 gameweeks of the 2025-26 season
+    show ``is_dgw=0, is_bgw=0``. This derives it instead from data the
+    backtest already has loaded, the same historical stat rows the P12 DGW
+    fix (``projection/assemble.py``) already relies on for the same reason."""
+    home = all_stats.loc[
+        all_stats["was_home"].astype(bool),
+        ["gameweek", "team_id_season", "opponent_team_id"],
+    ].dropna(subset=["opponent_team_id"]).drop_duplicates()
+    return home.groupby("gameweek").size().to_dict()
+
+
+def _dgw_bgw_gws_in_window(
+    fixture_counts: dict[int, int], start_gw: int, horizon: int
+) -> tuple[set[int], set[int]]:
+    """(dgw_gws, bgw_gws) within [start_gw, start_gw + horizon) — a normal
+    round is 10 real matches; more means some teams play twice (DGW), fewer
+    means some teams don't play at all (BGW). A gameweek missing from
+    ``fixture_counts`` entirely (shouldn't happen for real historical data,
+    but possible near either edge of the loaded window) is treated as
+    normal rather than guessed."""
+    window = range(start_gw, start_gw + horizon)
+    dgw_gws = {gw for gw in window if fixture_counts.get(gw, 10) > 10}
+    bgw_gws = {gw for gw in window if fixture_counts.get(gw, 10) < 10}
+    return dgw_gws, bgw_gws
+
+
+def _bgw_affected_count(
+    squad_ids: list[int], bgw_gws: set[int], projections: pd.DataFrame
+) -> int:
+    """How many of the squad's own players have zero projected points in
+    ANY blank gameweek in the horizon — mirrors
+    ``agent/decision_engine.py``'s live computation of the same signal, so
+    the backtest exercises the identical Free-Hit-eligibility path the live
+    agent would use."""
+    if not bgw_gws or not squad_ids:
+        return 0
+    return sum(
+        1 for pid in squad_ids
+        if any(
+            projections[
+                (projections["gameweek"] == gw) & (projections["player_id"] == pid)
+            ]["xpts"].sum() == 0
+            for gw in bgw_gws
+        )
+    )
+
+
 def _actual_gw_points(all_stats: pd.DataFrame, gw: int, score_2627: bool = False) -> dict[int, int]:
     """Actual points for a GW. ``score_2627`` reads the ``total_points_2627``
     column (P-RS) — required for a like-for-like comparison against a
@@ -230,6 +290,7 @@ def run_backtest(
     match_odds = assemble.load_match_odds(season)
     defcon_events = assemble.load_defcon_events(season)
     defcon_field_shares = assemble.compute_defcon_field_shares(season)
+    fixture_counts = _fixture_count_by_gw(all_stats)
 
     if score_2627:
         db = get_session()
@@ -335,6 +396,8 @@ def run_backtest(
                 except Exception:
                     pass
 
+                dgw_gws, bgw_gws = _dgw_bgw_gws_in_window(fixture_counts, gw, horizon)
+                bgw_affected_count = _bgw_affected_count(current_squad_ids, bgw_gws, projections)
                 chip_rec = recommend_chip(
                     current_gw=gw,
                     current_squad_ids=current_squad_ids,
@@ -344,6 +407,8 @@ def run_backtest(
                     free_transfers=free_transfers,
                     chips_used=chips_used,
                     bench_xpts=bench_xpts_val,
+                    dgw_gws=dgw_gws,
+                    bgw_affected_count=bgw_affected_count,
                     squad_age_gws=squad_age_gws,
                     season=season,
                 )

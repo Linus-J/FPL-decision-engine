@@ -160,3 +160,80 @@ def test_evaluate_transfers_default_config_ignores_ownership_entirely():
     )
     assert without_eo.hits_taken == with_eo.hits_taken == 0
     assert without_eo.net_xpts_gain == pytest.approx(with_eo.net_xpts_gain)
+
+
+# --- transfer_switching_cost (2026-07-29, real case: Bruno Fernandes sold at
+# GW10 for Gakpo despite 4 straight solidly-scoring gameweeks) -------------
+
+def _squad_with_one_candidate_upgrade(candidate_gain_per_gw: float):
+    """15-player owned squad (all flat 4.0 xpts/GW) + one extra FWD
+    candidate projecting `candidate_gain_per_gw` more than the weakest
+    owned FWD, over a 3-GW horizon."""
+    owned = _owned_squad_round_robin()
+    candidate = pd.DataFrame([{
+        "id": 16, "position": "FWD", "now_cost": 5.0,
+        "team_id": 6, "status": "a", "web_name": "candidate",
+    }])
+    players = pd.concat([owned, candidate], ignore_index=True)
+    gws = [10, 11, 12]
+    rows = []
+    for pid in owned["id"]:
+        for gw in gws:
+            rows.append({
+                "player_id": pid, "gameweek": gw, "xpts": 4.0, "start_probability": 0.9,
+            })
+    for gw in gws:
+        rows.append({
+            "player_id": 16, "gameweek": gw,
+            "xpts": 4.0 + candidate_gain_per_gw, "start_probability": 0.9,
+        })
+    projections = pd.DataFrame(rows)
+    return players, owned["id"].tolist(), projections
+
+
+def test_transfer_switching_cost_blocks_a_marginal_upgrade():
+    # +0.3 pts/GW * 3 GWs = 0.9 total gain -- well under the 1.5-point
+    # switching cost (see the "disabled" test below for the isolated,
+    # cost-specific threshold). Should NOT transfer for a noise-sized edge.
+    players, squad_ids, projections = _squad_with_one_candidate_upgrade(0.3)
+    plan = evaluate_transfers(
+        squad_ids, projections, players, free_transfers=1, available_budget=100.0
+    )
+    assert plan.transfers_in == []
+
+
+def test_transfer_switching_cost_allows_a_substantial_upgrade():
+    # +5 pts/GW * 3 GWs = 15 total gain -- comfortably clears the cost.
+    players, squad_ids, projections = _squad_with_one_candidate_upgrade(5.0)
+    plan = evaluate_transfers(
+        squad_ids, projections, players, free_transfers=1, available_budget=100.0
+    )
+    assert any(t["player_id"] == 16 for t in plan.transfers_in)
+
+
+def test_transfer_switching_cost_disabled_allows_a_gain_the_default_cost_blocks(monkeypatch):
+    import dataclasses
+
+    from optimiser import transfers as transfers_module
+    from optimiser.transfers import TRANSFERS as real_transfers
+
+    # +0.5 pts/GW * 3 GWs = 1.5 total gain: confirmed blocked under the
+    # default 1.5-point switching cost (right at the margin), but transfers
+    # cleanly once the cost is disabled -- isolates the cost's own effect
+    # from any other pre-existing friction in the multi-period ILP (e.g.
+    # ft_terminal_value), which also makes very small gains a wash on their
+    # own regardless of this setting.
+    players, squad_ids, projections = _squad_with_one_candidate_upgrade(0.5)
+    blocked_plan = evaluate_transfers(
+        squad_ids, projections, players, free_transfers=1, available_budget=100.0
+    )
+    assert blocked_plan.transfers_in == []
+
+    monkeypatch.setattr(
+        transfers_module, "TRANSFERS",
+        dataclasses.replace(real_transfers, transfer_switching_cost=0.0),
+    )
+    allowed_plan = evaluate_transfers(
+        squad_ids, projections, players, free_transfers=1, available_budget=100.0
+    )
+    assert any(t["player_id"] == 16 for t in allowed_plan.transfers_in)

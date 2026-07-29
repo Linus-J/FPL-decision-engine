@@ -218,7 +218,9 @@ def evaluate_transfers(
         - hit[w] * abs(TRANSFERS.hit_cost_points)
         for pid in pid_list
         for w in range(H)
-    ) + TRANSFERS.ft_terminal_value * ft[H]
+    ) + TRANSFERS.ft_terminal_value * ft[H] - pulp.lpSum(
+        TRANSFERS.transfer_switching_cost * n_trans[w] for w in range(H)
+    )
 
     solver_args = {"msg": False}
     if solver_time_limit:
