@@ -145,8 +145,25 @@ class PlayerGameweekStats(Base):
     __tablename__ = "player_gw_stats"
     # season in the key: (player_id, gameweek) repeats every season, so without
     # it multi-season backfill collides and drops rows (Phase-1 finding M5).
+    #
+    # opponent_team_id is ALSO in the key (real bug found 2026-07-29, user's
+    # own question about DGW awareness): a genuine double-gameweek player has
+    # TWO real rows here (same gameweek, different opponent) -- confirmed
+    # live against the real 2025-26 season, GW26/33/36 are real DGWs (up to
+    # 248 players affected at GW33). The old (player_id, gameweek, season)
+    # key made backfill_history.py's on_conflict_do_nothing silently DROP
+    # the second fixture's entire contribution (points/minutes/bonus/
+    # everything) -- not overwrite, just discard -- for every DGW in every
+    # historical season this table covers. This is the same P12 double-
+    # gameweek bug class already fixed in projection/assemble.py and
+    # data/ingestors/fpl_api.py, reproduced unfixed in the historical
+    # backfill itself -- the source of truth every backtest this session
+    # was built on.
     __table_args__ = (
-        UniqueConstraint("player_id", "gameweek", "season", name="uq_player_gw_season"),
+        UniqueConstraint(
+            "player_id", "gameweek", "season", "opponent_team_id",
+            name="uq_player_gw_season",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

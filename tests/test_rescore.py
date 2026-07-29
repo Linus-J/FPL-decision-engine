@@ -64,6 +64,26 @@ def test_rescore_actuals_falls_back_when_uncovered():
     assert out.set_index("player_id")["total_points_2627"].to_dict() == {1: 10, 2: 6}
 
 
+def test_rescore_actuals_applies_dgw_delta_once_not_per_row():
+    # player 1 has a genuine DGW in GW5 (two real fixture rows, matching the
+    # fixed PlayerGameweekStats schema). bonus_2627_map's value is already the
+    # WHOLE gameweek's recomputed bonus (5, per load_bonus_2627_map's DGW sum).
+    # As-played bonus summed across both rows is 2+1=3, so the correct total
+    # 26/27 points across the gameweek is (10+5) - 3 + 5 = 17, achieved by
+    # adding the +2 delta to exactly one row and leaving the other untouched.
+    df = pd.DataFrame([
+        {"player_id": 1, "gameweek": 5, "total_points": 10, "bonus": 2},
+        {"player_id": 1, "gameweek": 5, "total_points": 5, "bonus": 1},
+        {"player_id": 2, "gameweek": 5, "total_points": 6, "bonus": 0},  # single fixture, uncovered
+    ])
+    bonus_map = {(1, 5): 5}
+    out = rescore_actuals(df, bonus_map)
+    p1_rows = out[out["player_id"] == 1]["total_points_2627"].tolist()
+    assert p1_rows == [12, 5]
+    assert sum(p1_rows) == 17
+    assert out[out["player_id"] == 2]["total_points_2627"].tolist() == [6]
+
+
 def test_rescore_coverage():
     df = pd.DataFrame([
         {"player_id": 1, "gameweek": 5, "total_points": 12, "bonus": 3},

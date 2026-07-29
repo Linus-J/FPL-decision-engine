@@ -51,17 +51,43 @@ def rescore_actuals(
     """Add a ``total_points_2627`` column to a stats frame (player_id, gameweek,
     total_points, bonus required). Falls back to the as-played total where the
     map has no entry (no event coverage for that player-GW) — never invents a
-    26/27 bonus it can't compute."""
-    df = all_stats.copy()
+    26/27 bonus it can't compute.
 
-    def _rescore(row: pd.Series) -> int:
+    Real bug found 2026-07-29 (exposed by fixing the P12 double-gameweek
+    class in ``PlayerGameweekStats`` itself): a genuine DGW player now has
+    TWO rows per gameweek (real fixtures, e.g. GW26/33/36 in 2025-26), but
+    ``bonus_2627_map``'s value is already the WHOLE GAMEWEEK's recomputed
+    bonus (summed across both matches — see ``load_bonus_2627_map``).
+    Applying it to each of the two rows independently, as the previous
+    per-row version did, would double-count it once ``_actual_gw_points``
+    sums both rows' ``total_points_2627`` back together. The rescore delta
+    (new gameweek bonus minus as-played gameweek bonus) is now computed
+    once per (player, gameweek) from gameweek-level sums and applied to
+    exactly one row of that gameweek; every other row of the same
+    gameweek keeps its own unmodified ``total_points`` — summing all of a
+    gameweek's rows afterward yields the correct total either way, and
+    single-fixture gameweeks (everything except a real DGW) are
+    numerically unaffected by this change."""
+    df = all_stats.copy()
+    gw_bonus_as_played = df.groupby(["player_id", "gameweek"])["bonus"].transform("sum")
+    is_first_row_of_gw = ~df.duplicated(subset=["player_id", "gameweek"], keep="first")
+
+    def _delta(row: pd.Series, is_first: bool, gw_bonus: int) -> int:
+        if not is_first:
+            return 0
         key = (int(row["player_id"]), int(row["gameweek"]))
         b2627 = bonus_2627_map.get(key)
         if b2627 is None:
-            return int(row["total_points"])
-        return rescore_points(row["total_points"], row["bonus"], b2627)
+            return 0
+        return int(b2627) - int(gw_bonus)
 
-    df["total_points_2627"] = df.apply(_rescore, axis=1)
+    deltas = [
+        _delta(row, is_first, gw_bonus)
+        for (_, row), is_first, gw_bonus in zip(
+            df.iterrows(), is_first_row_of_gw, gw_bonus_as_played, strict=True
+        )
+    ]
+    df["total_points_2627"] = df["total_points"] + pd.Series(deltas, index=df.index)
     return df
 
 

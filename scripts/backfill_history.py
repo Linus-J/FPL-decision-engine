@@ -415,7 +415,7 @@ def _ingest_dataframe(
                     value=float(row.get("value", 0) or 0) / 10.0,
                 )
                 .on_conflict_do_nothing(
-                    index_elements=["player_id", "gameweek", "season"]
+                    index_elements=["player_id", "gameweek", "season", "opponent_team_id"]
                 )
             )
             db.execute(stmt)

@@ -125,11 +125,18 @@ def _actual_gw_points(all_stats: pd.DataFrame, gw: int, score_2627: bool = False
     """Actual points for a GW. ``score_2627`` reads the ``total_points_2627``
     column (P-RS) — required for a like-for-like comparison against a
     26/27-scored prediction (the exit gate); default stays old-rules
-    ``total_points`` for backward compatibility."""
+    ``total_points`` for backward compatibility.
+
+    Real bug found 2026-07-29 (P12 double-gameweek class, in the actual-
+    scoring path this time): a genuine DGW player has TWO rows here (same
+    gameweek, different opponent — see ``data/models.py::PlayerGameweekStats``).
+    ``dict(zip(...))`` silently kept whichever row happened to come last,
+    discarding the other fixture's real points entirely. Groups and sums
+    instead, so a DGW player's actual score reflects both matches."""
     subset = all_stats[all_stats["gameweek"] == gw]
     use_2627 = score_2627 and "total_points_2627" in subset.columns
     col = "total_points_2627" if use_2627 else "total_points"
-    return dict(zip(subset["player_id"], subset[col]))
+    return subset.groupby("player_id")[col].sum().to_dict()
 
 
 def _build_gw_projections(
