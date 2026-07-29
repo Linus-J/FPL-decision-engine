@@ -34,11 +34,32 @@ def _clears_threshold(
     return float((scenario_values >= threshold).mean()) >= min_probability
 
 
-@lru_cache(maxsize=1)
-def _get_wc_half_boundary() -> int:
+@lru_cache(maxsize=16)
+def _get_wc_half_boundary(season: str | None = None) -> int:
+    """Real bug found 2026-07-30 (user's own review: TC "should NEVER be
+    left unplayed in both halves of the season" -- it never fired even at
+    full panic strength). This query used to count ``gameweeks`` rows with
+    NO season filter at all -- harmless when the table only ever held one
+    season, but this project's own backfill covers 6 seasons at once
+    (227 total rows), so the "half boundary" silently came out as 113
+    (227 // 2) instead of 19. Every 2025-26 backtest gameweek (6-38) is
+    ``<= 113``, so the code believed it was ALWAYS still in the first
+    half, and both the no-carryover per-half chip cap and the panic/expiry
+    logic could never see a real boundary crossing within the season at
+    all. Scoping the count to the season actually being decided for fixes
+    both at once."""
     db = get_session()
     try:
-        total = db.execute(text("SELECT COUNT(*) FROM gameweeks")).scalar() or 38
+        if season is not None:
+            total = (
+                db.execute(
+                    text("SELECT COUNT(*) FROM gameweeks WHERE season = :season"),
+                    {"season": season},
+                ).scalar()
+                or 38
+            )
+        else:
+            total = db.execute(text("SELECT COUNT(*) FROM gameweeks")).scalar() or 38
         return total // 2
     except Exception:
         return CHIPS.wildcard_first_half_deadline_gw
@@ -46,10 +67,18 @@ def _get_wc_half_boundary() -> int:
         db.close()
 
 
-@lru_cache(maxsize=1)
-def _get_total_gws() -> int:
+@lru_cache(maxsize=16)
+def _get_total_gws(season: str | None = None) -> int:
     db = get_session()
     try:
+        if season is not None:
+            return (
+                db.execute(
+                    text("SELECT COUNT(*) FROM gameweeks WHERE season = :season"),
+                    {"season": season},
+                ).scalar()
+                or 38
+            )
         return db.execute(text("SELECT COUNT(*) FROM gameweeks")).scalar() or 38
     except Exception:
         return 38
@@ -57,21 +86,21 @@ def _get_total_gws() -> int:
         db.close()
 
 
-def _current_half_expiry_gw(current_gw: int) -> int:
+def _current_half_expiry_gw(current_gw: int, season: str | None = None) -> int:
     """The last gameweek ``current_gw``'s half's chips are still usable —
     the half boundary itself for the first half, the season's last GW for
     the second (see ``_chip_uses_remaining``'s no-carryover rule)."""
-    half_boundary = _get_wc_half_boundary()
-    return half_boundary if current_gw <= half_boundary else _get_total_gws()
+    half_boundary = _get_wc_half_boundary(season)
+    return half_boundary if current_gw <= half_boundary else _get_total_gws(season)
 
 
-def _panic_shrink(current_gw: int) -> float:
+def _panic_shrink(current_gw: int, season: str | None = None) -> float:
     """1.0 outside the panic window; linearly decays to
     ``CHIP_TIMING.panic_threshold_shrink`` as ``current_gw`` approaches its
     half's expiry, so a real-but-marginal chip opportunity is far more
     likely to clear its threshold before evaporating unused. See
     ``ChipTimingThresholds.panic_window_gws`` for the rationale."""
-    gws_remaining = _current_half_expiry_gw(current_gw) - current_gw
+    gws_remaining = _current_half_expiry_gw(current_gw, season) - current_gw
     window = CHIP_TIMING.panic_window_gws
     if gws_remaining < 0 or gws_remaining >= window:
         return 1.0
@@ -120,7 +149,9 @@ def chips_used_this_season(decision_log: pd.DataFrame) -> list[tuple[Chip, int]]
     return used
 
 
-def _chip_uses_remaining(chip: Chip, used: list[tuple[Chip, int]], current_gw: int) -> int:
+def _chip_uses_remaining(
+    chip: Chip, used: list[tuple[Chip, int]], current_gw: int, season: str | None = None
+) -> int:
     """FPL 2025/26+ rule (real bug found 2026-07-28 — the user's own review
     flagged only one wildcard ever getting played across a full season):
     each of the 4 chips gets exactly 1 use per half of the season (2
@@ -133,7 +164,7 @@ def _chip_uses_remaining(chip: Chip, used: list[tuple[Chip, int]], current_gw: i
     available in the other half" — worse, feeding a `set` into a
     multiplicity count silently caps every chip at one use for the whole
     season regardless of what the config says."""
-    half_boundary = _get_wc_half_boundary()
+    half_boundary = _get_wc_half_boundary(season)
     if current_gw <= half_boundary:
         uses_this_half = sum(1 for c, gw in used if c == chip and gw <= half_boundary)
     else:
@@ -165,7 +196,7 @@ def recommend_chip(
         ]["xpts"].sum()
     )
 
-    if _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, chips_used, current_gw) > 0:
+    if _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, chips_used, current_gw, season) > 0:
         tc_gain, best_id, second_id = _evaluate_triple_captain(
             current_squad_ids, projections, current_gw
         )
@@ -173,13 +204,15 @@ def recommend_chip(
         if season is not None and best_id is not None and second_id is not None:
             tc_scenarios = gain_distribution(season, current_gw, [best_id], [second_id])
         if _clears_threshold(
-            tc_gain, CHIP_TIMING.triple_captain_min_gain * _panic_shrink(current_gw), tc_scenarios,
+            tc_gain,
+            CHIP_TIMING.triple_captain_min_gain * _panic_shrink(current_gw, season),
+            tc_scenarios,
             CHIP_TIMING.triple_captain_min_payoff_probability,
         ):
             logger.info("TC recommended: gain=%.2f", tc_gain)
             return ChipRecommendation(Chip.TRIPLE_CAPTAIN, f"TC gain {tc_gain:.1f} xPts", tc_gain)
 
-    bb_remaining = _chip_uses_remaining(Chip.BENCH_BOOST, chips_used, current_gw) > 0
+    bb_remaining = _chip_uses_remaining(Chip.BENCH_BOOST, chips_used, current_gw, season) > 0
     if bb_remaining and bench_xpts is not None:
         dgw_active = bool(dgw_gws and current_gw in dgw_gws)
         if dgw_active:
@@ -190,7 +223,7 @@ def recommend_chip(
                     bb_scenarios = load_scenario_totals(season, current_gw, bench_ids)
             if _clears_threshold(
                 bench_xpts,
-                CHIP_TIMING.bench_boost_min_bench_xpts * _panic_shrink(current_gw),
+                CHIP_TIMING.bench_boost_min_bench_xpts * _panic_shrink(current_gw, season),
                 bb_scenarios,
                 CHIP_TIMING.bench_boost_min_payoff_probability,
             ):
@@ -201,7 +234,7 @@ def recommend_chip(
                     bench_xpts,
                 )
 
-    fh_remaining = _chip_uses_remaining(Chip.FREE_HIT, chips_used, current_gw) > 0
+    fh_remaining = _chip_uses_remaining(Chip.FREE_HIT, chips_used, current_gw, season) > 0
     dgw_active_for_fh = bool(dgw_gws and current_gw in dgw_gws)
     # 2026-07-30 (user's own review: "the free hit is usually handy during
     # double game weeks where it is not worth triple captaining") -- Free
@@ -239,7 +272,7 @@ def recommend_chip(
             )
         if _clears_threshold(
             gain,
-            CHIP_TIMING.free_hit_single_gw_gain_threshold * _panic_shrink(current_gw),
+            CHIP_TIMING.free_hit_single_gw_gain_threshold * _panic_shrink(current_gw, season),
             fh_scenarios,
             CHIP_TIMING.free_hit_min_payoff_probability,
         ):
@@ -251,7 +284,7 @@ def recommend_chip(
                 Chip.FREE_HIT, f"{trigger} free hit gain {gain:.1f} xPts", gain
             )
 
-    wc_remaining = _chip_uses_remaining(Chip.WILDCARD, chips_used, current_gw)
+    wc_remaining = _chip_uses_remaining(Chip.WILDCARD, chips_used, current_gw, season)
     if wc_remaining > 0 and squad_age_gws >= CHIP_TIMING.wildcard_min_managed_gws:
         wc_solution = optimise_squad(
             projections=projections,
@@ -274,7 +307,7 @@ def recommend_chip(
             wc_scenarios = gain_distribution(season, gws, wc_squad_ids, current_squad_ids)
         if _clears_threshold(
             wc_gain,
-            CHIP_TIMING.wildcard_pts_gain_threshold * _panic_shrink(current_gw),
+            CHIP_TIMING.wildcard_pts_gain_threshold * _panic_shrink(current_gw, season),
             wc_scenarios,
             CHIP_TIMING.wildcard_min_payoff_probability,
         ):
@@ -285,20 +318,25 @@ def recommend_chip(
                 wc_gain,
             )
 
-    # Last resort (user's own words: "at worst the default behaviour is to
+    # Last resort (user's own words: TC "should NEVER be left unplayed in
+    # both halves of the season" -- "at worst the default behaviour is to
     # panic and use the triple captain on the last day before the chips
     # reset or the season ends"). Reached only once every threshold above
     # -- already shrunk by _panic_shrink for the whole panic window -- has
-    # failed to clear even on this half's final gameweek. Triple Captain is
-    # the one chip that's close to always worth SOMETHING (it just doubles
-    # whatever captain pick this week's decision already makes), unlike
-    # Free Hit/Bench Boost/Wildcard, which need a real structural
-    # opportunity to be worth anything at all -- forcing one of those
-    # instead could easily be a genuine net negative, forcing TC essentially
-    # never is.
+    # failed to clear. Triggers on the FINAL TWO gameweeks of the half, not
+    # just the literal last one, so a single skipped/missing decision point
+    # right at the boundary (a postponement, a data gap) can't silently
+    # cost the whole half's chip -- once forced, ``chips_used`` marks it
+    # used immediately, so this can't double-fire across both gameweeks.
+    # Triple Captain is the one chip that's close to always worth SOMETHING
+    # (it just doubles whatever captain pick this week's decision already
+    # makes), unlike Free Hit/Bench Boost/Wildcard, which need a real
+    # structural opportunity to be worth anything at all -- forcing one of
+    # those instead could easily be a genuine net negative, forcing TC
+    # essentially never is.
     if (
-        current_gw == _current_half_expiry_gw(current_gw)
-        and _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, chips_used, current_gw) > 0
+        current_gw >= _current_half_expiry_gw(current_gw, season) - 1
+        and _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, chips_used, current_gw, season) > 0
     ):
         tc_gain, best_id, _second_id = _evaluate_triple_captain(
             current_squad_ids, projections, current_gw

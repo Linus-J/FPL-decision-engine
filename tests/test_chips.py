@@ -16,8 +16,13 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from data.models import Base, ProjectionSample
+from data.models import Base, Gameweek, ProjectionSample
 from optimiser import captaincy, chips
+
+# Captured at import time, before the autouse `_fixed_half_boundary` fixture
+# below ever monkeypatches `chips._get_wc_half_boundary` -- lets one test
+# exercise the REAL (season-scoped) implementation against a real DB.
+_real_get_wc_half_boundary = chips._get_wc_half_boundary
 
 
 @pytest.fixture
@@ -239,6 +244,20 @@ def test_recommend_chip_panic_forces_tc_on_expiry_gw_when_nothing_else_clears():
     assert "Panic" in rec.reason
 
 
+def test_recommend_chip_panic_forces_tc_one_gw_before_expiry_too():
+    # Robustness margin: the force triggers on the final TWO gameweeks of
+    # the half (not just the literal last one), so a single skipped/missing
+    # decision point right at the boundary can't cost the whole half's chip.
+    projections = _minimal_projections(18, best_xpts=5.0, second_xpts=4.9)  # gain=0.1, tiny
+    rec = chips.recommend_chip(
+        current_gw=18, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
+        available_budget=100.0, free_transfers=1, season=None,
+        **_skip_bb_fh_wc_kwargs(current_gw=18),
+    )
+    assert rec.chip == chips.Chip.TRIPLE_CAPTAIN
+    assert "Panic" in rec.reason
+
+
 def test_recommend_chip_no_panic_force_away_from_expiry():
     projections = _minimal_projections(10, best_xpts=5.0, second_xpts=4.0)  # gain=1.0
     rec = chips.recommend_chip(
@@ -312,8 +331,40 @@ def test_recommend_chip_free_hit_does_not_trigger_without_dgw_or_bgw():
 @pytest.fixture(autouse=True)
 def _fixed_half_boundary(monkeypatch):
     chips._get_wc_half_boundary.cache_clear()
-    monkeypatch.setattr(chips, "_get_wc_half_boundary", lambda: 19)
+    monkeypatch.setattr(chips, "_get_wc_half_boundary", lambda season=None: 19)
     yield
+
+
+def test_get_wc_half_boundary_is_scoped_by_season_not_global(tmp_path, monkeypatch):
+    # Real bug found 2026-07-30 (user's own review: TC "should NEVER be left
+    # unplayed in both halves of the season" -- it turned out to never fire
+    # even at full panic strength). This query used to have NO season
+    # filter, so with multiple seasons' gameweeks all living in the same
+    # table (this project's own reality -- 6 backfilled seasons, 227 total
+    # rows), the boundary came out as 113 (227 // 2) instead of 19. Every
+    # 2025-26 backtest gameweek (6-38) is <= 113, so the code believed it
+    # was ALWAYS still the first half and could never see a real boundary
+    # crossing -- or an expiry -- within the season at all.
+    engine = create_engine(f"sqlite:///{tmp_path / 'half_scoped.db'}")
+    Base.metadata.create_all(bind=engine)
+    Local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(chips, "get_session", lambda: Local())
+    s = Local()
+    now = pd.Timestamp.now("UTC").to_pydatetime()
+    for season, n_gws in [("2024-25", 38), ("2025-26", 38), ("2026-27", 38)]:
+        s.add_all([
+            Gameweek(id=gw, season=season, name=f"GW{gw}", deadline_time=now)
+            for gw in range(1, n_gws + 1)
+        ])
+    s.commit()
+    s.close()
+
+    _real_get_wc_half_boundary.cache_clear()
+    try:
+        assert _real_get_wc_half_boundary(season="2025-26") == 19
+        assert _real_get_wc_half_boundary(season=None) == (38 * 3) // 2  # old, unscoped behaviour
+    finally:
+        _real_get_wc_half_boundary.cache_clear()
 
 
 def test_chip_uses_remaining_unused_chip_has_one_available():
