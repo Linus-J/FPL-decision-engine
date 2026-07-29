@@ -772,6 +772,92 @@ dip; Haaland's sale more debatable, ordinary star-striker variance). Flagged for
 likely a retention-inertia term in the transfer ILP objective, distinct from the curse-shrinkage fix
 (P3-7) which addresses selection bias, not switching cost.
 
+### Chip limits, report display, and a systematic worst-case audit (2026-07-29)
+
+User reviewed the regenerated squad-trace artifact again and raised three more things: the captain's
+row didn't look doubled in the report, only one Wildcard ever got played across a full season when
+there should be more, and asked for the biggest xPts-vs-actual busts to be scrutinised individually
+against real match/model data rather than assumed to all be bugs.
+
+**Captain-doubling: confirmed report-only, not a calculation bug.** `scripts/backtest.py::_score_squad`
+already multiplies the captain's points correctly — spot-checked GW6 by hand: 86 (naive sum of the
+displayed starting-XI column) + 16 (Haaland's raw score) = 102, exactly matching the officially
+reported `actual_pts` for that gameweek. `scripts/render_squad_trace.py`'s table just displayed the
+RAW score for every player including the captain, which is why summing it looked short. Fixed the
+display to show the actually-credited (2x, or 3x on a Triple Captain week) points instead.
+
+**Chip limits: a real, confirmed bug — verified against the real rule via web search, not assumed.**
+The codebase's own comment claimed 2025/26 gave 2x Wildcard but only 1x each of Free Hit/Bench
+Boost/Triple Captain for the whole season. Confirmed via the Premier League's own 2025/26 changes
+announcement that this is wrong: **the real rule is 1 use of EACH of the 4 chips per half of the
+season (8 total), no carryover.** Worse, even the wildcard's "2 total" was broken in practice:
+`chips_used` was a `set[Chip]`, which structurally cannot represent "used twice" — `_wildcards_remaining`'s
+own counting logic could only ever see 0 or 1 regardless of actual play count. Generalised into
+`_chip_uses_remaining(chip, used, current_gw)` operating on `list[tuple[Chip, int]]` (chip +
+gameweek played), applied uniformly to all 4 chips. Also found and fixed a second, unrelated,
+pre-existing bug while touching this code: the live-agent path's `chips_used_this_season` read a
+`chip_played` column `decision_log` never had (chip decisions are logged as `decision_type="chip"`
+with the chip name inside the JSON `details` string) — this would have `KeyError`'d the first time it
+ran against any real accumulated log; it only ever "worked" in testing because an empty log
+short-circuits before touching the column.
+
+**Re-ran the gate after the chip fix — the season total didn't change at all** (still v2=1531,
+v1=1662, frozen=1502, byte-identical to before the fix). Checked why: only one Wildcard was ever
+actually played this whole run (GW13), and Free Hit/Bench Boost/Triple Captain were never
+recommended even once. The fix is verified correct at the unit level (9 new tests covering exactly
+the "used once in H1, available again in H2" and "no carryover" cases) and now genuinely *allows* a
+second use of every chip — but the *recommendation* thresholds
+(`wildcard_pts_gain_threshold=25.0` and equivalents for the other three) apparently never clear a
+second time in this particular season's data. `_clears_threshold`'s scenario-probability gate (P3-5)
+can't be the cause during backtesting specifically — it always falls back to the plain point-estimate
+rule here, since the walk-forward backtest never persists MC samples (per its own docstring). Flagged
+as a separate, deferred follow-up: is the threshold calibration too conservative, or is a second
+profitable chip window genuinely rare in this data? Not yet distinguished.
+
+**Systematic worst-case audit, using real match + model data per the user's request.** Ranked all 33
+gameweeks by `predicted − actual` and dug into the three worst busts (GW14 +35.7, GW19 +37.2, GW23
++32.1) at the individual-player level, pulling real `player_gw_stats` minutes/cards for every player
+driving each gap — the same forensic method already used for Gabriel/Ekitiké, now applied
+systematically rather than to whichever cases happened to be visually spotted.
+
+- **GW23 (worst single case after GW19/14): entirely normal scoring variance, not a bug.** Every
+  flagged player (Wirtz, Garner, Rice, Thiago, Haaland) played 79–90 real minutes, genuinely fit and
+  starting — they simply all had quiet returns (1-2 real points each) in the same week by chance.
+  Forcing a "bug" narrative onto this would be dishonest; FPL scoring is inherently spiky, and even a
+  well-calibrated model will occasionally see several correctly-selected players go quiet together.
+- **GW14 and GW19: a mix — and partly explained by a real, non-recurring scheduling event the user
+  flagged.** De Ligt, Van de Ven (GW14) and Wieffer/Van den Berg (GW18-19, multi-week blanks) were
+  each a first-instance zero with no prior signal. User pointed out AFCON/AFC Cup disruption during
+  25/26 as a likely cause — verified via web search: AFCON 2025 ran 21 Dec 2025 - 18 Jan 2026
+  (moved into the PL calendar specifically for this edition), with call-up players released from
+  8 Dec, missing 4-6 domestic matches — this maps almost exactly onto GW18 (26 Dec) and GW19
+  (30 Dec), squarely inside the flagged window, and "nearly a fifth of all PL players" (32 total,
+  6 from Sunderland alone) were affected league-wide. Not confirmed that the SPECIFIC 4 players
+  checked here were among them (their names don't obviously read as AFCON-eligible nationalities,
+  and we don't track player nationality in this DB to check directly) — but the timing overlap is
+  exact and this is a real, verified explanation for at least part of the league-wide disruption in
+  that window, not purely "unpredictable injury." **Per the user: this will NOT recur for 26/27**
+  (AFCON is biennial, next edition 2027) — so this is a real, one-off explanation worth recording,
+  not a gap worth building permanent international-call-up tracking for. The rest of each
+  gameweek's gap (Mbeumo, Gakpo, Mateta at GW14; O'Reilly, Haaland, Woltemade at GW19) is just
+  healthy players having quiet weeks, not a further bug.
+- Confirmed none of these three worst-case gameweeks were blank gameweeks at the fixture level (all
+  20 teams had a real fixture each time) — ruled out before concluding it was player-level variance.
+
+**Re-examined captaincy with the current (curse-shrinkage + injury-reaction) fixes applied — the
+picture has meaningfully improved.** Haaland is captained 6 times now (up from 1 in the very first
+post-shrinkage run), Gabriel down to just once (the unpredictable GW11 instance). The persisting
+"cheap defender" pattern (O'Reilly ×4, Dorgu ×1) is no longer obviously bad on inspection: O'Reilly's
+4 real returns split exactly 2 good (12, 12 pts) / 2 poor (2, 2 pts) — a genuine coinflip, not a
+one-sided disaster — and **Thiago's 11-gameweek captaincy run from GW27 onward averaged ~12.2 real
+points/week** (8,16,12,20,14,26,10,2,18,4,4) — a strong, justified result, not a suspicious pattern.
+The DefCon-floor mechanism documented earlier this session is a real, legitimate scoring effect, not
+a bug, and the data now shows mixed-to-good real outcomes from leaning on it rather than uniformly
+bad ones.
+
+New tests: `tests/test_chips.py` (+9), `tests/test_render_squad_trace.py` (+4, new file). Suite
+332/332, lint-clean on new code. Commits: TBD.
+
 ## Open sequencing question
 P3-0/P3-1 (live-serving + sample persistence) and P3-2 (EO ingestion) are independent —
 neither blocks the other. P3-3 needs both. Objective v1 (linear, additive terms) is
