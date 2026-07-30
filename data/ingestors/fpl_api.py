@@ -13,11 +13,18 @@ from data.models import (
     PlayerGameweekStats,
     PlayerStateSnapshot,
     Team,
+    TeamSeasonStrength,
 )
 
 logger = logging.getLogger(__name__)
 
 FPL_BASE = "https://fantasy.premierleague.com/api"
+
+_STRENGTH_COLS = (
+    "strength_overall_home", "strength_overall_away",
+    "strength_attack_home", "strength_attack_away",
+    "strength_defence_home", "strength_defence_away",
+)
 
 
 async def _get(session: aiohttp.ClientSession, path: str) -> dict | list:
@@ -51,7 +58,7 @@ def _position_name(element_type: int) -> str:
     return {1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}.get(element_type, "UNK")
 
 
-def upsert_teams(bootstrap: dict) -> None:
+def upsert_teams(bootstrap: dict, season: str = "2026-27") -> None:
     db = get_session()
     try:
         for t in bootstrap["teams"]:
@@ -87,6 +94,34 @@ def upsert_teams(bootstrap: dict) -> None:
             db.execute(stmt)
         db.commit()
         logger.info("Upserted %d teams", len(bootstrap["teams"]))
+    finally:
+        db.close()
+
+    # Real gap found 2026-07-30 (the user's own live-smoke-test follow-up):
+    # `team_season_strength` (the season-scoped table projection/features.py's
+    # FDR joins actually read) is only ever written by
+    # scripts/backfill_history.py, which targets the fixed list of PAST
+    # seasons it backfills -- nothing in the live sync path ever wrote a row
+    # for the CURRENT season, so every live FDR feature silently fell back
+    # to the neutral 1200 default, permanently, for the whole live-serving
+    # path. `teams` (this function, above) already gets the real live
+    # strength values every sync; this just also copies them into the
+    # season-scoped table under the current season.
+    db = get_session()
+    try:
+        for t in bootstrap["teams"]:
+            row = {col: t[col] for col in _STRENGTH_COLS}
+            stmt = (
+                insert(TeamSeasonStrength)
+                .values(season=season, team_id=t["id"], code=t.get("code"), **row)
+                .on_conflict_do_update(
+                    index_elements=["season", "team_id"],
+                    set_=row,
+                )
+            )
+            db.execute(stmt)
+        db.commit()
+        logger.info("Upserted %d team_season_strength rows for %s", len(bootstrap["teams"]), season)
     finally:
         db.close()
 
@@ -396,6 +431,23 @@ def _accumulate_gw_history(history: list[dict]) -> dict[int, dict]:
     return by_gw
 
 
+# Real bug found 2026-07-30 (a regression from THIS session's own earlier
+# fix): PlayerGameweekStats' unique constraint was widened from
+# (player_id, gameweek, season) to include opponent_team_id, so both of a
+# DGW's fixtures could be stored (see data/models.py). This function
+# deliberately pre-sums a DGW into ONE row (_accumulate_gw_history, a
+# different, already-correct fix for the SAME underlying DGW bug class,
+# from earlier still) and never set opponent_team_id at all -- meaning
+# every row here got the column's NULL default, and SQLite never treats
+# two NULLs as equal for uniqueness, so `on_conflict_do_update` targeting
+# the OLD 3-column shape no longer matches any real constraint, and even a
+# fixed 4-column target would insert a fresh duplicate row every single
+# re-run instead of updating. A fixed sentinel (0 -- never a real FPL team
+# id) keeps this path's existing summed-row design and its tests intact
+# while making the conflict target real again.
+_NO_OPPONENT_SENTINEL = 0
+
+
 async def ingest_player_history(
     player_fpl_id: int, player_db_id: int, season: str = "2026-27"
 ) -> None:
@@ -404,11 +456,12 @@ async def ingest_player_history(
         data = await fetch_player_summary(player_fpl_id)
         by_gw = _accumulate_gw_history(data.get("history", []))
         for gw, vals in by_gw.items():
+            vals = {**vals, "opponent_team_id": _NO_OPPONENT_SENTINEL}
             stmt = (
                 insert(PlayerGameweekStats)
                 .values(player_id=player_db_id, gameweek=gw, season=season, **vals)
                 .on_conflict_do_update(
-                    index_elements=["player_id", "gameweek", "season"],
+                    index_elements=["player_id", "gameweek", "season", "opponent_team_id"],
                     set_=vals,
                 )
             )
@@ -422,7 +475,7 @@ async def run_full_ingest(season: str = "2026-27") -> None:
     logger.info("Starting full FPL ingest for season %s", season)
 
     bootstrap = await fetch_bootstrap()
-    upsert_teams(bootstrap)
+    upsert_teams(bootstrap, season)
     upsert_gameweeks(bootstrap, season)
     upsert_players(bootstrap)
     # Append-only point-in-time capture (source of truth for leakage-free reads).
