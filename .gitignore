@@ -21,7 +21,7 @@ build/
 *.egg
 
 # Database
-*.db
+*.db*
 *.db-wal
 *.db-shm
 
