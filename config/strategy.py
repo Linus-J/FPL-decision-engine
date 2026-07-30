@@ -273,7 +273,25 @@ class ChipTimingThresholds:
 
     bench_boost_min_bench_xpts: float = 20.0
 
-    triple_captain_min_gain: float = 6.0
+    # 2026-07-30 (user's own review: "how can it ever be worth not playing
+    # [TC]? It is only negative if the player gets < 0 points"). Rebased
+    # from a GAP (best captain xPts minus the second-best) to the captain's
+    # own ABSOLUTE projected points — TC doesn't change who you captain,
+    # only the multiplier on whoever you'd already pick, so its real value
+    # is one extra copy of THEIR points, not how far ahead they are of the
+    # alternative. Low floor: clears for almost any healthy, nailed-on
+    # captain pick; only declines on a genuinely weak/uncertain one
+    # (rotation risk, tough fixture). Untuned starting value pending
+    # backtesting, same convention as this session's other heuristic
+    # constants.
+    triple_captain_min_gain: float = 4.0
+
+    # Multiplies (raises) the TC bar above when a DGW is visible within the
+    # caller's dgw_gws lookahead but hasn't arrived yet — the real
+    # remaining tradeoff once TC's own EV is ~always positive is scarcity
+    # (only 1 use per half, no carryover): is this week worth spending it
+    # on, versus a likely-bigger double-fixture haul coming up this half.
+    triple_captain_dgw_wait_multiplier: float = 2.5
 
     # P3-5: minimum P(gain >= 0) over real persisted MC scenarios (P3-1)
     # required, IN ADDITION to the point-estimate thresholds above, before a

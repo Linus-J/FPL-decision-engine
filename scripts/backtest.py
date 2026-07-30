@@ -20,7 +20,7 @@ from data.db import get_session
 from optimiser.chips import Chip, recommend_chip
 from optimiser.squad import STARTING_MAX, STARTING_MIN, optimise_squad, optimise_starting_xi
 from optimiser.transfers import evaluate_transfers
-from projection import assemble
+from projection import assemble, cold_start
 from projection.minutes_model import train as train_minutes
 from projection.rescore import load_bonus_2627_map, rescore_actuals, rescore_coverage_relevant
 
@@ -405,14 +405,13 @@ def run_backtest(
     pre_free_hit_squad: list[int] = []
     squad_age_gws = 0
 
+    cold_start_prior: pd.DataFrame | None = None
+
     for gw in available_gws:
         if gw < start_gw or gw > end_gw:
             continue
 
         history = all_stats[all_stats["gameweek"] < gw].copy()
-        if history.empty:
-            logger.info("GW%d: not enough history, skipping", gw)
-            continue
 
         # State as-of the target GW's deadline (snapshot for GW g is stamped
         # deadline(g) − ε, so it carries cumulative-through-(g-1) stats).
@@ -421,24 +420,61 @@ def run_backtest(
             logger.warning("GW%d: no player snapshot, skipping", gw)
             continue
 
-        if len(history) < 50 or history["minutes"].nunique() < 2:
-            logger.info("GW%d: insufficient training data (%d rows), skipping", gw, len(history))
-            continue
-
-        logger.info("GW%d: training minutes model on %d rows...", gw, len(history))
-        minutes_model = train_minutes(df_override=history, save=False, fast=True)
-
-        projections = _build_gw_projections(
-            history=history,
-            players=players,
-            minutes_model=minutes_model,
-            target_gw=gw,
-            horizon=horizon,
-            all_stats=all_stats,
-            match_odds=match_odds,
-            defcon_events=defcon_events,
-            defcon_field_shares=defcon_field_shares,
+        use_cold_start = (
+            history.empty
+            or history["gameweek"].nunique() < 2  # lag features need a prior GW to shift from
+            or len(history) < 50
+            or history["minutes"].nunique() < 2
         )
+        if use_cold_start:
+            # 2026-07-30 (user's own request: "we need to have and test a
+            # method to start from GW1... for the realtime 26/27 season
+            # which is approaching"). Early gameweeks with no/thin current-
+            # season history used to be skipped outright — a start_gw=1 run
+            # silently lost every early gameweek's decision AND its actual
+            # points, not just its model training. Falls back to the same
+            # prior-season-carryover projection cold_start.py already uses
+            # for the live GW1 squad build (T7), repeated flat across the
+            # horizon window (no fixture-specific signal exists this early
+            # either way) so the SAME decision pipeline below (initial
+            # build / transfer evaluation / chip gating / scoring) runs
+            # completely unchanged regardless of projection source — GW6+
+            # behaviour (already gate-tested) is byte-identical, since
+            # `use_cold_start` is always False once real history exists.
+            if cold_start_prior is None:
+                cold_start_prior = cold_start.load_prior_season_features(
+                    cold_start.prior_season_of(season)
+                )
+            base_proj = cold_start.project_cold_start(players, cold_start_prior, target_gw=gw)
+            projections = pd.concat(
+                [base_proj.assign(gameweek=g) for g in range(gw, gw + horizon)],
+                ignore_index=True,
+            )
+            unavailable = {
+                int(pid) for pid, status in zip(players["id"], players.get("status", []))
+                if status in ("i", "u", "s")
+            }
+            if unavailable:
+                mask = projections["player_id"].isin(unavailable)
+                projections.loc[mask, ["xpts", "start_probability"]] = 0.0
+            logger.info(
+                "GW%d: cold-start projections (%d current-season history rows)", gw, len(history)
+            )
+        else:
+            logger.info("GW%d: training minutes model on %d rows...", gw, len(history))
+            minutes_model = train_minutes(df_override=history, save=False, fast=True)
+
+            projections = _build_gw_projections(
+                history=history,
+                players=players,
+                minutes_model=minutes_model,
+                target_gw=gw,
+                horizon=horizon,
+                all_stats=all_stats,
+                match_odds=match_odds,
+                defcon_events=defcon_events,
+                defcon_field_shares=defcon_field_shares,
+            )
 
         if projections.empty:
             logger.warning("GW%d: no projections generated, skipping", gw)

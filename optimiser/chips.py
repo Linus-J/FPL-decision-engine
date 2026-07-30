@@ -188,6 +188,14 @@ def recommend_chip(
 ) -> ChipRecommendation:
     dgw_gws = dgw_gws or set()
     horizon = CHIP_TIMING.wildcard_eval_horizon_gws
+    dgw_active_now = bool(dgw_gws and current_gw in dgw_gws)
+    # Only within whatever short lookahead the caller's dgw_gws already
+    # covers (typically the transfer-planning horizon) -- a real but
+    # narrow-sighted approximation of "is a DGW coming up later this half",
+    # not a full scan to the half boundary.
+    dgw_visible_ahead = bool(
+        dgw_gws and not dgw_active_now and any(g > current_gw for g in dgw_gws)
+    )
 
     gws = sorted(projections["gameweek"].unique())[:horizon]
     current_xpts = float(
@@ -196,59 +204,65 @@ def recommend_chip(
         ]["xpts"].sum()
     )
 
-    if _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, chips_used, current_gw, season) > 0:
+    def _try_tc() -> ChipRecommendation | None:
+        if _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, chips_used, current_gw, season) <= 0:
+            return None
         tc_gain, best_id, second_id = _evaluate_triple_captain(
             current_squad_ids, projections, current_gw
         )
         tc_scenarios = pd.Series(dtype=float)
-        if season is not None and best_id is not None and second_id is not None:
-            tc_scenarios = gain_distribution(season, current_gw, [best_id], [second_id])
-        if _clears_threshold(
-            tc_gain,
-            CHIP_TIMING.triple_captain_min_gain * _panic_shrink(current_gw, season),
-            tc_scenarios,
-            CHIP_TIMING.triple_captain_min_payoff_probability,
+        if season is not None and best_id is not None:
+            tc_scenarios = load_scenario_totals(season, current_gw, [best_id])
+        threshold = CHIP_TIMING.triple_captain_min_gain * _panic_shrink(current_gw, season)
+        if dgw_visible_ahead:
+            # 2026-07-30 (user's own review): TC's own marginal value is
+            # basically always positive (see _evaluate_triple_captain), so
+            # the real question isn't "is it worth it" but "is THIS week
+            # worth spending one of only 2 season uses on, versus a coming
+            # DGW captain who'll likely return far more from two fixtures."
+            # Raises the bar rather than blocking outright -- an
+            # exceptional normal week can still justify using it now.
+            threshold *= CHIP_TIMING.triple_captain_dgw_wait_multiplier
+        if not _clears_threshold(
+            tc_gain, threshold, tc_scenarios, CHIP_TIMING.triple_captain_min_payoff_probability
         ):
-            logger.info("TC recommended: gain=%.2f", tc_gain)
-            return ChipRecommendation(Chip.TRIPLE_CAPTAIN, f"TC gain {tc_gain:.1f} xPts", tc_gain)
+            return None
+        logger.info("TC recommended: captain xPts=%.2f", tc_gain)
+        return ChipRecommendation(Chip.TRIPLE_CAPTAIN, f"TC captain xPts {tc_gain:.1f}", tc_gain)
 
-    bb_remaining = _chip_uses_remaining(Chip.BENCH_BOOST, chips_used, current_gw, season) > 0
-    if bb_remaining and bench_xpts is not None:
-        dgw_active = bool(dgw_gws and current_gw in dgw_gws)
-        if dgw_active:
-            bb_scenarios = pd.Series(dtype=float)
-            if season is not None:
-                bench_ids = _bench_player_ids(current_squad_ids, projections, current_gw)
-                if bench_ids:
-                    bb_scenarios = load_scenario_totals(season, current_gw, bench_ids)
-            if _clears_threshold(
-                bench_xpts,
-                CHIP_TIMING.bench_boost_min_bench_xpts * _panic_shrink(current_gw, season),
-                bb_scenarios,
-                CHIP_TIMING.bench_boost_min_payoff_probability,
-            ):
-                logger.info("BB recommended: bench_xpts=%.2f in DGW%d", bench_xpts, current_gw)
-                return ChipRecommendation(
-                    Chip.BENCH_BOOST,
-                    f"DGW bench xPts {bench_xpts:.1f} exceeds threshold",
-                    bench_xpts,
-                )
+    def _try_bb() -> ChipRecommendation | None:
+        if _chip_uses_remaining(Chip.BENCH_BOOST, chips_used, current_gw, season) <= 0:
+            return None
+        if bench_xpts is None or not dgw_active_now:
+            return None
+        bb_scenarios = pd.Series(dtype=float)
+        if season is not None:
+            bench_ids = _bench_player_ids(current_squad_ids, projections, current_gw)
+            if bench_ids:
+                bb_scenarios = load_scenario_totals(season, current_gw, bench_ids)
+        threshold = CHIP_TIMING.bench_boost_min_bench_xpts * _panic_shrink(current_gw, season)
+        if not _clears_threshold(
+            bench_xpts, threshold, bb_scenarios, CHIP_TIMING.bench_boost_min_payoff_probability
+        ):
+            return None
+        logger.info("BB recommended: bench_xpts=%.2f in DGW%d", bench_xpts, current_gw)
+        return ChipRecommendation(
+            Chip.BENCH_BOOST, f"DGW bench xPts {bench_xpts:.1f} exceeds threshold", bench_xpts
+        )
 
-    fh_remaining = _chip_uses_remaining(Chip.FREE_HIT, chips_used, current_gw, season) > 0
-    dgw_active_for_fh = bool(dgw_gws and current_gw in dgw_gws)
-    # 2026-07-30 (user's own review: "the free hit is usually handy during
-    # double game weeks where it is not worth triple captaining") -- Free
-    # Hit used to only ever trigger on a BGW blank-filling rationale. A DGW
-    # is the other classic real-world Free Hit case: load the WHOLE XI with
-    # double-fixture players for one week without permanently restructuring
-    # the squad, when no single player's TC gain (evaluated above) is big
-    # enough on its own to justify Triple Captain instead.
-    if fh_remaining and (bgw_affected_count >= 5 or dgw_active_for_fh):
+    def _try_fh() -> ChipRecommendation | None:
+        if _chip_uses_remaining(Chip.FREE_HIT, chips_used, current_gw, season) <= 0:
+            return None
+        # 2026-07-30 (user's own review: "the free hit is usually handy
+        # during double game weeks where it is not worth triple
+        # captaining") -- Free Hit used to only ever trigger on a BGW
+        # blank-filling rationale. A DGW is the other classic real-world
+        # Free Hit case: load the WHOLE XI with double-fixture players for
+        # one week without permanently restructuring the squad.
+        if not (bgw_affected_count >= 5 or dgw_active_now):
+            return None
         fh_solution = optimise_squad(
-            projections=projections,
-            players=players,
-            budget=available_budget,
-            horizon=1,
+            projections=projections, players=players, budget=available_budget, horizon=1
         )
         fh_gws = sorted(projections["gameweek"].unique())[:1]
         fh_squad_ids = fh_solution.squad["id"].tolist()
@@ -267,56 +281,61 @@ def recommend_chip(
         gain = fh_xpts - current_gw_xpts
         fh_scenarios = pd.Series(dtype=float)
         if season is not None and fh_gws == [current_gw]:
-            fh_scenarios = gain_distribution(
-                season, current_gw, fh_squad_ids, current_squad_ids
-            )
-        if _clears_threshold(
-            gain,
-            CHIP_TIMING.free_hit_single_gw_gain_threshold * _panic_shrink(current_gw, season),
-            fh_scenarios,
-            CHIP_TIMING.free_hit_min_payoff_probability,
+            fh_scenarios = gain_distribution(season, current_gw, fh_squad_ids, current_squad_ids)
+        threshold = CHIP_TIMING.free_hit_single_gw_gain_threshold * _panic_shrink(
+            current_gw, season
+        )
+        if not _clears_threshold(
+            gain, threshold, fh_scenarios, CHIP_TIMING.free_hit_min_payoff_probability
         ):
-            trigger = "DGW" if dgw_active_for_fh and bgw_affected_count < 5 else "BGW"
-            logger.info(
-                "FH recommended: gain=%.2f (%s, blanks=%d)", gain, trigger, bgw_affected_count
-            )
-            return ChipRecommendation(
-                Chip.FREE_HIT, f"{trigger} free hit gain {gain:.1f} xPts", gain
-            )
+            return None
+        trigger = "DGW" if dgw_active_now and bgw_affected_count < 5 else "BGW"
+        logger.info("FH recommended: gain=%.2f (%s, blanks=%d)", gain, trigger, bgw_affected_count)
+        return ChipRecommendation(Chip.FREE_HIT, f"{trigger} free hit gain {gain:.1f} xPts", gain)
 
-    wc_remaining = _chip_uses_remaining(Chip.WILDCARD, chips_used, current_gw, season)
-    if wc_remaining > 0 and squad_age_gws >= CHIP_TIMING.wildcard_min_managed_gws:
+    def _try_wc() -> ChipRecommendation | None:
+        if _chip_uses_remaining(Chip.WILDCARD, chips_used, current_gw, season) <= 0:
+            return None
+        if squad_age_gws < CHIP_TIMING.wildcard_min_managed_gws:
+            return None
         wc_solution = optimise_squad(
-            projections=projections,
-            players=players,
-            budget=available_budget,
-            horizon=horizon,
-            current_squad_ids=current_squad_ids,
-            free_transfers=15,
+            projections=projections, players=players, budget=available_budget, horizon=horizon,
+            current_squad_ids=current_squad_ids, free_transfers=15,
         )
         wc_squad_ids = wc_solution.squad["id"].tolist()
         wc_gws_xpts = float(
             projections[
-                projections["gameweek"].isin(gws)
-                & projections["player_id"].isin(wc_squad_ids)
+                projections["gameweek"].isin(gws) & projections["player_id"].isin(wc_squad_ids)
             ]["xpts"].sum()
         )
         wc_gain = wc_gws_xpts - current_xpts
         wc_scenarios = pd.Series(dtype=float)
         if season is not None:
             wc_scenarios = gain_distribution(season, gws, wc_squad_ids, current_squad_ids)
-        if _clears_threshold(
-            wc_gain,
-            CHIP_TIMING.wildcard_pts_gain_threshold * _panic_shrink(current_gw, season),
-            wc_scenarios,
-            CHIP_TIMING.wildcard_min_payoff_probability,
+        threshold = CHIP_TIMING.wildcard_pts_gain_threshold * _panic_shrink(current_gw, season)
+        if not _clears_threshold(
+            wc_gain, threshold, wc_scenarios, CHIP_TIMING.wildcard_min_payoff_probability
         ):
-            logger.info("WC recommended: gain=%.2f over %d GWs", wc_gain, horizon)
-            return ChipRecommendation(
-                Chip.WILDCARD,
-                f"WC gain {wc_gain:.1f} xPts over {horizon} GWs",
-                wc_gain,
-            )
+            return None
+        logger.info("WC recommended: gain=%.2f over %d GWs", wc_gain, horizon)
+        return ChipRecommendation(
+            Chip.WILDCARD, f"WC gain {wc_gain:.1f} xPts over {horizon} GWs", wc_gain
+        )
+
+    # On an ACTIVE DGW week, give Bench Boost/Free Hit first refusal --
+    # they can extract the WHOLE squad's double-fixture value, which TC's
+    # now much-easier-to-clear absolute threshold could otherwise routinely
+    # preempt (TC only ever amplifies the ALREADY-CHOSEN captain, so it
+    # loses nothing meaningful by going last that week — if BB/FH don't
+    # fire, TC still gets a fair shot at the same DGW captain right after).
+    order = (
+        [_try_bb, _try_fh, _try_tc, _try_wc] if dgw_active_now
+        else [_try_tc, _try_bb, _try_fh, _try_wc]
+    )
+    for candidate in order:
+        rec = candidate()
+        if rec is not None:
+            return rec
 
     # Last resort (user's own words: TC "should NEVER be left unplayed in
     # both halves of the season" -- "at worst the default behaviour is to
@@ -328,12 +347,6 @@ def recommend_chip(
     # right at the boundary (a postponement, a data gap) can't silently
     # cost the whole half's chip -- once forced, ``chips_used`` marks it
     # used immediately, so this can't double-fire across both gameweeks.
-    # Triple Captain is the one chip that's close to always worth SOMETHING
-    # (it just doubles whatever captain pick this week's decision already
-    # makes), unlike Free Hit/Bench Boost/Wildcard, which need a real
-    # structural opportunity to be worth anything at all -- forcing one of
-    # those instead could easily be a genuine net negative, forcing TC
-    # essentially never is.
     if (
         current_gw >= _current_half_expiry_gw(current_gw, season) - 1
         and _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, chips_used, current_gw, season) > 0
@@ -373,6 +386,24 @@ def _evaluate_triple_captain(
     projections: pd.DataFrame,
     gw: int,
 ) -> tuple[float, int | None, int | None]:
+    """Real fix found 2026-07-30 (user's own review: "how can it ever be
+    worth not playing [TC]? It is only negative if the player gets < 0
+    points"). ``tc_gain`` used to be ``best_xpts - second_xpts`` — the GAP
+    between the top two captain candidates. That's the wrong question: TC
+    doesn't change WHO you captain (you'd pick the same best player either
+    way), it only changes the multiplier (2x -> 3x) on whoever you'd
+    already captain — so its real marginal value is one extra copy of that
+    player's own points, i.e. ``best_xpts`` on its own, not the gap to
+    whoever's in second place. Correct, strictly-additive framing: TC is
+    virtually always worth playing (downside needs the captain to score
+    negative points — a red card / own goal / missed penalty pile-up, rare
+    and small next to typical upside); the only genuine cost is that only
+    one chip can be played per gameweek, and only 2 TC uses exist all
+    season (1 per half, no carryover) — so the real tradeoff is spending
+    it now vs. saving it for a probably-better week later this half (see
+    the DGW-hold-back bias in ``recommend_chip``), not a risk of loss.
+    ``second_id`` is kept for compatibility with callers that still want
+    the runner-up captain candidate; it no longer affects ``tc_gain``."""
     gw_proj = projections[
         (projections["gameweek"] == gw) & projections["player_id"].isin(squad_ids)
     ].sort_values("xpts", ascending=False)
@@ -381,9 +412,7 @@ def _evaluate_triple_captain(
         return 0.0, None, None
 
     best_xpts = float(gw_proj.iloc[0]["xpts"])
-    second_xpts = float(gw_proj.iloc[1]["xpts"])
     best_id = int(gw_proj.iloc[0]["player_id"])
     second_id = int(gw_proj.iloc[1]["player_id"])
 
-    tc_gain = best_xpts - second_xpts
-    return tc_gain, best_id, second_id
+    return best_xpts, best_id, second_id

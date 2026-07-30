@@ -90,13 +90,15 @@ def test_bench_player_ids_empty_when_squad_too_small():
 # --- _evaluate_triple_captain -------------------------------------------------
 
 def test_evaluate_triple_captain_returns_gain_and_candidate_ids():
+    # 2026-07-30: gain is the top captain's own absolute xPts, not the gap
+    # to the second-best candidate (see _evaluate_triple_captain docstring).
     projections = pd.DataFrame({
         "player_id": [1, 2, 3],
         "gameweek": [5, 5, 5],
         "xpts": [10.0, 6.0, 1.0],
     })
     gain, best_id, second_id = chips._evaluate_triple_captain([1, 2, 3], projections, 5)
-    assert gain == pytest.approx(4.0)
+    assert gain == pytest.approx(10.0)
     assert (best_id, second_id) == (1, 2)
 
 
@@ -130,7 +132,7 @@ def _skip_bb_fh_wc_kwargs(current_gw: int = 5) -> dict:
 
 
 def test_recommend_chip_tc_fallback_triggers_without_season():
-    projections = _minimal_projections(5, best_xpts=10.0, second_xpts=3.0)  # gain=7 >= 6.0
+    projections = _minimal_projections(5, best_xpts=10.0, second_xpts=3.0)  # gain=10.0 >= 4.0
     rec = chips.recommend_chip(
         current_gw=5, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
         available_budget=100.0, free_transfers=1, season=None,
@@ -141,14 +143,13 @@ def test_recommend_chip_tc_fallback_triggers_without_season():
 
 def test_recommend_chip_tc_blocked_by_low_payoff_probability(session):
     created = pd.Timestamp.now("UTC").to_pydatetime()
-    # Real per-scenario gain is mostly negative despite a mean that (if it
-    # matched these draws) would clear the point threshold -- P(gain>=6) < 0.6.
-    rows = (
-        _rows_for(1, 5, "2099-00", 0, [20.0, 20.0, 1.0, 1.0, 1.0], created)
-        + _rows_for(2, 5, "2099-00", 0, [13.0, 13.0, 1.0, 1.0, 1.0], created)
-    )
+    # 2026-07-30: the scenario gate now checks the CAPTAIN's OWN per-scenario
+    # points (load_scenario_totals), not a relative gain vs the runner-up.
+    # Player 1 (the best pick) blanks in 3/5 real scenarios -> P(>=4.0) < 0.6
+    # even though the point-estimate (10.0) clears easily.
+    rows = _rows_for(1, 5, "2099-00", 0, [20.0, 20.0, 1.0, 1.0, 1.0], created)
     _insert(session, rows)
-    projections = _minimal_projections(5, best_xpts=10.0, second_xpts=3.0)  # gain=7 >= 6.0
+    projections = _minimal_projections(5, best_xpts=10.0, second_xpts=3.0)  # gain=10.0 >= 4.0
     rec = chips.recommend_chip(
         current_gw=5, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
         available_budget=100.0, free_transfers=1, season="2099-00",
@@ -159,13 +160,11 @@ def test_recommend_chip_tc_blocked_by_low_payoff_probability(session):
 
 def test_recommend_chip_tc_passes_with_high_payoff_probability(session):
     created = pd.Timestamp.now("UTC").to_pydatetime()
-    # Real per-scenario gain clears the threshold in 4/5 scenarios -> P=0.8 >= 0.6.
-    rows = (
-        _rows_for(1, 5, "2099-00", 0, [20.0, 20.0, 20.0, 20.0, 1.0], created)
-        + _rows_for(2, 5, "2099-00", 0, [13.0, 13.0, 13.0, 13.0, 1.0], created)
-    )
+    # Player 1 (the best pick) blanks in only 1/5 real scenarios -> P(>=4.0)
+    # = 0.8 >= 0.6.
+    rows = _rows_for(1, 5, "2099-00", 0, [20.0, 20.0, 20.0, 20.0, 1.0], created)
     _insert(session, rows)
-    projections = _minimal_projections(5, best_xpts=10.0, second_xpts=3.0)  # gain=7 >= 6.0
+    projections = _minimal_projections(5, best_xpts=10.0, second_xpts=3.0)  # gain=10.0 >= 4.0
     rec = chips.recommend_chip(
         current_gw=5, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
         available_budget=100.0, free_transfers=1, season="2099-00",
@@ -175,7 +174,10 @@ def test_recommend_chip_tc_passes_with_high_payoff_probability(session):
 
 
 def test_recommend_chip_no_chip_when_nothing_qualifies():
-    projections = _minimal_projections(5, best_xpts=5.0, second_xpts=4.9)  # gain=0.1 < 6.0
+    # 2026-07-30: gain is now the captain's own absolute xPts, so this needs
+    # a genuinely weak captain projection (not just a close second place)
+    # to stay below the (much lower) 4.0 floor.
+    projections = _minimal_projections(5, best_xpts=2.0, second_xpts=1.9)  # gain=2.0 < 4.0
     rec = chips.recommend_chip(
         current_gw=5, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
         available_budget=100.0, free_transfers=1, season=None,
@@ -208,11 +210,12 @@ def test_current_half_expiry_gw_first_vs_second_half():
 
 
 def test_recommend_chip_tc_blocked_far_from_expiry_but_passes_near_it_via_decay():
-    # gain=4.0 is below the normal 6.0 TC threshold and stays blocked far
-    # from expiry, but the SAME gain clears the panic-shrunk threshold once
-    # the half is nearly over -- proving the decay itself, not just the
-    # final hard force, lets a real marginal opportunity through.
-    far_projections = _minimal_projections(10, best_xpts=9.0, second_xpts=5.0)
+    # A captain projected at 3.5 xPts is below the normal 4.0 floor and
+    # stays blocked far from expiry, but the SAME projection clears the
+    # panic-shrunk threshold (4.0*0.5333=2.13 at 1 GW out) once the half is
+    # nearly over -- proving the decay itself, not just the final hard
+    # force, lets a real marginal captain through.
+    far_projections = _minimal_projections(10, best_xpts=3.5, second_xpts=3.4)
     far = chips.recommend_chip(
         current_gw=10, current_squad_ids=[1, 2], projections=far_projections,
         players=pd.DataFrame(), available_budget=100.0, free_transfers=1, season=None,
@@ -220,7 +223,7 @@ def test_recommend_chip_tc_blocked_far_from_expiry_but_passes_near_it_via_decay(
     )
     assert far.chip is None
 
-    near_projections = _minimal_projections(18, best_xpts=9.0, second_xpts=5.0)
+    near_projections = _minimal_projections(18, best_xpts=3.5, second_xpts=3.4)
     near = chips.recommend_chip(
         current_gw=18, current_squad_ids=[1, 2], projections=near_projections,
         players=pd.DataFrame(), available_budget=100.0, free_transfers=1, season=None,
@@ -232,9 +235,10 @@ def test_recommend_chip_tc_blocked_far_from_expiry_but_passes_near_it_via_decay(
 
 
 def test_recommend_chip_panic_forces_tc_on_expiry_gw_when_nothing_else_clears():
-    # gain=1.0 is below even the panic-shrunk threshold (6.0*0.3=1.8) at the
-    # literal expiry GW -- only the final "use it or lose it" force should fire.
-    projections = _minimal_projections(19, best_xpts=5.0, second_xpts=4.0)
+    # A 1.0 xPts captain is below even the panic-shrunk threshold
+    # (4.0*0.3=1.2) at the literal expiry GW -- only the final "use it or
+    # lose it" force should fire.
+    projections = _minimal_projections(19, best_xpts=1.0, second_xpts=0.5)
     rec = chips.recommend_chip(
         current_gw=19, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
         available_budget=100.0, free_transfers=1, season=None,
@@ -248,7 +252,8 @@ def test_recommend_chip_panic_forces_tc_one_gw_before_expiry_too():
     # Robustness margin: the force triggers on the final TWO gameweeks of
     # the half (not just the literal last one), so a single skipped/missing
     # decision point right at the boundary can't cost the whole half's chip.
-    projections = _minimal_projections(18, best_xpts=5.0, second_xpts=4.9)  # gain=0.1, tiny
+    # 1.0 xPts is below the panic-shrunk threshold at 1 GW out (4.0*0.5333=2.13).
+    projections = _minimal_projections(18, best_xpts=1.0, second_xpts=0.9)
     rec = chips.recommend_chip(
         current_gw=18, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
         available_budget=100.0, free_transfers=1, season=None,
@@ -259,7 +264,7 @@ def test_recommend_chip_panic_forces_tc_one_gw_before_expiry_too():
 
 
 def test_recommend_chip_no_panic_force_away_from_expiry():
-    projections = _minimal_projections(10, best_xpts=5.0, second_xpts=4.0)  # gain=1.0
+    projections = _minimal_projections(10, best_xpts=1.0, second_xpts=0.9)  # weak, below 4.0 floor
     rec = chips.recommend_chip(
         current_gw=10, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
         available_budget=100.0, free_transfers=1, season=None,
@@ -317,6 +322,54 @@ def test_recommend_chip_free_hit_does_not_trigger_without_dgw_or_bgw():
         dgw_gws=set(), bgw_affected_count=0,
     )
     assert rec.chip is None
+
+
+# --- TC vs. a coming DGW / an active DGW (2026-07-30) ------------------------
+# User's own review: TC's own EV is basically always positive, so the real
+# remaining question is scarcity (1 use per half) -- is this week worth
+# spending it, versus waiting for a probably-bigger DGW captain, and on an
+# ACTUAL DGW week, does TC crowd out Bench Boost/Free Hit's shot at the
+# whole squad's double-fixture value.
+
+def test_recommend_chip_tc_holds_back_when_a_dgw_is_visible_ahead():
+    # 9.0 clears the normal 4.0 floor easily, but not the raised bar
+    # (4.0*2.5=10.0) used while a DGW is visible ahead but hasn't arrived.
+    projections = _minimal_projections(10, best_xpts=9.0, second_xpts=8.0)
+    rec = chips.recommend_chip(
+        current_gw=10, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
+        available_budget=100.0, free_transfers=1, season=None,
+        dgw_gws={13}, bgw_affected_count=0,
+        **_skip_bb_fh_wc_kwargs(current_gw=10),
+    )
+    assert rec.chip is None
+
+
+def test_recommend_chip_tc_fires_normally_with_no_dgw_visible():
+    # Same 9.0 captain, no DGW anywhere visible -- normal (unraised) floor applies.
+    projections = _minimal_projections(10, best_xpts=9.0, second_xpts=8.0)
+    rec = chips.recommend_chip(
+        current_gw=10, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
+        available_budget=100.0, free_transfers=1, season=None,
+        dgw_gws=set(), bgw_affected_count=0,
+        **_skip_bb_fh_wc_kwargs(current_gw=10),
+    )
+    assert rec.chip == chips.Chip.TRIPLE_CAPTAIN
+
+
+def test_recommend_chip_bench_boost_preempts_tc_on_an_active_dgw_week():
+    # Both TC (captain xPts=9.0 >= 4.0) and BB (bench_xpts=25.0 >= 20.0)
+    # would independently clear their own thresholds this week -- on an
+    # ACTIVE DGW week, BB/FH get first refusal so TC can't routinely crowd
+    # out the whole-squad DGW play just because its own bar is now so easy
+    # to clear.
+    projections = _minimal_projections(10, best_xpts=9.0, second_xpts=8.0)
+    rec = chips.recommend_chip(
+        current_gw=10, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
+        available_budget=100.0, free_transfers=1, season=None, bench_xpts=25.0,
+        dgw_gws={10}, bgw_affected_count=0,
+        chips_used=[(chips.Chip.FREE_HIT, 10), (chips.Chip.WILDCARD, 10)], squad_age_gws=0,
+    )
+    assert rec.chip == chips.Chip.BENCH_BOOST
 
 
 # --- _chip_uses_remaining / chips_used_this_season --------------------------
