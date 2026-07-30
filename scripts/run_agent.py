@@ -14,13 +14,14 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-from config.settings import settings
-from optimiser.chips import Chip
 from agent import decision_engine, fpl_client, notifier
-from data.ingestors.odds_api import ingest_odds_sync
-from data.ingestors.understat import run_understat_ingest
+from config.settings import settings
+from data.ingestors.fpl_api import run_full_ingest
 from data.ingestors.injury_parser import run_injury_parser
+from data.ingestors.odds_api import ingest_odds_sync
 from data.ingestors.press_conference import ingest_press_signals_sync
+from data.ingestors.understat import run_understat_ingest
+from optimiser.chips import Chip
 
 
 def _parse_args() -> argparse.Namespace:
@@ -49,6 +50,17 @@ def main() -> None:
         "Starting FPL agent — season=%s dry_run=%s chip=%s",
         args.season, dry_run, force_chip,
     )
+
+    # 2026-07-30 (user's own live-smoke-test follow-up): this script used
+    # to run injury/press signals straight into a decision without ever
+    # refreshing players/teams/fixtures/gameweeks first -- the deployed
+    # timer (deploy/fpl-bot.timer) only schedules THIS script, so nothing
+    # anywhere ever kept that base data fresh. run_full_ingest first so a
+    # single run always decides against current data.
+    try:
+        asyncio.run(run_full_ingest(args.season))
+    except Exception as exc:
+        logging.getLogger().warning("Full FPL ingest skipped: %s", exc)
 
     try:
         ingest_odds_sync()
