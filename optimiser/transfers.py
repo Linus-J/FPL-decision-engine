@@ -271,3 +271,69 @@ def should_take_hit(plan: TransferPlan) -> bool:
     if plan.hits_taken == 0:
         return False
     return plan.net_xpts_gain > 0
+
+
+def get_dgw_coverage(
+    squad_ids: list[int],
+    players: pd.DataFrame,
+    dgw_gws: set[int],
+    projections: pd.DataFrame,
+) -> dict[int, dict]:
+    """Real bug found 2026-07-30 (the user's own live-smoke-test request):
+    ``agent/decision_engine.py`` has imported and called this function
+    since its very first commit, but it never actually existed anywhere in
+    the codebase — an ``ImportError`` at module load, meaning the live
+    decision engine could never run at all, this whole time, undetected
+    because nothing in the backtest-focused test suite ever imports
+    ``agent.decision_engine``.
+
+    For each known upcoming double-gameweek, how many of the CURRENT
+    squad's players are on a team with two real fixtures that gameweek
+    (from the ``fixtures`` table — the actual schedule, not an
+    approximation), and their combined projected xPts — lets a human
+    reviewer see DGW exposure at a glance without cross-referencing the
+    fixture list themselves. Real, not free-text: a team with 2 fixtures
+    that gameweek is a genuine DGW for every squad player on it."""
+    if not dgw_gws or not squad_ids or players.empty:
+        return {}
+
+    from sqlalchemy import text
+
+    from data.db import get_session
+    from projection.pipeline import _get_current_season
+
+    team_by_player = players.set_index("id")["team_id"].to_dict()
+    season = _get_current_season()
+
+    db = get_session()
+    try:
+        coverage: dict[int, dict] = {}
+        for gw in sorted(dgw_gws):
+            rows = db.execute(
+                text(
+                    "SELECT team_h_id, team_a_id FROM fixtures "
+                    "WHERE season = :season AND gameweek = :gw"
+                ),
+                {"season": season, "gw": gw},
+            ).fetchall()
+            fixture_count: dict[int, int] = {}
+            for team_h_id, team_a_id in rows:
+                fixture_count[team_h_id] = fixture_count.get(team_h_id, 0) + 1
+                fixture_count[team_a_id] = fixture_count.get(team_a_id, 0) + 1
+            dgw_teams = {tid for tid, n in fixture_count.items() if n >= 2}
+            dgw_player_ids = [
+                pid for pid in squad_ids if team_by_player.get(pid) in dgw_teams
+            ]
+            combined_xpts = float(
+                projections[
+                    (projections["gameweek"] == gw)
+                    & projections["player_id"].isin(dgw_player_ids)
+                ]["xpts"].sum()
+            )
+            coverage[gw] = {
+                "squad_players_involved": len(dgw_player_ids),
+                "combined_xpts": round(combined_xpts, 2),
+            }
+        return coverage
+    finally:
+        db.close()

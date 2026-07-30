@@ -13,6 +13,7 @@ from data.models import DecisionLog
 from optimiser.chips import Chip, ChipRecommendation, chips_used_this_season, recommend_chip
 from optimiser.squad import SquadSolution, optimise_squad, optimise_starting_xi
 from optimiser.transfers import TransferPlan, evaluate_transfers, get_dgw_coverage, should_take_hit
+from projection import cold_start
 from projection.pipeline import (
     _get_current_and_next_gw,
     _get_dgw_gameweeks,
@@ -115,9 +116,70 @@ def run(
     run_projections(season=season, persist=True)
     projections = get_latest_projections()
 
+    squad_ids, available_budget, free_transfers = _load_my_squad(settings.fpl_team_id)
+
     if projections.empty:
-        logger.error("No projections available — aborting")
-        return {"error": "no_projections"}
+        if squad_ids:
+            logger.error("No projections available — aborting")
+            return {"error": "no_projections"}
+        # Real gap found 2026-07-30 (the user's own live-smoke-test request):
+        # a true pre-season GW1 has no current-season history for
+        # run_projections' trained-model pipeline to condition on (it
+        # correctly returns empty rather than inventing signal), but `run`
+        # had no fallback at all — it just aborted with "no_projections",
+        # meaning the live agent could never actually build the real
+        # season-opening squad. Falls back to the same prior-season-
+        # carryover projection cold_start.py already provides (T7),
+        # matching scripts/backtest.py's GW1 handling (2026-07-30).
+        logger.warning(
+            "No projections and no saved squad — true cold start, "
+            "building initial squad from prior-season data"
+        )
+        cs_players = _load_players()
+        solution, cs_projections = cold_start.build_initial_squad(season, players=cs_players)
+        xi_solution = optimise_starting_xi(solution.squad, cs_projections, next_gw, season=season)
+        result = {
+            "gameweek": next_gw,
+            "dry_run": dry_run,
+            "chip": None,
+            "chip_reason": "cold start — no chip decision on the initial build",
+            "transfers_in": [],
+            "transfers_out": [],
+            "hits_taken": 0,
+            "net_xpts_gain": 0.0,
+            "squad": xi_solution.squad[[
+                "id", "web_name", "position", "now_cost",
+                "is_starting", "is_captain", "is_vice_captain", "bench_order",
+            ]].to_dict("records"),
+            "captain_id": xi_solution.captain_id,
+            "vice_captain_id": xi_solution.vice_captain_id,
+            "total_xpts": round(xi_solution.total_xpts, 2),
+            "total_cost": round(solution.total_cost, 1),
+            "dgw_coverage": {},
+            "cold_start": True,
+        }
+        _log_decision(
+            gameweek=next_gw,
+            decision_type="lineup",
+            details={
+                "squad_ids": solution.squad["id"].tolist(),
+                "starting_ids": xi_solution.starting_xi["id"].tolist(),
+                "captain_id": xi_solution.captain_id,
+                "vice_captain_id": xi_solution.vice_captain_id,
+                "budget": solution.total_cost,
+                "free_transfers": 1,
+            },
+            projected_gain=xi_solution.total_xpts,
+            dry_run=dry_run,
+        )
+        logger.info(
+            "Cold-start decision complete: xPts=%.2f captain=%s",
+            xi_solution.total_xpts,
+            solution.squad.loc[
+                solution.squad["id"] == xi_solution.captain_id, "web_name"
+            ].values[0] if xi_solution.captain_id else "?",
+        )
+        return result
 
     players = _load_players()
     players = players.merge(
@@ -125,7 +187,6 @@ def run(
         left_on="id", right_on="player_id", how="left",
     ).drop(columns=["player_id"], errors="ignore")
 
-    squad_ids, available_budget, free_transfers = _load_my_squad(settings.fpl_team_id)
     if not squad_ids:
         logger.warning("No saved squad found — running full squad optimisation (season start / first run)")
         available_budget = 100.0
