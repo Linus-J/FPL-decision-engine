@@ -85,12 +85,47 @@ def _get_all_players() -> pd.DataFrame:
         query = text("""
             SELECT id, fpl_id, web_name, position, team_id, now_cost,
                    status, chance_of_playing_next_round, selected_by_percent,
-                   form, ict_index, influence, creativity, threat
+                   form, ict_index, influence, creativity, threat, injury_severity
             FROM players
         """)
         return pd.read_sql(query, db.bind)
     finally:
         db.close()
+
+
+# Real bug found 2026-07-30 (user's own review, after adding a real Guardian
+# API key): data.ingestors.injury_parser has parsed FPL's free-text news
+# field into players.injury_severity (0-3) since it was written, but NOTHING
+# downstream ever read the column -- a fully-wired, fully-dead signal.
+# projection/features.py's OWN enrichment query hardcodes it to 0 (correctly
+# -- today's news can't be recovered for a past training row, so wiring it
+# into minutes_model.py's shared training/backtest pipeline the way status/
+# dnp_streak are would LEAK today's information onto every historical row).
+# This applies it as a direct post-hoc discount on LIVE projections only,
+# for players NOT already hard-excluded by status (i/u/s, zeroed below) --
+# some informative news text ahead of an official status change is real,
+# actionable signal a human reviewer would want reflected before they even
+# open the report.
+_INJURY_SEVERITY_RETENTION = {0: 1.0, 1: 0.7, 2: 0.35, 3: 0.05}
+
+
+def _apply_injury_severity_discount(
+    projections_df: pd.DataFrame, players: pd.DataFrame
+) -> pd.DataFrame:
+    if "injury_severity" not in players.columns or projections_df.empty:
+        return projections_df
+    severity_by_id = players.set_index("id")["injury_severity"].fillna(0).astype(int)
+    retention = (
+        projections_df["player_id"]
+        .map(severity_by_id)
+        .fillna(0)
+        .astype(int)
+        .map(lambda s: _INJURY_SEVERITY_RETENTION.get(s, 0.05))
+    )
+    for col in ("xpts", "xpts_mean", "xpts_var", "start_probability"):
+        if col in projections_df.columns:
+            projections_df[col] = projections_df[col] * retention
+    return projections_df
 
 
 def _build_live_fixture_context(season: str, target_gws: list[int]) -> pd.DataFrame:
@@ -233,6 +268,11 @@ def run_projections(
         if unavailable:
             mask = projections_df["player_id"].isin(unavailable)
             projections_df.loc[mask, ["xpts", "xpts_mean", "xpts_var", "start_probability"]] = 0.0
+        # Injury-severity discount (2026-07-30) — after the hard-unavailable
+        # zeroing above (so an i/u/s player stays at exactly 0, not
+        # re-scaled by their own severity on top of it) and before curse
+        # shrinkage, same ordering rationale as the zeroing itself.
+        projections_df = _apply_injury_severity_discount(projections_df, all_players)
         # Optimiser's-curse correction (2026-07-28) — after the unavailable-
         # player zeroing above, so a genuinely unavailable player (xpts=0)
         # doesn't get shrunk back up toward its group mean.

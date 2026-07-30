@@ -7,13 +7,13 @@ from datetime import datetime, timedelta
 import aiohttp
 from sqlalchemy.dialects.sqlite import insert
 
+from config.settings import settings
 from data.db import get_session
 from data.models import Player, PlayerPressSignal
 
 logger = logging.getLogger(__name__)
 
 GUARDIAN_API = "https://content.guardianapis.com/search"
-GUARDIAN_KEY = "test"
 
 POSITIVE_SIGNALS = [
     "available", "fit and available", "fully fit", "trained fully", "back in training",
@@ -81,12 +81,15 @@ def _extract_player_signals(
 async def _fetch_articles(
     session: aiohttp.ClientSession, from_date: str
 ) -> list[dict]:
+    # Real bug found 2026-07-30 (user's own review): this used to be a
+    # hardcoded module-level "test" constant, never read from settings/.env
+    # at all -- a real GUARDIAN_KEY added to .env had zero effect.
     params = {
         "q": "premier league team news fitness injury",
         "section": "football",
         "show-fields": "bodyText",
         "page-size": "20",
-        "api-key": GUARDIAN_KEY,
+        "api-key": settings.guardian_api_key,
         "from-date": from_date,
         "order-by": "newest",
     }

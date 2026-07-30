@@ -107,6 +107,53 @@ def test_load_live_match_odds_empty_gws_returns_empty_shape(session):
     assert "home_win_prob" in out.columns
 
 
+# --- _apply_injury_severity_discount (2026-07-30) --------------------------
+# Real bug found: injury_parser.py has parsed FPL's free-text news into
+# players.injury_severity since it was written, but nothing downstream ever
+# read the column -- a fully-wired, fully-dead signal. LIVE-ONLY (never
+# wired into minutes_model.py's shared training/backtest pipeline, which
+# would leak today's news onto every historical row).
+
+def test_injury_severity_discount_leaves_healthy_players_unchanged():
+    players = pd.DataFrame({"id": [1], "injury_severity": [0]})
+    projections = pd.DataFrame({
+        "player_id": [1], "gameweek": [10],
+        "xpts": [8.0], "xpts_mean": [8.0], "xpts_var": [2.0], "start_probability": [0.9],
+    })
+    out = pipeline._apply_injury_severity_discount(projections.copy(), players)
+    assert out.loc[0, "xpts"] == pytest.approx(8.0)
+    assert out.loc[0, "start_probability"] == pytest.approx(0.9)
+
+
+def test_injury_severity_discount_scales_by_severity_tier():
+    players = pd.DataFrame({"id": [1, 2, 3], "injury_severity": [1, 2, 3]})
+    projections = pd.DataFrame({
+        "player_id": [1, 2, 3], "gameweek": [10, 10, 10],
+        "xpts": [8.0, 8.0, 8.0], "xpts_mean": [8.0, 8.0, 8.0],
+        "xpts_var": [2.0, 2.0, 2.0], "start_probability": [0.9, 0.9, 0.9],
+    })
+    out = pipeline._apply_injury_severity_discount(projections.copy(), players)
+    assert out.loc[0, "xpts"] == pytest.approx(8.0 * 0.7)
+    assert out.loc[1, "xpts"] == pytest.approx(8.0 * 0.35)
+    assert out.loc[2, "xpts"] == pytest.approx(8.0 * 0.05)
+    # monotonically decreasing in severity
+    assert out.loc[0, "xpts"] > out.loc[1, "xpts"] > out.loc[2, "xpts"]
+
+
+def test_injury_severity_discount_missing_column_is_a_noop():
+    players = pd.DataFrame({"id": [1]})  # no injury_severity column at all
+    projections = pd.DataFrame({"player_id": [1], "gameweek": [10], "xpts": [8.0]})
+    out = pipeline._apply_injury_severity_discount(projections.copy(), players)
+    assert out.loc[0, "xpts"] == pytest.approx(8.0)
+
+
+def test_injury_severity_discount_unknown_player_defaults_to_healthy():
+    players = pd.DataFrame({"id": [1], "injury_severity": [3]})
+    projections = pd.DataFrame({"player_id": [999], "gameweek": [10], "xpts": [8.0]})
+    out = pipeline._apply_injury_severity_discount(projections.copy(), players)
+    assert out.loc[0, "xpts"] == pytest.approx(8.0)  # unknown player, no discount
+
+
 def test_run_projections_cold_start_returns_empty_not_crash(session):
     # no player_gw_stats rows for the season at all (GW1, season hasn't
     # started) -- assemble.load_all_stats returns empty, run_projections

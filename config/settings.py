@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     the_odds_api_key: str = Field(default="", alias="THE_ODDS_API_KEY")
     sportmonks_api_key: str = Field(default="", alias="SPORTMONKS_API_KEY")
+    guardian_api_key: str = Field(default="test", alias="GUARDIAN_KEY")
 
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
