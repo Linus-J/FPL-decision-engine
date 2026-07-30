@@ -167,7 +167,10 @@ def upsert_gameweeks(bootstrap: dict, season: str = "2026-27") -> None:
 def upsert_players(bootstrap: dict) -> None:
     db = get_session()
     try:
+        seen_codes: set[int] = set()
         for p in bootstrap["elements"]:
+            if p.get("code") is not None:
+                seen_codes.add(p["code"])
             news_added = None
             if p.get("news_added"):
                 news_added = datetime.fromisoformat(p["news_added"].replace("Z", "+00:00"))
@@ -253,6 +256,41 @@ def upsert_players(bootstrap: dict) -> None:
             db.execute(stmt)
         db.commit()
         logger.info("Upserted %d players", len(bootstrap["elements"]))
+
+        # Real bug found 2026-07-30 (the user's own review of a drafted
+        # initial squad: "goalkeepers, Akinmboni, Casemiro, Abdullahi,
+        # Fraser are not in this season"). Verified live: Casemiro left
+        # Manchester United on a free transfer to Inter Miami CF when his
+        # contract expired -- confirmed genuinely gone from the Premier
+        # League. Upserting only ever adds/updates players PRESENT in the
+        # current bootstrap; a player who has left the league entirely
+        # just vanishes from FPL's own "elements" list, but their row here
+        # sat at whatever stale status ('a') they had at their LAST
+        # successful sync, forever, since nothing ever revisited a row
+        # absent from every SUBSEQUENT fetch (all six were last touched
+        # 2026-07-23, a full week stale). Being completely dropped from
+        # the live bootstrap is an even stronger departure signal than
+        # status='u' -- mark them 'u' so the existing departure gate
+        # (optimiser/departure_risk.py's hard-exclude,
+        # projection/cold_start.py's apply_departure_gate) correctly
+        # excludes them like any other confirmed departure.
+        if seen_codes:
+            stale_players = (
+                db.query(Player)
+                .filter(Player.code.isnot(None), ~Player.code.in_(seen_codes))
+                .all()
+            )
+            for sp in stale_players:
+                if sp.status != "u":
+                    sp.status = "u"
+                    sp.news = "No longer in the live FPL bootstrap — presumed departed."
+                    sp.updated_at = datetime.utcnow()
+            if stale_players:
+                db.commit()
+                logger.info(
+                    "Marked %d players absent from the bootstrap as departed (status=u)",
+                    len(stale_players),
+                )
     finally:
         db.close()
 
