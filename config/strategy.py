@@ -381,6 +381,23 @@ class OptimiserConfig:
     # behaviour) for comparison/debugging.
     curse_shrinkage_enabled: bool = True
 
+    # 2026-07-30 (user's own review): optimise_squad's objective only summed
+    # scores for STARTING players (`scores[i] * (starting[i] + captain[i])`)
+    # -- a bench player contributed exactly zero to the objective regardless
+    # of quality, so once the best starting XI was picked, the solver had no
+    # incentive to do anything but fill the remaining budget with the
+    # cheapest feasible fodder (the user's own examples: a Leeds/Burnley
+    # enabler GK/DEF, a bench so weak it's only fine if minutes predictions
+    # were 100% accurate -- they aren't; there's always some chance of a
+    # last-minute injury, a freak bench decision, or the minutes model just
+    # being wrong). A fractional weight on bench players' own scores gives
+    # the solver a real reason to prefer a decent backup over the cheapest
+    # possible one, without letting bench quality compete with the starting
+    # XI for budget on equal terms. Untuned starting value pending
+    # backtesting, same convention as this session's other heuristic
+    # constants.
+    bench_value_weight: float = 0.15
+
 
 # ---------------------------------------------------------------------------
 # DEPARTURE RISK (v2-build-plan §6.5) — squad-construction gate, LIVE from the

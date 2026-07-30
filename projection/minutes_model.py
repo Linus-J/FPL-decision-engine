@@ -87,6 +87,13 @@ def _trailing_dnp_streak(minutes: pd.Series) -> pd.Series:
     return streak.where(is_zero, 0).astype(int)
 
 
+def _red_card_flag(red_cards: pd.Series) -> pd.Series:
+    """1 where a red card was shown that gameweek, else 0 (raw — the caller
+    shifts it by 1, same two-step convention as ``_trailing_dnp_streak``, so
+    the flag lands on the NEXT gameweek — the one it's actually suspended for)."""
+    return red_cards.fillna(0).gt(0).astype(int)
+
+
 def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["player_id", "season", "gameweek"]).copy()
 
@@ -107,6 +114,23 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["dnp_streak"] = streak_grp["minutes"].transform(_trailing_dnp_streak)
     df["dnp_streak"] = (
         df.groupby(["player_id", "season"])["dnp_streak"]
+        .transform(lambda x: x.shift(1))
+        .fillna(0)
+        .astype(int)
+    )
+
+    # Real bug found 2026-07-30 (user's own review: a player sent off with a
+    # straight red at GW6 ["-3 points"] got transferred IN for GW7, straight
+    # into a suspension — 0 minutes). dnp_streak can't catch this: the player
+    # played most of GW6 before being sent off, so that gameweek isn't a
+    # blank and the streak stays 0. A red card almost always draws at least
+    # a 1-match ban under the FA's disciplinary process — a hard, rule-based
+    # signal directly observable in already-played history (red_cards),
+    # independent of minutes played that game.
+    red_card_grp = df.groupby(["player_id", "season"])
+    df["recent_red_card"] = red_card_grp["red_cards"].transform(_red_card_flag)
+    df["recent_red_card"] = (
+        df.groupby(["player_id", "season"])["recent_red_card"]
         .transform(lambda x: x.shift(1))
         .fillna(0)
         .astype(int)
@@ -263,6 +287,30 @@ def apply_recent_absence_override(
     return (1.0 - new_p1 - new_p2, new_p1, new_p2)
 
 
+# Near-certain absence next gameweek — a straight red almost always draws at
+# least a 1-match ban; some (violent conduct etc.) draw more, but severity
+# isn't inferable from the box score alone, so this only guards the
+# guaranteed-minimum case. Untuned starting value pending backtesting, same
+# convention as other heuristic constants this session.
+_RED_CARD_SUSPENSION_RETENTION = 0.05
+
+
+def apply_red_card_suspension_override(
+    p0: float, p1: float, p2: float, recent_red_card: bool
+) -> tuple[float, float, float]:
+    """Deterministic band adjustment for a confirmed red card in the player's
+    immediately preceding gameweek (see ``recent_red_card`` in
+    ``_build_features``). Complements ``apply_recent_absence_override``,
+    which can't catch this case — the sent-off player likely played most of
+    that match before the red, so it isn't a zero-minutes gameweek and
+    ``dnp_streak`` stays 0."""
+    if not recent_red_card:
+        return (p0, p1, p2)
+    new_p1 = p1 * _RED_CARD_SUSPENSION_RETENTION
+    new_p2 = p2 * _RED_CARD_SUSPENSION_RETENTION
+    return (1.0 - new_p1 - new_p2, new_p1, new_p2)
+
+
 def expected_appearance_points(p1: float, p2: float, sub: int = 1, full: int = 2) -> float:
     """Expected appearance points from the band probabilities (1 for a cameo,
     2 for 60+) — the minutes model's contribution to xPts (P10)."""
@@ -355,14 +403,19 @@ def _bands_frame(all_stats: pd.DataFrame, model: Pipeline | None) -> pd.DataFram
             else pd.Series([None] * len(df), index=df.index))
     streaks = (df["dnp_streak"] if "dnp_streak" in df.columns
                else pd.Series([0] * len(df), index=df.index))
+    red_cards = (df["recent_red_card"] if "recent_red_card" in df.columns
+                 else pd.Series([0] * len(df), index=df.index))
 
     p0s, p1s, p2s = [], [], []
-    for row, status, cp, streak in zip(proba, statuses, cops, streaks, strict=False):
+    for row, status, cp, streak, red_card in zip(
+        proba, statuses, cops, streaks, red_cards, strict=False
+    ):
         b0, b1, b2 = _bands_from_proba(row, classes)
-        # Real-history override first (2026-07-28) -- always has something to
-        # act on, unlike the status override below, which is a no-op
-        # throughout backtesting (see apply_recent_absence_override).
+        # Real-history overrides first (2026-07-28/07-30) -- always have
+        # something to act on, unlike the status override below, which is a
+        # no-op throughout backtesting (see apply_recent_absence_override).
         b0, b1, b2 = apply_recent_absence_override(b0, b1, b2, int(streak))
+        b0, b1, b2 = apply_red_card_suspension_override(b0, b1, b2, bool(red_card))
         cop = None if pd.isna(cp) else float(cp) / 100.0
         b0, b1, b2 = apply_availability_override(b0, b1, b2, status, cop)
         p0s.append(b0)

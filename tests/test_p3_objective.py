@@ -237,3 +237,82 @@ def test_transfer_switching_cost_disabled_allows_a_gain_the_default_cost_blocks(
         squad_ids, projections, players, free_transfers=1, available_budget=100.0
     )
     assert any(t["player_id"] == 16 for t in allowed_plan.transfers_in)
+
+
+def _pool_with_a_backup_gk_choice():
+    """2 GKP (a fixed starter + a choice of backup), 6 DEF, 6 MID, 4 FWD --
+    enough real cost/xPts variety elsewhere that spending slack budget has a
+    genuine opportunity cost, isolating the backup-GK decision specifically.
+    Empirically found (2026-07-30) at budget=100: with no bench-value
+    weight, the solver leaves ~£2m unspent rather than upgrade a bench slot
+    that contributes nothing to the objective; with a real weight, that
+    slack is spent on the better backup instead."""
+    rows: list[dict] = []
+    pid_counter = [1]
+
+    def add(position: str, cost: float, xpts: float, n: int = 1) -> None:
+        for _ in range(n):
+            pid = pid_counter[0]
+            rows.append({
+                "id": pid, "position": position, "now_cost": cost, "xpts": xpts,
+                "team_id": 1 + (pid % 8), "status": "a", "start_probability": 0.9,
+                "web_name": f"p{pid}",
+            })
+            pid_counter[0] += 1
+
+    add("GKP", 8.0, 8.0)  # the starter, never in question
+    weak_id = pid_counter[0]
+    add("GKP", 4.0, 0.5)  # cheap, weak backup
+    decent_id = pid_counter[0]
+    add("GKP", 5.5, 3.0)  # pricier, meaningfully better backup
+    add("DEF", 4.0, 4.0, n=3)
+    add("DEF", 6.0, 7.0, n=3)
+    add("MID", 5.0, 5.0, n=3)
+    add("MID", 9.0, 9.0, n=3)
+    add("FWD", 6.0, 6.0, n=2)
+    add("FWD", 11.0, 10.0, n=2)
+
+    players = pd.DataFrame(rows)
+    gws = [10, 11, 12]
+    projections = pd.DataFrame([
+        {"player_id": r["id"], "gameweek": gw, "xpts": r["xpts"]}
+        for r in rows for gw in gws
+    ])
+    return players, projections, weak_id, decent_id
+
+
+def test_bench_value_weight_zero_picks_the_cheapest_backup_gk(monkeypatch):
+    import dataclasses
+
+    from optimiser import squad as squad_module
+    from optimiser.squad import OPTIMISER as real_optimiser
+
+    monkeypatch.setattr(
+        squad_module, "OPTIMISER",
+        dataclasses.replace(real_optimiser, bench_value_weight=0.0),
+    )
+    players, projections, weak_id, decent_id = _pool_with_a_backup_gk_choice()
+    solution = optimise_squad(projections, players, budget=100.0, horizon=3)
+    selected = set(solution.squad["id"])
+    assert weak_id in selected
+    assert decent_id not in selected
+
+
+def test_bench_value_weight_upgrades_the_backup_gk_when_enabled(monkeypatch):
+    import dataclasses
+
+    from optimiser import squad as squad_module
+    from optimiser.squad import OPTIMISER as real_optimiser
+
+    players, projections, weak_id, decent_id = _pool_with_a_backup_gk_choice()
+    monkeypatch.setattr(
+        squad_module, "OPTIMISER",
+        dataclasses.replace(real_optimiser, bench_value_weight=0.15),
+    )
+    solution = optimise_squad(projections, players, budget=100.0, horizon=3)
+    selected = set(solution.squad["id"])
+    assert decent_id in selected
+    assert weak_id not in selected
+    # the upgrade is a genuinely benched player, not accidentally promoted
+    # into the starting XI
+    assert decent_id not in solution.starting_xi["id"].tolist()

@@ -143,8 +143,17 @@ def optimise_squad(
     positions = df["position"].tolist()
     teams = df["team_id"].tolist()
 
+    # 2026-07-30: a bench player used to contribute nothing to the objective
+    # (only starting[i]/captain[i] did), so the solver had no reason to pick
+    # anything but the cheapest feasible fodder once the starting XI was
+    # set. `selected[i] - starting[i]` is 1 exactly when a player is on the
+    # bench, so this adds a fractional (bench_value_weight) share of their
+    # own score — real insurance value against an unpredicted blank in the
+    # XI — without letting bench quality compete with the starting XI for
+    # budget on equal terms.
     prob += pulp.lpSum(
         scores[i] * (starting[i] + captain[i])
+        + OPTIMISER.bench_value_weight * scores[i] * (selected[i] - starting[i])
         for i in range(n)
     )
 
@@ -192,7 +201,11 @@ def optimise_squad(
         starting2 = [pulp.LpVariable(f"sta2_{i}", cat="Binary") for i in range(n)]
         captain2 = [pulp.LpVariable(f"cap2_{i}", cat="Binary") for i in range(n)]
         vice2 = [pulp.LpVariable(f"vic2_{i}", cat="Binary") for i in range(n)]
-        prob2 += pulp.lpSum(scores[i] * (starting2[i] + captain2[i]) for i in range(n))
+        prob2 += pulp.lpSum(
+            scores[i] * (starting2[i] + captain2[i])
+            + OPTIMISER.bench_value_weight * scores[i] * (selected2[i] - starting2[i])
+            for i in range(n)
+        )
         prob2 += pulp.lpSum(selected2) == SQUAD.squad_size
         prob2 += pulp.lpSum(costs[i] * selected2[i] for i in range(n)) <= budget
         prob2 += pulp.lpSum(starting2) == 11

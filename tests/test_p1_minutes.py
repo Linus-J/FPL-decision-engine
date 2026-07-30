@@ -101,3 +101,36 @@ def test_apply_recent_absence_override_two_plus_blanks_heavily_discounts():
     # a longer streak (e.g. 5 straight blanks) is discounted exactly as hard,
     # not progressively harder -- 2+ is already the floor.
     assert mm.apply_recent_absence_override(0.1, 0.2, 0.7, 5) == (p0, p1, p2)
+
+
+# --- Real bug found 2026-07-30 (user's own review: a player sent off with a
+# straight red at GW6 got transferred IN for GW7 -- straight into a
+# suspension, 0 minutes). dnp_streak can't catch this since the sent-off
+# player played most of that match (not a blank gameweek); recent_red_card
+# is a separate, direct signal from the same already-played history. -------
+
+def test_red_card_flag_marks_the_carded_gameweek_itself():
+    red_cards = pd.Series([0, 1, 0])
+    assert mm._red_card_flag(red_cards).tolist() == [0, 1, 0]
+
+
+def test_red_card_flag_resets_per_player_group():
+    df = pd.DataFrame({
+        "player_id": [1, 1, 1, 2, 2],
+        "season": ["2025-26"] * 5,
+        "red_cards": [0, 1, 0, 0, 1],
+    })
+    flag = df.groupby(["player_id", "season"])["red_cards"].transform(mm._red_card_flag)
+    assert flag.tolist() == [0, 1, 0, 0, 1]
+
+
+def test_apply_red_card_suspension_override_no_card_unchanged():
+    assert mm.apply_red_card_suspension_override(0.1, 0.2, 0.7, False) == (0.1, 0.2, 0.7)
+
+
+def test_apply_red_card_suspension_override_near_certain_dnp():
+    p0, p1, p2 = mm.apply_red_card_suspension_override(0.1, 0.2, 0.7, True)
+    assert p1 == pytest.approx(0.2 * mm._RED_CARD_SUSPENSION_RETENTION)
+    assert p2 == pytest.approx(0.7 * mm._RED_CARD_SUSPENSION_RETENTION)
+    assert p0 > 0.9
+    assert sum((p0, p1, p2)) == pytest.approx(1.0)
