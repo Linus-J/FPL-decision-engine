@@ -710,6 +710,7 @@ dependencies = [
     { name = "rich" },
     { name = "scikit-learn" },
     { name = "seaborn" },
+    { name = "soccerdata" },
     { name = "sqlalchemy" },
     { name = "streamlit" },
     { name = "tenacity" },
@@ -722,9 +723,6 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "ruff" },
-]
-events = [
-    { name = "soccerdata" },
 ]
 
 [package.metadata]
@@ -751,12 +749,12 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
     { name = "scikit-learn", specifier = ">=1.4.0" },
     { name = "seaborn", specifier = ">=0.13.2" },
-    { name = "soccerdata", marker = "extra == 'events'", specifier = ">=1.9.0" },
+    { name = "soccerdata", specifier = ">=1.9.0" },
     { name = "sqlalchemy", specifier = ">=2.0.0" },
     { name = "streamlit", specifier = ">=1.38.0" },
     { name = "tenacity", specifier = ">=8.3.0" },
 ]
-provides-extras = ["events", "dev"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "frozenlist"

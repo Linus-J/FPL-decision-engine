@@ -3,15 +3,18 @@
 recoveries/dribbles onto player_match_events from WhoScored's raw event
 stream (P10 follow-up — FBref's summary table structurally lacks these).
 
-Browser-only, same reasoning as scrape_fbref.py — run it on a workstation
-with Chrome/Chromium. Run scrape_fbref.py FIRST: this only UPDATEs rows
-FBref's ingest already created (it never inserts new ones), then re-runs the
-26/27 BPS recompute so recomputed_bonus/bonus_2627 pick up the richer counts.
+Called automatically by scripts/run_weekly.py before every real decision
+(2026-08-01), always AFTER scripts/scrape_fbref.py -- soccerdata is a core
+dependency now, not optional. Browser-only, same reasoning as
+scrape_fbref.py — run it on a workstation with Chrome/Chromium. Run
+scrape_fbref.py FIRST: this only UPDATEs rows FBref's ingest already
+created (it never inserts new ones), then re-runs the 26/27 BPS recompute
+so recomputed_bonus/bonus_2627 pick up the richer counts.
 
 Usage (from the repo root, with a browser available):
 
     DB_PATH=fpl_bot_v2.db WHOSCORED_HEADED=1 \
-        uv run --with soccerdata python scripts/scrape_whoscored.py 2025-26
+        uv run python scripts/scrape_whoscored.py 2025-26
 
 WhoScored blocks scrapers more aggressively than FBref — headed mode
 (WHOSCORED_HEADED=1) is the default here (unlike FBref's headless default)

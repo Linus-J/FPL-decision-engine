@@ -1,6 +1,8 @@
 #!/usr/bin/env python
-"""scrape_fbref.py — run the OPTIONAL FBref event scrape (T5b live path).
+"""scrape_fbref.py — run the FBref event scrape (T5b live path).
 
+Called automatically by scripts/run_weekly.py before every real decision
+(2026-08-01) -- soccerdata is a core dependency now, not optional.
 Browser-only: soccerdata drives a headless-incompatible Selenium/Chrome stack to
 get past FBref's Cloudflare wall, so this cannot run in CI/background — run it on
 a workstation with Chrome. Populates ``player_match_events`` and then recomputes
@@ -8,13 +10,9 @@ a workstation with Chrome. Populates ``player_match_events`` and then recomputes
 
 Usage (from the repo root, with a browser available):
 
-    DB_PATH=fpl_bot_v2.db uv run --with soccerdata python scripts/scrape_fbref.py 2025-26
+    DB_PATH=fpl_bot_v2.db uv run python scripts/scrape_fbref.py 2025-26
     # multiple seasons:
-    DB_PATH=fpl_bot_v2.db uv run --with soccerdata python scripts/scrape_fbref.py 2025-26 2024-25
-
-`--with soccerdata` layers the (heavy, browser-driving) dependency on for just
-this run. A bare `uv pip install soccerdata` does NOT survive, because `uv run`
-re-syncs the venv from pyproject.toml, where soccerdata is intentionally absent.
+    DB_PATH=fpl_bot_v2.db uv run python scripts/scrape_fbref.py 2025-26 2024-25
 
 Defaults to 2025-26 (the Phase-2 exit-gate / P-RS season) when no season is given.
 Players are matched to the DB by name, so run this AFTER the player roster is

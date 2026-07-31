@@ -1,10 +1,21 @@
 #!/usr/bin/env python
-"""Manual weekly kickoff: runs the real agent decision, then the simulation
-batch, in that order -- the simulation batch always runs regardless of the
-agent's exit code (it legitimately exits 1 on the benign pre-season
-"no_projections" case; see deploy/fpl-bot.service's ExecStart chain for the
-same reasoning). Built for running this by hand on a machine that isn't
-always on, rather than relying solely on the systemd timer.
+"""Manual weekly kickoff: refreshes match-event + ownership data for the
+gameweek that just finished, THEN runs the real agent decision, THEN the
+simulation batch -- in that order, so the decision is made against
+up-to-date DefCon/bonus/ownership data, not whatever was last scraped.
+
+FBref -> WhoScored -> ownership -> run_agent.py -> run_simulations.py.
+FBref must run before WhoScored (WhoScored only PATCHES rows FBref's
+ingest already created, never inserts new -- see scrape_whoscored.py).
+Every step degrades gracefully (logs a warning, continues) except the
+final two, whose own exit codes are reported but never block each other
+-- the simulation batch must always run regardless of the agent's exit
+code (it legitimately exits 1 on the benign pre-season "no_projections"
+case).
+
+Match-event scraping needs a real browser (Chrome/Chromium) and can hit
+Cloudflare -- pass --skip-match-events to skip FBref/WhoScored on a run
+where that's not available or not worth the time.
 
 Flags are passed straight through to scripts/run_agent.py -- pass nothing
 to use its own .env-based DRY_RUN default, same as the systemd service.
@@ -14,6 +25,8 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,13 +41,60 @@ def _run(args: list[str]) -> int:
     return subprocess.run(args, cwd=REPO_ROOT).returncode
 
 
+def _run_or_warn(step_name: str, args: list[str]) -> None:
+    code = _run(args)
+    if code != 0:
+        logger.warning(
+            "%s exited with code %d -- continuing with whatever data is already "
+            "in the DB (this step is best-effort, never blocks the rest of the run)",
+            step_name, code,
+        )
+
+
+def _current_gameweek() -> int | None:
+    """The gameweek whose deadline has just passed -- the one to sample a
+    fresh ownership snapshot for (see ingest_ownership.py's own caveat:
+    sampling before a GW's deadline gets zero ranked entries)."""
+    from projection.pipeline import _get_current_and_next_gw
+
+    try:
+        current_gw, _ = _get_current_and_next_gw()
+        return current_gw
+    except Exception as exc:
+        logger.warning("Could not determine the current gameweek for ownership: %s", exc)
+        return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true", help="Force live submission")
     parser.add_argument("--dry-run", action="store_true", help="Force dry-run (no submission)")
     parser.add_argument("--chip", default=None, help="Force a specific chip")
     parser.add_argument("--season", default="2026-27")
+    parser.add_argument(
+        "--skip-match-events", action="store_true",
+        help="Skip FBref/WhoScored (no browser available, or not worth the time this week)",
+    )
     args = parser.parse_args()
+
+    if args.skip_match_events:
+        logger.info("Skipping FBref/WhoScored match-event refresh (--skip-match-events)")
+    else:
+        _run_or_warn(
+            "scripts/scrape_fbref.py",
+            [sys.executable, "scripts/scrape_fbref.py", args.season],
+        )
+        _run_or_warn(
+            "scripts/scrape_whoscored.py",
+            [sys.executable, "scripts/scrape_whoscored.py", args.season],
+        )
+
+    gw = _current_gameweek()
+    if gw:
+        _run_or_warn(
+            "scripts/ingest_ownership.py",
+            [sys.executable, "scripts/ingest_ownership.py", str(gw)],
+        )
 
     agent_args = [sys.executable, "scripts/run_agent.py", "--season", args.season]
     if args.live:

@@ -35,16 +35,16 @@ dependencies = [
     "seaborn>=0.13.2",
     # Dashboard
     "streamlit>=1.38.0",
+    # FBref/WhoScored/Understat match-event ingest (T5b, P7/P8's real data
+    # fix). Heavy: pulls a SeleniumBase/Chrome stack to bypass Cloudflare —
+    # was optional while this only ran as a one-off historical backfill on a
+    # headless server; promoted to core 2026-08-01 now that
+    # scripts/run_weekly.py runs it every week on a machine with a real
+    # browser. Needs a browser present (FBREF_BROWSER/FBREF_HEADED env vars).
+    "soccerdata>=1.9.0",
 ]
 
 [project.optional-dependencies]
-# FBref event ingest (T5b). Heavy: soccerdata pulls a SeleniumBase/Chrome stack
-# to bypass FBref's Cloudflare wall, so it is NOT a core dependency — only the
-# optional data/ingestors/fbref.py adapter needs it, and only where a browser
-# is available. The BPS recompute pipeline itself has no soccerdata dependency.
-events = [
-    "soccerdata>=1.9.0",
-]
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
