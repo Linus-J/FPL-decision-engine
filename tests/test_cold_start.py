@@ -141,3 +141,33 @@ def test_build_initial_squad_uses_injected_players_not_live_bootstrap(temp_sessi
     assert len(solution.squad) == 15
     assert "Leaver0" not in solution.squad["web_name"].tolist()  # departure gate still applied
     assert not projections.empty
+
+
+def test_build_initial_squad_passes_config_through_to_optimise_squad(temp_session, monkeypatch):
+    """Simulation-engine entry point: run_for_persona cold-starts a persona
+    via build_initial_squad(config=...) -- must actually reach the internal
+    optimise_squad call, not be silently dropped."""
+    from config.strategy import OptimiserConfig
+
+    _seed_full_pool(temp_session)
+    s = temp_session()
+    try:
+        injected = pd.read_sql(
+            "SELECT id, web_name, position, now_cost, status, team_id FROM players", s.bind
+        )
+    finally:
+        s.close()
+
+    persona_config = OptimiserConfig(risk_mode="aggressive")
+    received = {}
+
+    import optimiser.squad as squad_module
+    real_fn = squad_module.optimise_squad
+
+    def _spy(*args, **kwargs):
+        received["config"] = kwargs.get("config")
+        return real_fn(*args, **kwargs)
+
+    monkeypatch.setattr(squad_module, "optimise_squad", _spy)
+    cs.build_initial_squad("2026-27", players=injected, config=persona_config)
+    assert received["config"] is persona_config

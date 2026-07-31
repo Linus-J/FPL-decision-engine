@@ -7,7 +7,7 @@ from functools import lru_cache
 import pandas as pd
 from sqlalchemy import text
 
-from config.strategy import CHIP_TIMING, CHIPS, SQUAD
+from config.strategy import CHIP_TIMING, CHIPS, ChipTimingThresholds, OptimiserConfig
 from data.db import get_session
 from optimiser.chip_scenarios import gain_distribution, load_scenario_totals
 from optimiser.squad import optimise_squad
@@ -94,18 +94,25 @@ def _current_half_expiry_gw(current_gw: int, season: str | None = None) -> int:
     return half_boundary if current_gw <= half_boundary else _get_total_gws(season)
 
 
-def _panic_shrink(current_gw: int, season: str | None = None) -> float:
+def _panic_shrink(
+    current_gw: int, season: str | None = None, chip_timing: ChipTimingThresholds | None = None
+) -> float:
     """1.0 outside the panic window; linearly decays to
-    ``CHIP_TIMING.panic_threshold_shrink`` as ``current_gw`` approaches its
+    ``chip_timing.panic_threshold_shrink`` as ``current_gw`` approaches its
     half's expiry, so a real-but-marginal chip opportunity is far more
     likely to clear its threshold before evaporating unused. See
-    ``ChipTimingThresholds.panic_window_gws`` for the rationale."""
+    ``ChipTimingThresholds.panic_window_gws`` for the rationale.
+
+    ``chip_timing`` (optional): overrides the global ``CHIP_TIMING`` for
+    this call only; ``None`` is byte-for-byte identical to today's
+    behaviour."""
+    timing = chip_timing or CHIP_TIMING
     gws_remaining = _current_half_expiry_gw(current_gw, season) - current_gw
-    window = CHIP_TIMING.panic_window_gws
+    window = timing.panic_window_gws
     if gws_remaining < 0 or gws_remaining >= window:
         return 1.0
     frac = gws_remaining / window
-    return CHIP_TIMING.panic_threshold_shrink + frac * (1.0 - CHIP_TIMING.panic_threshold_shrink)
+    return timing.panic_threshold_shrink + frac * (1.0 - timing.panic_threshold_shrink)
 
 
 class Chip(str, Enum):
@@ -185,9 +192,19 @@ def recommend_chip(
     bgw_affected_count: int = 0,
     squad_age_gws: int = 99,
     season: str | None = None,
+    chip_timing: ChipTimingThresholds | None = None,
+    config: OptimiserConfig | None = None,
 ) -> ChipRecommendation:
+    """``chip_timing``/``config`` (optional): override the global
+    ``CHIP_TIMING``/``OPTIMISER`` for this call only — used by the
+    simulation engine to vary chip-timing aggressiveness and risk posture
+    per persona (the latter feeds the internal Free Hit/Wildcard scenario
+    rebuilds via ``optimise_squad``). ``None`` (every real-bot call site) is
+    byte-for-byte identical to reading the globals directly, as before
+    these parameters existed."""
+    timing = chip_timing or CHIP_TIMING
     dgw_gws = dgw_gws or set()
-    horizon = CHIP_TIMING.wildcard_eval_horizon_gws
+    horizon = timing.wildcard_eval_horizon_gws
     dgw_active_now = bool(dgw_gws and current_gw in dgw_gws)
     # Only within whatever short lookahead the caller's dgw_gws already
     # covers (typically the transfer-planning horizon) -- a real but
@@ -213,7 +230,7 @@ def recommend_chip(
         tc_scenarios = pd.Series(dtype=float)
         if season is not None and best_id is not None:
             tc_scenarios = load_scenario_totals(season, current_gw, [best_id])
-        threshold = CHIP_TIMING.triple_captain_min_gain * _panic_shrink(current_gw, season)
+        threshold = timing.triple_captain_min_gain * _panic_shrink(current_gw, season, timing)
         if dgw_visible_ahead:
             # 2026-07-30 (user's own review): TC's own marginal value is
             # basically always positive (see _evaluate_triple_captain), so
@@ -222,9 +239,9 @@ def recommend_chip(
             # DGW captain who'll likely return far more from two fixtures."
             # Raises the bar rather than blocking outright -- an
             # exceptional normal week can still justify using it now.
-            threshold *= CHIP_TIMING.triple_captain_dgw_wait_multiplier
+            threshold *= timing.triple_captain_dgw_wait_multiplier
         if not _clears_threshold(
-            tc_gain, threshold, tc_scenarios, CHIP_TIMING.triple_captain_min_payoff_probability
+            tc_gain, threshold, tc_scenarios, timing.triple_captain_min_payoff_probability
         ):
             return None
         logger.info("TC recommended: captain xPts=%.2f", tc_gain)
@@ -240,9 +257,9 @@ def recommend_chip(
             bench_ids = _bench_player_ids(current_squad_ids, projections, current_gw)
             if bench_ids:
                 bb_scenarios = load_scenario_totals(season, current_gw, bench_ids)
-        threshold = CHIP_TIMING.bench_boost_min_bench_xpts * _panic_shrink(current_gw, season)
+        threshold = timing.bench_boost_min_bench_xpts * _panic_shrink(current_gw, season, timing)
         if not _clears_threshold(
-            bench_xpts, threshold, bb_scenarios, CHIP_TIMING.bench_boost_min_payoff_probability
+            bench_xpts, threshold, bb_scenarios, timing.bench_boost_min_payoff_probability
         ):
             return None
         logger.info("BB recommended: bench_xpts=%.2f in DGW%d", bench_xpts, current_gw)
@@ -262,7 +279,8 @@ def recommend_chip(
         if not (bgw_affected_count >= 5 or dgw_active_now):
             return None
         fh_solution = optimise_squad(
-            projections=projections, players=players, budget=available_budget, horizon=1
+            projections=projections, players=players, budget=available_budget, horizon=1,
+            config=config,
         )
         fh_gws = sorted(projections["gameweek"].unique())[:1]
         fh_squad_ids = fh_solution.squad["id"].tolist()
@@ -282,11 +300,11 @@ def recommend_chip(
         fh_scenarios = pd.Series(dtype=float)
         if season is not None and fh_gws == [current_gw]:
             fh_scenarios = gain_distribution(season, current_gw, fh_squad_ids, current_squad_ids)
-        threshold = CHIP_TIMING.free_hit_single_gw_gain_threshold * _panic_shrink(
-            current_gw, season
+        threshold = timing.free_hit_single_gw_gain_threshold * _panic_shrink(
+            current_gw, season, timing
         )
         if not _clears_threshold(
-            gain, threshold, fh_scenarios, CHIP_TIMING.free_hit_min_payoff_probability
+            gain, threshold, fh_scenarios, timing.free_hit_min_payoff_probability
         ):
             return None
         trigger = "DGW" if dgw_active_now and bgw_affected_count < 5 else "BGW"
@@ -296,11 +314,11 @@ def recommend_chip(
     def _try_wc() -> ChipRecommendation | None:
         if _chip_uses_remaining(Chip.WILDCARD, chips_used, current_gw, season) <= 0:
             return None
-        if squad_age_gws < CHIP_TIMING.wildcard_min_managed_gws:
+        if squad_age_gws < timing.wildcard_min_managed_gws:
             return None
         wc_solution = optimise_squad(
             projections=projections, players=players, budget=available_budget, horizon=horizon,
-            current_squad_ids=current_squad_ids, free_transfers=15,
+            current_squad_ids=current_squad_ids, free_transfers=15, config=config,
         )
         wc_squad_ids = wc_solution.squad["id"].tolist()
         wc_gws_xpts = float(
@@ -312,9 +330,9 @@ def recommend_chip(
         wc_scenarios = pd.Series(dtype=float)
         if season is not None:
             wc_scenarios = gain_distribution(season, gws, wc_squad_ids, current_squad_ids)
-        threshold = CHIP_TIMING.wildcard_pts_gain_threshold * _panic_shrink(current_gw, season)
+        threshold = timing.wildcard_pts_gain_threshold * _panic_shrink(current_gw, season, timing)
         if not _clears_threshold(
-            wc_gain, threshold, wc_scenarios, CHIP_TIMING.wildcard_min_payoff_probability
+            wc_gain, threshold, wc_scenarios, timing.wildcard_min_payoff_probability
         ):
             return None
         logger.info("WC recommended: gain=%.2f over %d GWs", wc_gain, horizon)

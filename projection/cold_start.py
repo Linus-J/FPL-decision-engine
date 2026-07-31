@@ -130,7 +130,10 @@ def project_cold_start(
 
 
 def build_initial_squad(
-    season: str, budget: float | None = None, players: pd.DataFrame | None = None
+    season: str,
+    budget: float | None = None,
+    players: pd.DataFrame | None = None,
+    config=None,
 ):
     """Construct the GW1 initial 15 from prior-season data only.
 
@@ -142,6 +145,11 @@ def build_initial_squad(
     roster/prices rather than today's live bootstrap — 2026-07-30, the
     user's own request ("we need to have and test a method to start from
     GW1... for the realtime 26/27 season which is approaching").
+
+    ``config`` (optional, ``OptimiserConfig``): passed straight through to
+    ``optimise_squad`` — lets the simulation engine cold-start a persona's
+    initial squad under its own risk posture. ``None`` is byte-for-byte
+    identical to today's behaviour.
 
     Returns (SquadSolution, projections_df). Imports the optimiser lazily so the
     projection layer stays testable without PuLP.
@@ -162,6 +170,7 @@ def build_initial_squad(
     ).drop(columns=["player_id"], errors="ignore")
 
     solution = optimise_squad(
-        projections=projections, players=players, budget=budget, horizon=1, season=season
+        projections=projections, players=players, budget=budget, horizon=1, season=season,
+        config=config,
     )
     return solution, projections

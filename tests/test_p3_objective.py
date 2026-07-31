@@ -92,6 +92,31 @@ def test_optimise_starting_xi_aggressive_mode_prefers_low_eo_captain(monkeypatch
     assert solution.captain_id == 8, "aggressive mode should captain the low-EO differential"
 
 
+def test_optimise_starting_xi_config_param_overrides_without_monkeypatch():
+    """Simulation-engine entry point: passing ``config=`` directly (no
+    monkeypatch of the module global) must have the same effect as
+    ``test_optimise_starting_xi_aggressive_mode_prefers_low_eo_captain``'s
+    monkeypatch-based override -- proves the explicit-parameter path (used
+    by ``run_for_persona``) actually takes effect, not just that it's
+    harmless when omitted (already covered by the untouched suite)."""
+    aggressive = OptimiserConfig(
+        risk_mode="aggressive", max_ownership_differential=0.5, variance_weight=0.0
+    )
+    squad = _minimal_squad_for_xi()
+    gw = 10
+    projections = pd.DataFrame([
+        {"player_id": pid, "gameweek": gw,
+         "xpts": 8.0 if pid in (8, 9) else 5.0, "xpts_var": 0.0}
+        for pid in squad["id"]
+    ])
+    ownership = pd.DataFrame([
+        {"player_id": 8, "top10k_selected_pct": 5.0},
+        {"player_id": 9, "top10k_selected_pct": 90.0},
+    ])
+    solution = optimise_starting_xi(squad, projections, gw, ownership=ownership, config=aggressive)
+    assert solution.captain_id == 8, "explicit config= override should behave like the global one"
+
+
 def test_optimise_squad_default_config_matches_pre_p3_3_behaviour():
     # a simple from-scratch build (no current_squad_ids) -- default config
     # (balanced, no ownership) must pick purely by raw xpts, as before
@@ -160,6 +185,29 @@ def test_evaluate_transfers_default_config_ignores_ownership_entirely():
     )
     assert without_eo.hits_taken == with_eo.hits_taken == 0
     assert without_eo.net_xpts_gain == pytest.approx(with_eo.net_xpts_gain)
+
+
+def test_evaluate_transfers_transfer_rules_param_overrides_without_monkeypatch():
+    """Simulation-engine entry point: passing ``transfer_rules=`` directly
+    must behave like monkeypatching the module's ``TRANSFERS`` global (see
+    ``test_transfer_switching_cost_disabled_allows_a_gain_the_default_cost_blocks``)."""
+    import dataclasses
+
+    from config.strategy import TRANSFERS as real_transfers
+
+    # +0.5 pts/GW * 3 GWs = 1.5 total gain: blocked under the default 1.5pt
+    # switching cost, allowed once it's disabled via the explicit parameter.
+    players, squad_ids, projections = _squad_with_one_candidate_upgrade(0.5)
+    blocked_plan = evaluate_transfers(
+        squad_ids, projections, players, free_transfers=1, available_budget=100.0
+    )
+    assert blocked_plan.transfers_in == []
+
+    allowed_plan = evaluate_transfers(
+        squad_ids, projections, players, free_transfers=1, available_budget=100.0,
+        transfer_rules=dataclasses.replace(real_transfers, transfer_switching_cost=0.0),
+    )
+    assert any(t["player_id"] == 16 for t in allowed_plan.transfers_in)
 
 
 # --- transfer_switching_cost (2026-07-29, real case: Bruno Fernandes sold at

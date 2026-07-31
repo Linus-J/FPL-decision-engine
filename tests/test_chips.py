@@ -173,6 +173,34 @@ def test_recommend_chip_tc_passes_with_high_payoff_probability(session):
     assert rec.chip == chips.Chip.TRIPLE_CAPTAIN
 
 
+def test_recommend_chip_chip_timing_param_overrides_without_monkeypatch():
+    """Simulation-engine entry point: an explicit ``chip_timing=`` override
+    must actually change the recommendation, not just be harmless when
+    omitted (already covered by the untouched suite). gain=2.0 is below the
+    default 4.0 triple_captain_min_gain floor, but clears a lowered one."""
+    import dataclasses
+
+    from config.strategy import CHIP_TIMING
+
+    projections = _minimal_projections(5, best_xpts=2.0, second_xpts=1.9)
+    lenient = dataclasses.replace(CHIP_TIMING, triple_captain_min_gain=1.0)
+
+    blocked = chips.recommend_chip(
+        current_gw=5, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
+        available_budget=100.0, free_transfers=1, season=None,
+        **_skip_bb_fh_wc_kwargs(),
+    )
+    assert blocked.chip is None
+
+    allowed = chips.recommend_chip(
+        current_gw=5, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
+        available_budget=100.0, free_transfers=1, season=None,
+        chip_timing=lenient,
+        **_skip_bb_fh_wc_kwargs(),
+    )
+    assert allowed.chip == chips.Chip.TRIPLE_CAPTAIN
+
+
 def test_recommend_chip_no_chip_when_nothing_qualifies():
     # 2026-07-30: gain is now the captain's own absolute xPts, so this needs
     # a genuinely weak captain projection (not just a close second place)

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import pandas as pd
 import pulp
 
-from config.strategy import OPTIMISER, SQUAD, TRANSFERS
+from config.strategy import OPTIMISER, SQUAD, TRANSFERS, OptimiserConfig, TransferRules
 from optimiser.captaincy import scenario_based_captain
 from optimiser.scoring import lambda_mu_for_risk_mode, risk_adjusted_score
 
@@ -75,6 +75,8 @@ def optimise_squad(
     force_exclude_ids: list[int] | None = None,
     ownership: pd.DataFrame | None = None,
     season: str | None = None,
+    config: OptimiserConfig | None = None,
+    transfer_rules: TransferRules | None = None,
 ) -> SquadSolution:
     """``ownership`` (P3-3, optional): a ``(player_id, top10k_selected_pct)``
     frame (P3-2) feeding the risk-adjusted objective's differential term.
@@ -88,8 +90,17 @@ def optimise_squad(
     the one whose captain choice is actually about to be locked in.
     ``None`` (most callers — this function builds/rebuilds a SQUAD; final
     captaincy is usually decided later, per-GW, by ``optimise_starting_xi``)
-    keeps the plain linear-argmax pick."""
-    horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
+    keeps the plain linear-argmax pick.
+
+    ``config``/``transfer_rules`` (optional): override the global
+    ``OPTIMISER``/``TRANSFERS`` singletons for this call only — used by the
+    simulation engine to run the same optimiser under a different risk
+    posture per persona. ``None`` (every real-bot call site) is byte-for-
+    byte identical to reading the globals directly, as before this
+    parameter existed."""
+    cfg = config or OPTIMISER
+    trules = transfer_rules or TRANSFERS
+    horizon = horizon or cfg.transfer_planning_horizon_gws
     force_include_ids = set(force_include_ids or [])
     force_exclude_ids = set(force_exclude_ids or [])
     horizon_gws = sorted(projections["gameweek"].unique())[:horizon]
@@ -100,14 +111,14 @@ def optimise_squad(
 
     df = players.copy()
     df = df[df["status"].isin(["a", "d"])]
-    df = df[df["start_probability"] >= OPTIMISER.min_start_probability] if "start_probability" in df.columns else df
+    df = df[df["start_probability"] >= cfg.min_start_probability] if "start_probability" in df.columns else df
     df = df[~df["id"].isin(force_exclude_ids)]
 
     df["xpts_total"] = df["id"].map(xpts_by_player).fillna(0.0)
     df["var_total"] = df["id"].map(var_by_player).fillna(0.0)
 
     lam, mu = lambda_mu_for_risk_mode(
-        OPTIMISER.risk_mode, OPTIMISER.max_ownership_differential, OPTIMISER.variance_weight
+        cfg.risk_mode, cfg.max_ownership_differential, cfg.variance_weight
     )
     if ownership is not None and not ownership.empty:
         eo_map = ownership.set_index("player_id")["top10k_selected_pct"]
@@ -120,7 +131,7 @@ def optimise_squad(
     ]
 
     if current_squad_ids:
-        transfer_cost_per_extra = abs(TRANSFERS.hit_cost_points)
+        transfer_cost_per_extra = abs(trules.hit_cost_points)
         in_squad = set(current_squad_ids)
     else:
         in_squad = set()
@@ -153,7 +164,7 @@ def optimise_squad(
     # budget on equal terms.
     prob += pulp.lpSum(
         scores[i] * (starting[i] + captain[i])
-        + OPTIMISER.bench_value_weight * scores[i] * (selected[i] - starting[i])
+        + cfg.bench_value_weight * scores[i] * (selected[i] - starting[i])
         for i in range(n)
     )
 
@@ -203,7 +214,7 @@ def optimise_squad(
         vice2 = [pulp.LpVariable(f"vic2_{i}", cat="Binary") for i in range(n)]
         prob2 += pulp.lpSum(
             scores[i] * (starting2[i] + captain2[i])
-            + OPTIMISER.bench_value_weight * scores[i] * (selected2[i] - starting2[i])
+            + cfg.bench_value_weight * scores[i] * (selected2[i] - starting2[i])
             for i in range(n)
         )
         prob2 += pulp.lpSum(selected2) == SQUAD.squad_size
@@ -313,6 +324,7 @@ def optimise_starting_xi(
     gw: int,
     ownership: pd.DataFrame | None = None,
     season: str | None = None,
+    config: OptimiserConfig | None = None,
 ) -> SquadSolution:
     """``ownership`` (P3-3, optional, default None): see ``optimise_squad``'s
     docstring — ``None`` (every call site today, including the P-XI backtest
@@ -326,7 +338,12 @@ def optimise_starting_xi(
     MC samples over the additive own-variance approximation, where P3-1 has
     persisted them. At ``risk_mode="balanced"`` (mu=0, today's default) this
     is a no-op regardless of ``season`` — the P-XI gate stays byte-for-byte
-    reproducible whether or not ``season`` is passed."""
+    reproducible whether or not ``season`` is passed.
+
+    ``config`` (optional): see ``optimise_squad``'s docstring — overrides
+    the global ``OPTIMISER`` for this call only; ``None`` is byte-for-byte
+    identical to today's behaviour."""
+    cfg = config or OPTIMISER
     gw_proj = projections[projections["gameweek"] == gw][["player_id", "xpts"]].copy()
     if "xpts_var" in projections.columns:
         gw_var = projections[projections["gameweek"] == gw][["player_id", "xpts_var"]]
@@ -336,7 +353,7 @@ def optimise_starting_xi(
     df["xpts_var"] = df["xpts_var"].fillna(0.0) if "xpts_var" in df.columns else 0.0
 
     lam, mu = lambda_mu_for_risk_mode(
-        OPTIMISER.risk_mode, OPTIMISER.max_ownership_differential, OPTIMISER.variance_weight
+        cfg.risk_mode, cfg.max_ownership_differential, cfg.variance_weight
     )
     if ownership is not None and not ownership.empty:
         eo_map = ownership.set_index("player_id")["top10k_selected_pct"]

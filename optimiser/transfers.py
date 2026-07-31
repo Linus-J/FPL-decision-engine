@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import pandas as pd
 import pulp
 
-from config.strategy import OPTIMISER, SQUAD, TRANSFERS
+from config.strategy import OPTIMISER, SQUAD, TRANSFERS, OptimiserConfig, TransferRules
 from optimiser.departure_risk import confirmed_p_leave, is_hard_excluded
 from optimiser.scoring import lambda_mu_for_risk_mode, risk_adjusted_score
 
@@ -47,12 +47,20 @@ def evaluate_transfers(
     dgw_gws: set[int] | None = None,
     solver_time_limit: int | None = None,
     ownership: pd.DataFrame | None = None,
+    config: OptimiserConfig | None = None,
+    transfer_rules: TransferRules | None = None,
 ) -> TransferPlan:
     """``ownership`` (P3-3, optional, default None): see ``optimise_squad``'s
     docstring — ``None`` (the current live reality — EO sampling can't
     produce real data pre-GW1) makes EO a uniform 0% for every candidate, a
-    constant rescale that doesn't change which transfers get made."""
-    horizon = OPTIMISER.transfer_planning_horizon_gws
+    constant rescale that doesn't change which transfers get made.
+
+    ``config``/``transfer_rules`` (optional): see ``optimise_squad``'s
+    docstring — overrides the global ``OPTIMISER``/``TRANSFERS`` for this
+    call only; ``None`` is byte-for-byte identical to today's behaviour."""
+    cfg = config or OPTIMISER
+    trules = transfer_rules or TRANSFERS
+    horizon = cfg.transfer_planning_horizon_gws
     current_squad = players[players["id"].isin(current_squad_ids)].copy()
     budget = available_budget or float(current_squad["now_cost"].sum())
 
@@ -64,7 +72,7 @@ def evaluate_transfers(
     candidate_pids = set(current_squad_ids)
     if "start_probability" in projections.columns:
         candidate_pids |= set(
-            projections[projections["start_probability"] >= OPTIMISER.min_start_probability]["player_id"]
+            projections[projections["start_probability"] >= cfg.min_start_probability]["player_id"]
         )
     else:
         candidate_pids |= set(projections["player_id"].unique())
@@ -98,7 +106,7 @@ def evaluate_transfers(
     }
 
     lam, mu = lambda_mu_for_risk_mode(
-        OPTIMISER.risk_mode, OPTIMISER.max_ownership_differential, OPTIMISER.variance_weight
+        cfg.risk_mode, cfg.max_ownership_differential, cfg.variance_weight
     )
     # The optimiser's-curse correction now lives upstream, in
     # projection.assemble.apply_curse_shrinkage (2026-07-28) — `projections`
@@ -206,20 +214,20 @@ def evaluate_transfers(
         if wildcard_active and w == 0:
             prob += hit[0] == 0
         else:
-            prob += hit[w] <= TRANSFERS.max_hits_per_gw
+            prob += hit[w] <= trules.max_hits_per_gw
 
         prob += ft[w + 1] <= ft[w] - n_trans[w] + 1
-        prob += ft[w + 1] <= TRANSFERS.max_banked_free_transfers
+        prob += ft[w + 1] <= trules.max_banked_free_transfers
         prob += ft[w + 1] >= 1
 
     prob += pulp.lpSum(
         scores_pw[(pid, w)] * starting[(pid, w)]
         + scores_pw[(pid, w)] * captain[(pid, w)]
-        - hit[w] * abs(TRANSFERS.hit_cost_points)
+        - hit[w] * abs(trules.hit_cost_points)
         for pid in pid_list
         for w in range(H)
-    ) + TRANSFERS.ft_terminal_value * ft[H] - pulp.lpSum(
-        TRANSFERS.transfer_switching_cost * n_trans[w] for w in range(H)
+    ) + trules.ft_terminal_value * ft[H] - pulp.lpSum(
+        trules.transfer_switching_cost * n_trans[w] for w in range(H)
     )
 
     solver_args = {"msg": False}
@@ -241,7 +249,7 @@ def evaluate_transfers(
     xpts_after = _squad_xpts(new_squad_ids, projections, horizon)
     xpts_before = _squad_xpts(current_squad_ids, projections, horizon)
     xpts_gain = xpts_after - xpts_before
-    net_xpts_gain = xpts_gain + actual_hits * TRANSFERS.hit_cost_points
+    net_xpts_gain = xpts_gain + actual_hits * trules.hit_cost_points
 
     def _player_info(pid: int) -> dict:
         row = players[players["id"] == pid]
