@@ -54,9 +54,13 @@ dev = [
 ]
 
 [project.scripts]
-fpl-bot = "scheduler.jobs:main"
+# fpl-bot (scheduler.jobs:main) and fpl-train (scripts.train_models:main)
+# removed 2026-08-01 -- both referenced modules that no longer exist
+# (scheduler/ was never created; train_models.py's only job, training the
+# now-removed legacy points_model/cs_model, was superseded by
+# projection/assemble.py's P10 MC assembly). These entries never actually
+# installed as console scripts anyway (tool.uv.package = false below).
 fpl-backfill = "scripts.backfill_history:main"
-fpl-train = "scripts.train_models:main"
 
 [tool.uv]
 package = false

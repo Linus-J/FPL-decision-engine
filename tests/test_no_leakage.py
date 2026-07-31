@@ -28,12 +28,13 @@ FORBIDDEN = [
     "p.transfers_in_event", "p.transfers_out_event", "p.injury_severity",
 ]
 
-# Files whose SQL feeds model training or the backtest.
+# Files whose SQL feeds model training or the backtest. points_model.py/
+# cs_model.py removed 2026-08-01 (confirmed dead in the live and backtest
+# paths -- superseded by projection/assemble.py's P10 MC assembly).
 GUARDED_FILES = [
     "scripts/backtest.py",
     "projection/features.py",
     "projection/minutes_model.py",
-    "projection/points_model.py",
 ]
 
 
