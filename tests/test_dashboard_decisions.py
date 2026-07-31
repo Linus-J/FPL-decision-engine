@@ -13,7 +13,7 @@ from dashboard.data.decisions import (
     get_latest_chip_plan,
     get_latest_transfer_plan,
 )
-from data.models import Base, DecisionLog
+from data.models import Base, DecisionLog, SimDecisionLog, SimManager
 
 
 @pytest.fixture
@@ -46,6 +46,34 @@ def test_history_parses_details_and_respects_gw_window(session):
     df = get_decision_history(session, limit_gws=5)
     assert set(df["gameweek"]) == {25}
     assert df.iloc[0]["details"] == {"squad_ids": [3, 4]}
+
+
+def test_decision_history_sim_manager_id_reads_sim_table_isolated(session):
+    session.add(SimManager(
+        id=1, season="2026-27", label="sim-001", risk_mode="balanced",
+        variance_weight=0.0, max_ownership_differential=0.5, chip_aggressiveness=1.0,
+    ))
+    session.add(SimManager(
+        id=2, season="2026-27", label="sim-002", risk_mode="aggressive",
+        variance_weight=0.5, max_ownership_differential=0.8, chip_aggressiveness=1.2,
+    ))
+    session.add_all([
+        SimDecisionLog(sim_manager_id=1, gameweek=5, decision_type="lineup",
+                        details=json.dumps({"squad_ids": [1]}), projected_gain=20.0),
+        SimDecisionLog(sim_manager_id=2, gameweek=5, decision_type="lineup",
+                        details=json.dumps({"squad_ids": [2]}), projected_gain=30.0),
+    ])
+    _log(session, 5, "lineup", {"squad_ids": [99]}, projected_gain=99.0)
+    session.commit()
+
+    df1 = get_decision_history(session, sim_manager_id=1)
+    df2 = get_decision_history(session, sim_manager_id=2)
+    df_real = get_decision_history(session)
+
+    assert len(df1) == 1 and df1.iloc[0]["details"] == {"squad_ids": [1]}
+    assert len(df2) == 1 and df2.iloc[0]["details"] == {"squad_ids": [2]}
+    assert len(df_real) == 1 and df_real.iloc[0]["details"] == {"squad_ids": [99]}
+    assert bool(df1.iloc[0]["dry_run"]) is True  # constant True for sim rows
 
 
 def test_latest_chip_plan_returns_none_when_absent(session):

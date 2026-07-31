@@ -11,21 +11,38 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
-def get_decision_history(db: Session, limit_gws: int = 20) -> pd.DataFrame:
-    """One row per decision_log entry within the last ``limit_gws`` gameweeks,
-    most recent first, with ``details`` parsed from JSON."""
-    max_gw_row = db.execute(text("SELECT MAX(gameweek) FROM decision_log")).fetchone()
+def get_decision_history(
+    db: Session, limit_gws: int = 20, sim_manager_id: int | None = None
+) -> pd.DataFrame:
+    """One row per decision entry within the last ``limit_gws`` gameweeks,
+    most recent first, with ``details`` parsed from JSON. ``sim_manager_id``
+    (optional): ``None`` (default, every existing call site) reads the real
+    ``decision_log`` unchanged; a value reads that persona's own
+    ``sim_decision_log`` rows instead. ``sim_decision_log`` has no
+    ``dry_run`` column (every sim decision is inherently simulated) --
+    reported as a constant ``True`` so the page's rendering stays
+    unchanged either way."""
+    table = "sim_decision_log" if sim_manager_id is not None else "decision_log"
+    sim_filter = " AND sim_manager_id = :sim_manager_id" if sim_manager_id is not None else ""
+    dry_run_col = "1 AS dry_run" if sim_manager_id is not None else "dry_run"
+    params: dict = {"sim_manager_id": sim_manager_id} if sim_manager_id is not None else {}
+
+    max_gw_row = db.execute(
+        text(f"SELECT MAX(gameweek) FROM {table} WHERE 1=1{sim_filter}"), params
+    ).fetchone()
     max_gw = max_gw_row[0] if max_gw_row and max_gw_row[0] is not None else 0
-    query = text("""
+
+    query = text(f"""
         SELECT id, gameweek, decision_type, details, projected_gain,
-               actual_outcome, dry_run, created_at
-        FROM decision_log
-        WHERE gameweek >= :min_gw
+               actual_outcome, {dry_run_col}, created_at
+        FROM {table}
+        WHERE gameweek >= :min_gw{sim_filter}
         ORDER BY gameweek DESC, created_at DESC
     """)
-    df = pd.read_sql(query, db.bind, params={"min_gw": max_gw - limit_gws + 1})
+    df = pd.read_sql(query, db.bind, params={**params, "min_gw": max_gw - limit_gws + 1})
     if not df.empty:
         df["details"] = df["details"].apply(json.loads)
+        df["dry_run"] = df["dry_run"].astype(bool)
     return df
 
 
