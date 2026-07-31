@@ -89,6 +89,43 @@ async def _submit_transfers(
         return result
 
 
+_STARTING_POSITION_ORDER = {"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
+
+
+def _build_picks(squad: list[dict], captain_id: int, vice_captain_id: int) -> list[dict]:
+    """FPL's picks payload requires each of the 15 ``position`` values to be
+    a UNIQUE integer 1-15 (1 = the starting GK; the API rejects duplicates).
+    Real bug found 2026-08-01 (user's own repo-cleanup request): the old
+    per-player helper always returned a fixed slot per position (e.g. every
+    starting DEF got ``position: 2``), so any squad with more than one
+    starter in a position would submit duplicate values -- untested and
+    never exercised live (dry-run only so far).
+
+    Starters are ordered GKP/DEF/MID/FWD then assigned 1..11 sequentially;
+    bench players are ordered by their own pre-computed ``bench_order``
+    (GK bench = 0, remaining 3 outfield by xPts descending -- see
+    optimiser/squad.py) and assigned 12..15."""
+    starters = sorted(
+        (p for p in squad if p.get("is_starting")),
+        key=lambda p: _STARTING_POSITION_ORDER.get(p["position"], 99),
+    )
+    bench = sorted(
+        (p for p in squad if not p.get("is_starting")),
+        key=lambda p: p.get("bench_order", 99),
+    )
+
+    picks = []
+    for slot, player in enumerate(starters + bench, start=1):
+        pid = player["id"]
+        picks.append({
+            "element": pid,
+            "position": slot,
+            "is_captain": pid == captain_id,
+            "is_vice_captain": pid == vice_captain_id,
+        })
+    return picks
+
+
 async def _submit_lineup(
     session: aiohttp.ClientSession,
     squad: list[dict],
@@ -96,28 +133,7 @@ async def _submit_lineup(
     vice_captain_id: int,
     chip: str | None,
 ) -> dict[str, Any]:
-    picks = []
-    bench_order = 12
-    for player in squad:
-        pid = player["id"]
-        is_starting = player.get("is_starting", False)
-        is_cap = pid == captain_id
-        is_vc = pid == vice_captain_id
-
-        if is_starting:
-            position = _playing_position(player["position"], squad)
-        else:
-            position = bench_order
-            bench_order += 1
-
-        picks.append({
-            "element": pid,
-            "position": position,
-            "is_captain": is_cap,
-            "is_vice_captain": is_vc,
-        })
-
-    payload: dict[str, Any] = {"picks": picks}
+    payload: dict[str, Any] = {"picks": _build_picks(squad, captain_id, vice_captain_id)}
     if chip:
         payload["chip"] = chip
 
@@ -129,18 +145,6 @@ async def _submit_lineup(
         result = await resp.json()
         logger.info("Lineup submitted: captain=%d vc=%d chip=%s", captain_id, vice_captain_id, chip)
         return result
-
-
-def _playing_position(position: str, squad: list[dict]) -> int:
-    order = {"GKP": 1, "DEF": 2, "MID": 3, "FWD": 4}
-    starters = [p for p in squad if p.get("is_starting")]
-    same_pos = [p for p in starters if p["position"] == position]
-    idx = next(
-        (i for i, p in enumerate(same_pos) if p.get("is_captain") or p.get("is_vice_captain") or True),
-        0,
-    )
-    base = {"GKP": 1, "DEF": 2, "MID": 6, "FWD": 10}[position]
-    return base
 
 
 async def submit_decisions(

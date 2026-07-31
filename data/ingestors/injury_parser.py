@@ -1,6 +1,5 @@
 import logging
 import re
-from datetime import datetime
 
 from sqlalchemy import text
 

@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import brier_score_loss
 from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import Pipeline
@@ -14,7 +13,7 @@ from sklearn.preprocessing import StandardScaler
 from sqlalchemy import text
 
 from data.db import get_session
-from projection.features import FDR_FEATURE_COLS, add_fdr_features, load_fixture_difficulty
+from projection.features import add_fdr_features, load_fixture_difficulty
 
 logger = logging.getLogger(__name__)
 

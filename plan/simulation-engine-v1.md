@@ -1,5 +1,13 @@
 # Live Simulation Engine v1 — Design
 
+**Superseded in part by `plan/risk-aware-cold-start-v1.md` (2026-08-01)**:
+the persona schema below (`risk_mode` string, separate `variance_weight`
+knob, `hit_min_gain_buffer`) was replaced by a single continuous
+`risk_level` float that drives both lambda and mu together —
+`hit_min_gain_buffer` turned out to be dead code, never wired into the
+optimiser at all. Everything else on this page (architecture, decision-loop
+reuse, storage schema, dashboard) is still current.
+
 ## Purpose
 
 Run ~100 parallel "shadow" FPL managers through the live 2026-27 season,

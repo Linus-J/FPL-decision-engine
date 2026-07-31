@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import pandas as pd
 import pulp
 
-from config.strategy import OPTIMISER, SQUAD, TRANSFERS, OptimiserConfig, TransferRules
+from config.strategy import OPTIMISER, SQUAD, OptimiserConfig
 from optimiser.captaincy import scenario_based_captain
 from optimiser.scoring import lambda_mu_for_risk_level, risk_adjusted_score
 
@@ -76,7 +76,6 @@ def optimise_squad(
     ownership: pd.DataFrame | None = None,
     season: str | None = None,
     config: OptimiserConfig | None = None,
-    transfer_rules: TransferRules | None = None,
 ) -> SquadSolution:
     """``ownership`` (P3-3, optional): a ``(player_id, top10k_selected_pct)``
     frame (P3-2) feeding the risk-adjusted objective's differential term.
@@ -92,14 +91,12 @@ def optimise_squad(
     captaincy is usually decided later, per-GW, by ``optimise_starting_xi``)
     keeps the plain linear-argmax pick.
 
-    ``config``/``transfer_rules`` (optional): override the global
-    ``OPTIMISER``/``TRANSFERS`` singletons for this call only — used by the
-    simulation engine to run the same optimiser under a different risk
-    posture per persona. ``None`` (every real-bot call site) is byte-for-
-    byte identical to reading the globals directly, as before this
-    parameter existed."""
+    ``config`` (optional): overrides the global ``OPTIMISER`` singleton for
+    this call only — used by the simulation engine to run the same
+    optimiser under a different risk posture per persona. ``None`` (every
+    real-bot call site) is byte-for-byte identical to reading the global
+    directly, as before this parameter existed."""
     cfg = config or OPTIMISER
-    trules = transfer_rules or TRANSFERS
     horizon = horizon or cfg.transfer_planning_horizon_gws
     force_include_ids = set(force_include_ids or [])
     force_exclude_ids = set(force_exclude_ids or [])
@@ -131,11 +128,9 @@ def optimise_squad(
     ]
 
     if current_squad_ids:
-        transfer_cost_per_extra = abs(trules.hit_cost_points)
         in_squad = set(current_squad_ids)
     else:
         in_squad = set()
-        transfer_cost_per_extra = 0
 
     player_ids = df["id"].tolist()
     idx = {pid: i for i, pid in enumerate(player_ids)}
@@ -283,7 +278,6 @@ def optimise_squad(
 
     if current_squad_ids:
         incoming = selected_ids - in_squad
-        outgoing = in_squad - selected_ids
         transfers_made = len(incoming)
         hits = max(0, transfers_made - free_transfers)
     else:
@@ -371,7 +365,6 @@ def optimise_starting_xi(
 
     player_ids = df["id"].tolist()
     n = len(player_ids)
-    idx = {pid: i for i, pid in enumerate(player_ids)}
     positions = df["position"].tolist()
     scores = df["effective_score"].tolist()  # P3-3 risk-adjusted (objective);
     # true xpts for reporting is read straight off `df`/`starting_xi_df`

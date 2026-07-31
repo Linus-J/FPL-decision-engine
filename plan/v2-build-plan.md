@@ -3,7 +3,9 @@
 Companion to the design spec (`~/Downloads/fpl-2627-bot-plan.md`). That doc says *what* v2 should be.
 This doc grounds it in the **current v1 codebase**: what to keep, what to rip out, what to build, in what order, with acceptance gates. Read the design spec first; this is the execution layer.
 
-Status: proposed. Not yet started. v1 lives on `master` (commit `9e19927`).
+Status: proposed. Not yet started. v1 lives at commit `9e19927` (the
+`master` branch itself was deleted 2026-08-01 — fully merged into `v2`,
+zero unique commits lost; `v2` is the only branch now and GitHub's default).
 
 ---
 

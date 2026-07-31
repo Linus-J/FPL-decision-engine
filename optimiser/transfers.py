@@ -91,9 +91,7 @@ def evaluate_transfers(
     df = df.reset_index(drop=True)
 
     pid_list = df["id"].tolist()
-    pid_set = set(pid_list)
     N = len(pid_list)
-    pid_to_i = {pid: i for i, pid in enumerate(pid_list)}
 
     costs = df["now_cost"].tolist()
     positions = df["position"].tolist()
