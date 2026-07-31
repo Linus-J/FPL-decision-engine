@@ -15,7 +15,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import scripts.backfill_decision_outcomes as backfill_module
-from data.models import Base, DecisionLog, Gameweek, PlayerGameweekStats
+from data.models import Base, DecisionLog, Gameweek, PlayerGameweekStats, SimDecisionLog, SimManager
 
 
 @pytest.fixture
@@ -122,3 +122,84 @@ def test_bench_boost_includes_bench_points(session):
 
     row = session.query(DecisionLog).filter_by(decision_type="lineup").one()
     assert row.actual_outcome == 15  # 6*2 (captain) + 3 (bench, boosted)
+
+
+def _add_sim_manager(session, manager_id: int) -> None:
+    session.add(SimManager(
+        id=manager_id, season="2026-27", label=f"sim-{manager_id}",
+        risk_mode="balanced", variance_weight=0.0, max_ownership_differential=0.5,
+        chip_aggressiveness=1.0,
+    ))
+    session.commit()
+
+
+def _sim_lineup(session, sim_manager_id: int, gw: int, squad_ids, starting_ids, captain_id) -> int:
+    entry = SimDecisionLog(
+        sim_manager_id=sim_manager_id, gameweek=gw, decision_type="lineup",
+        details=json.dumps({
+            "squad_ids": squad_ids, "starting_ids": starting_ids, "captain_id": captain_id,
+        }),
+        projected_gain=0.0,
+    )
+    session.add(entry)
+    session.commit()
+    return entry.id
+
+
+def test_sim_decision_log_gets_backfilled(session):
+    _gw(session, 15, finished=True)
+    _add_sim_manager(session, 1)
+    _stats(session, 1, 15, points=7)
+    _stats(session, 2, 15, points=2)
+    _sim_lineup(session, 1, 15, squad_ids=[1, 2], starting_ids=[1, 2], captain_id=1)
+
+    n = backfill_module.backfill("2026-27")
+
+    assert n == 1
+    row = session.query(SimDecisionLog).one()
+    assert row.actual_outcome == 16  # 7*2 (captain) + 2
+
+
+def test_sim_decision_log_chip_history_is_isolated_per_manager(session):
+    """Manager 1 played bench boost this GW; manager 2 did not -- manager
+    2's bench points must NOT be counted even though both share a
+    gameweek."""
+    _gw(session, 16, finished=True)
+    _add_sim_manager(session, 1)
+    _add_sim_manager(session, 2)
+    _stats(session, 1, 16, points=5)
+    _stats(session, 2, 16, points=9)  # bench for both managers
+
+    session.add(SimDecisionLog(
+        sim_manager_id=1, gameweek=16, decision_type="chip",
+        details=json.dumps({"chip": "bboost", "reason": "test"}), projected_gain=0.0,
+    ))
+    session.commit()
+
+    _sim_lineup(session, 1, 16, squad_ids=[1, 2], starting_ids=[1], captain_id=1)
+    _sim_lineup(session, 2, 16, squad_ids=[1, 2], starting_ids=[1], captain_id=1)
+
+    backfill_module.backfill("2026-27")
+
+    manager1_row = session.query(SimDecisionLog).filter_by(
+        sim_manager_id=1, decision_type="lineup"
+    ).one()
+    manager2_row = session.query(SimDecisionLog).filter_by(
+        sim_manager_id=2, decision_type="lineup"
+    ).one()
+    assert manager1_row.actual_outcome == 19  # 5*2 (captain) + 9 (bench, boosted)
+    assert manager2_row.actual_outcome == 10  # 5*2 (captain) only -- no boost
+
+
+def test_backfill_covers_both_real_and_sim_logs_in_one_call(session):
+    _gw(session, 17, finished=True)
+    _add_sim_manager(session, 1)
+    _stats(session, 1, 17, points=4)
+    _lineup(session, 17, squad_ids=[1], starting_ids=[1], captain_id=1)
+    _sim_lineup(session, 1, 17, squad_ids=[1], starting_ids=[1], captain_id=1)
+
+    n = backfill_module.backfill("2026-27")
+
+    assert n == 2
+    assert session.query(DecisionLog).filter_by(decision_type="lineup").one().actual_outcome == 8
+    assert session.query(SimDecisionLog).one().actual_outcome == 8
