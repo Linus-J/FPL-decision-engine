@@ -372,9 +372,15 @@ class OptimiserConfig:
     # risk_level=0 would silently mean "ignore variance entirely", which is
     # not what "medium risk" should mean. mu_range is the spread risk_level
     # scales across; risk_level=-1 can go net negative (actively prefer
-    # low-variance picks at equal mean). Both untuned starting values,
-    # pending backtesting, same convention as this file's other heuristics.
-    mu_baseline: float = 0.05
+    # low-variance picks at equal mean). mu_range is still an untuned
+    # starting value, pending backtesting.
+    #
+    # mu_baseline calibrated 2026-07-31 (scripts/calibrate_risk_constants.py):
+    # swept [-0.05, 0.0, 0.05, 0.1, 0.15, 0.2] against the naive-XI exit-gate
+    # over GW6-20/2025-26 -- 0.0 won (57.67 avg actual pts/GW vs the prior
+    # 0.05 default's 57.27). Reduced window for speed, not a final gate
+    # validation; re-run GW6-38 to firm this up.
+    mu_baseline: float = 0.0
     mu_range: float = 0.08
 
     # Optimiser's-curse shrinkage (2026-07-28 data-completeness audit,
