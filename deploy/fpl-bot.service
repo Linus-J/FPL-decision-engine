@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/home/linus/Projects/FPL-26-27-bot
-ExecStart=/home/linus/.local/bin/uv run python scripts/run_agent.py
+ExecStart=/bin/sh -c '/home/linus/.local/bin/uv run python scripts/run_agent.py; /home/linus/.local/bin/uv run python scripts/run_simulations.py'
 EnvironmentFile=/home/linus/Projects/FPL-26-27-bot/.env
 StandardOutput=journal
 StandardError=journal
