@@ -6,7 +6,7 @@ import pulp
 
 from config.strategy import OPTIMISER, SQUAD, TRANSFERS, OptimiserConfig, TransferRules
 from optimiser.departure_risk import confirmed_p_leave, is_hard_excluded
-from optimiser.scoring import lambda_mu_for_risk_mode, risk_adjusted_score
+from optimiser.scoring import lambda_mu_for_risk_level, risk_adjusted_score
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +105,8 @@ def evaluate_transfers(
         if owned and is_hard_excluded(confirmed_p_leave(status))
     }
 
-    lam, mu = lambda_mu_for_risk_mode(
-        cfg.risk_mode, cfg.max_ownership_differential, cfg.variance_weight
+    lam, mu = lambda_mu_for_risk_level(
+        cfg.risk_level, cfg.max_ownership_differential, cfg.mu_baseline, cfg.mu_range
     )
     # The optimiser's-curse correction now lives upstream, in
     # projection.assemble.apply_curse_shrinkage (2026-07-28) — `projections`

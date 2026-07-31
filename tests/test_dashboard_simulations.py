@@ -22,8 +22,8 @@ def session(tmp_path):
 
 def _manager(session, manager_id: int, label: str, season: str = "2026-27") -> None:
     session.add(SimManager(
-        id=manager_id, season=season, label=label, risk_mode="balanced",
-        variance_weight=0.0, max_ownership_differential=0.5, chip_aggressiveness=1.0,
+        id=manager_id, season=season, label=label, risk_level=0.0,
+        max_ownership_differential=0.5, chip_aggressiveness=1.0,
     ))
     session.commit()
 

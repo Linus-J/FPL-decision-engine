@@ -346,33 +346,42 @@ class OptimiserConfig:
 
     # Ownership-differential weight magnitude (P3-3, plan §5's λ) — was a
     # dead field (read nowhere) until optimiser/scoring.py wired it in.
-    # Sign comes from risk_mode, not from this value directly: "safe" ->
-    # penalises differentials (prefer template); "aggressive" -> rewards
-    # them; "balanced" -> 0 (no EO effect at all, today's pre-P3-3
-    # behaviour). This is the MAGNITUDE only.
+    # Sign comes from risk_level, not from this value directly: negative
+    # risk_level -> penalises differentials (prefer template); positive ->
+    # rewards them; risk_level=0 -> 0 (no EO effect at all). This is the
+    # MAGNITUDE only.
     max_ownership_differential: float = 0.5
 
     # Whether to factor in price change predictions
     use_price_change_signals: bool = True
 
-    # Risk mode: "safe" | "balanced" | "aggressive"
-    # Sets the sign of BOTH max_ownership_differential and variance_weight
-    # (optimiser/scoring.py::lambda_mu_for_risk_mode) — "balanced" makes
-    # both a no-op, reducing the P3-3 objective to plain E[pts] exactly as
-    # before that work.
-    risk_mode: str = "balanced"
+    # Continuous risk posture in [-1.0, 1.0]: -1.0 = safe, 0.0 = medium,
+    # +1.0 = aggressive (plan/risk-aware-cold-start-v1.md, 2026-07-31,
+    # superseding the old 3-way "safe"/"balanced"/"aggressive" string
+    # switch). Sets lambda linearly (see max_ownership_differential above,
+    # zero at risk_level=0) and shifts mu around mu_baseline (see below) —
+    # deliberately NOT the same shape, since "medium" should carry real
+    # variance-awareness rather than none.
+    risk_level: float = 0.0
 
-    # Variance weight magnitude (P3-3, plan §5's μ) — own-variance only
-    # (xpts_var per player); teammate COVARIANCE is quadratic in a 0/1
-    # selection and needs the v2 scenario-based objective, not this linear
-    # MILP. Sign comes from risk_mode, same as max_ownership_differential.
-    variance_weight: float = 0.0
+    # mu = mu_baseline + risk_level * mu_range (optimiser/scoring.py::
+    # lambda_mu_for_risk_level). mu_baseline is the genuine "medium"
+    # variance-awareness (own-variance only, xpts_var per player; teammate
+    # COVARIANCE is quadratic in a 0/1 selection and needs the v2
+    # scenario-based objective, not this linear MILP) — without it,
+    # risk_level=0 would silently mean "ignore variance entirely", which is
+    # not what "medium risk" should mean. mu_range is the spread risk_level
+    # scales across; risk_level=-1 can go net negative (actively prefer
+    # low-variance picks at equal mean). Both untuned starting values,
+    # pending backtesting, same convention as this file's other heuristics.
+    mu_baseline: float = 0.05
+    mu_range: float = 0.08
 
     # Optimiser's-curse shrinkage (2026-07-28 data-completeness audit,
     # superseding the narrower P3-6 transfer_variance_penalty): shrinks
     # xpts toward its (gameweek, position) group mean before ANY selection
     # step sees it (see projection.assemble.apply_curse_shrinkage) — an
-    # always-on bias correction, independent of OPTIMISER.risk_mode (which
+    # always-on bias correction, independent of OPTIMISER.risk_level (which
     # stays a pure preference dial). Confirmed empirically: the raw model is
     # ~unbiased across the whole player pool, but the top-50 players by
     # projected xpts each week showed a consistent +1.2-1.3 pt/player bias

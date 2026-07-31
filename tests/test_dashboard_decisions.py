@@ -50,12 +50,12 @@ def test_history_parses_details_and_respects_gw_window(session):
 
 def test_decision_history_sim_manager_id_reads_sim_table_isolated(session):
     session.add(SimManager(
-        id=1, season="2026-27", label="sim-001", risk_mode="balanced",
-        variance_weight=0.0, max_ownership_differential=0.5, chip_aggressiveness=1.0,
+        id=1, season="2026-27", label="sim-001", risk_level=0.0,
+        max_ownership_differential=0.5, chip_aggressiveness=1.0,
     ))
     session.add(SimManager(
-        id=2, season="2026-27", label="sim-002", risk_mode="aggressive",
-        variance_weight=0.5, max_ownership_differential=0.8, chip_aggressiveness=1.2,
+        id=2, season="2026-27", label="sim-002", risk_level=1.0,
+        max_ownership_differential=0.8, chip_aggressiveness=1.2,
     ))
     session.add_all([
         SimDecisionLog(sim_manager_id=1, gameweek=5, decision_type="lineup",

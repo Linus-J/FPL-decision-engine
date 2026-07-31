@@ -15,7 +15,7 @@ the mean pick.
 ``differential_multiplier`` reweights each player's score by ownership —
 this DOES change relative rankings between similar-xpts players (unlike the
 literal formula above), pushing toward template safety or contrarian
-differentials depending on ``risk_mode``. ``variance`` is linear own-variance
+differentials depending on ``risk_level``. ``variance`` is linear own-variance
 only (``μ * xpts_var``) — TEAMMATE COVARIANCE is quadratic in a 0/1 selection
 vector (``w'Σw``) and cannot be expressed in the current linear MILP
 (`pulp`/CBC) without linearisation tricks or a QP solver. The plan itself
@@ -24,6 +24,16 @@ stochastic programming" — not a v1 requirement. P3-1 already persists the
 raw MC scenario samples a v2 implementation would need.
 
 Pure + deterministic. No DB/network.
+
+**Risk-aware cold start (plan/risk-aware-cold-start-v1.md, 2026-07-31):**
+``risk_mode`` (a 3-way ``safe``/``balanced``/``aggressive`` switch) is
+replaced by a continuous ``risk_level`` float in [-1.0, 1.0]. The old switch
+made "balanced" mean *exactly zero* variance-awareness by construction —
+not a genuine medium setting, just the dead centre of a sign flip. ``lambda``
+(differential weight) keeps that sign-based shape (chasing differentials is
+a taste axis, not a risk axis); ``mu`` (variance weight) now has a non-zero
+baseline that ``risk_level`` shifts up or down, so ``risk_level=0`` carries
+real, moderate variance-awareness instead of none.
 """
 
 from __future__ import annotations
@@ -32,23 +42,25 @@ import pandas as pd
 
 from config.strategy import OPTIMISER, OptimiserConfig
 
-_RISK_MODE_SIGN = {"safe": -1.0, "balanced": 0.0, "aggressive": 1.0}
 
-
-def lambda_mu_for_risk_mode(
-    risk_mode: str,
+def lambda_mu_for_risk_level(
+    risk_level: float,
     lambda_magnitude: float,
-    mu_magnitude: float,
+    mu_baseline: float,
+    mu_range: float,
 ) -> tuple[float, float]:
-    """(λ, μ) from a risk posture. "safe" penalises both differentials and
-    variance (negative sign — prefer template, low-variance picks);
-    "aggressive" rewards both (chase differentials and upside variance);
-    "balanced" is a no-op (0, 0) — pure E[pts], today's existing behaviour.
-    Unknown risk_mode strings default to balanced (0, 0) rather than
-    raising — a config typo should degrade to the old behaviour, not crash
-    the optimiser."""
-    sign = _RISK_MODE_SIGN.get(risk_mode, 0.0)
-    return sign * lambda_magnitude, sign * mu_magnitude
+    """(λ, μ) from a continuous risk posture in [-1.0, 1.0].
+    ``lambda = risk_level * lambda_magnitude`` (zero at risk_level=0, same
+    sign-flip shape as before) — a pure "taste" axis for template safety
+    (-1) vs contrarian differentials (+1).
+    ``mu = mu_baseline + risk_level * mu_range`` — ``mu_baseline`` (untuned,
+    > 0) is the genuine "medium" variance-awareness; ``risk_level=-1`` can
+    go net risk-averse (``mu_baseline - mu_range``, possibly negative —
+    actively preferring low-variance picks over equal-mean volatile ones);
+    ``+1`` leans further into upside variance."""
+    lam = risk_level * lambda_magnitude
+    mu = mu_baseline + risk_level * mu_range
+    return lam, mu
 
 
 def differential_multiplier(eo_pct: float, lam: float) -> float:
@@ -77,7 +89,7 @@ def add_effective_score(
     projections: pd.DataFrame,
     ownership: pd.DataFrame | None = None,
     config: OptimiserConfig = OPTIMISER,
-    risk_mode: str | None = None,
+    risk_level: float | None = None,
 ) -> pd.DataFrame:
     """Adds an ``effective_score`` column to a copy of ``projections``
     (needs ``player_id``, ``xpts``; uses ``xpts_var`` if present, else 0 —
@@ -90,18 +102,18 @@ def add_effective_score(
     current live reality — EO sampling can't produce real data until GW1),
     every player gets eo_pct=0, so ``effective_score`` reduces to
     ``xpts*(1+λ) + μ*xpts_var`` for everyone uniformly — a CONSTANT
-    rescaling that doesn't change relative ranking at all, i.e. this
-    degrades to the pre-P3-3 behaviour exactly when EO isn't available,
-    not silently to something else.
+    rescaling that doesn't change relative ranking at all, regardless of
+    EO availability.
     """
     out = projections.copy()
     if "xpts_var" not in out.columns:
         out["xpts_var"] = 0.0
 
-    lam, mu = lambda_mu_for_risk_mode(
-        risk_mode if risk_mode is not None else config.risk_mode,
+    lam, mu = lambda_mu_for_risk_level(
+        risk_level if risk_level is not None else config.risk_level,
         config.max_ownership_differential,
-        config.variance_weight,
+        config.mu_baseline,
+        config.mu_range,
     )
 
     if ownership is not None and not ownership.empty:

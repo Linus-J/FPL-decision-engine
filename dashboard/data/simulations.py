@@ -12,7 +12,7 @@ def get_leaderboard(db: Session, season: str) -> pd.DataFrame:
     """One row per persona: config params, cumulative actual_outcome
     (summed across its 'lineup' rows), ranked highest-first."""
     query = text("""
-        SELECT sm.id, sm.label, sm.risk_mode, sm.variance_weight,
+        SELECT sm.id, sm.label, sm.risk_level,
                sm.max_ownership_differential, sm.chip_aggressiveness,
                COALESCE(SUM(sdl.actual_outcome), 0) AS cumulative_actual,
                COUNT(sdl.actual_outcome) AS gws_scored

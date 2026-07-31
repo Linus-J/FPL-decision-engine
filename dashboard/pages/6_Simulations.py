@@ -33,8 +33,8 @@ if leaderboard.empty:
 
 st.subheader("Leaderboard")
 display_cols = {
-    "rank": "Rank", "label": "Persona", "risk_mode": "Risk mode",
-    "variance_weight": "Variance wt", "max_ownership_differential": "EO wt",
+    "rank": "Rank", "label": "Persona", "risk_level": "Risk level",
+    "max_ownership_differential": "EO wt",
     "chip_aggressiveness": "Chip aggr.", "cumulative_actual": "Actual pts",
     "gws_scored": "GWs scored",
 }

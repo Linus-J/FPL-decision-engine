@@ -429,13 +429,12 @@ def run_for_persona(persona: SimManager, season: str = "2026-27") -> dict:
     """Runs one simulated persona through the exact same decision logic as
     the real bot (plan/simulation-engine-v1.md) -- never touches
     ``agent/fpl_client.py``; no submission path exists in this code path at
-    all, not a disabled flag. ``persona`` supplies risk_mode/
-    variance_weight/max_ownership_differential/chip_aggressiveness; every
-    other config field stays at today's real default."""
+    all, not a disabled flag. ``persona`` supplies risk_level/
+    max_ownership_differential/chip_aggressiveness; every other config
+    field (including mu_baseline/mu_range) stays at today's real default."""
     config = dataclasses.replace(
         OPTIMISER,
-        risk_mode=persona.risk_mode,
-        variance_weight=persona.variance_weight,
+        risk_level=persona.risk_level,
         max_ownership_differential=persona.max_ownership_differential,
     )
     chip_timing = dataclasses.replace(

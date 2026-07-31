@@ -19,8 +19,7 @@ SIM_COUNT = 100
 # not something to vary per run.
 SIM_SEED = 20260731
 
-_RISK_MODES = ("safe", "balanced", "aggressive")
-_VARIANCE_WEIGHT_RANGE = (0.0, 1.0)
+_RISK_LEVEL_RANGE = (-1.0, 1.0)
 _MAX_OWNERSHIP_DIFFERENTIAL_RANGE = (0.0, 1.0)
 _CHIP_AGGRESSIVENESS_RANGE = (0.5, 1.5)
 
@@ -28,21 +27,25 @@ _CHIP_AGGRESSIVENESS_RANGE = (0.5, 1.5)
 def generate_personas(season: str, n: int = SIM_COUNT, seed: int = SIM_SEED) -> list[dict]:
     """Deterministic: the same ``(season, n, seed)`` always produces
     byte-identical persona parameters. Returns plain dicts (not ORM rows)
-    so this stays testable without a DB."""
+    so this stays testable without a DB.
+
+    ``risk_level`` (continuous, plan/risk-aware-cold-start-v1.md,
+    2026-07-31) now drives BOTH the differential-chasing (lambda) and
+    variance-awareness (mu) axes together via a single dial per persona --
+    superseding the old separate categorical ``risk_mode`` + independent
+    ``variance_weight`` pair."""
     rng = np.random.default_rng(seed)
     personas = []
     for i in range(n):
-        risk_mode = str(rng.choice(_RISK_MODES))
-        variance_weight = round(float(rng.uniform(*_VARIANCE_WEIGHT_RANGE)), 4)
+        risk_level = round(float(rng.uniform(*_RISK_LEVEL_RANGE)), 4)
         max_ownership_differential = round(
             float(rng.uniform(*_MAX_OWNERSHIP_DIFFERENTIAL_RANGE)), 4
         )
         chip_aggressiveness = round(float(rng.uniform(*_CHIP_AGGRESSIVENESS_RANGE)), 4)
         personas.append({
             "season": season,
-            "label": f"sim-{i:03d}-{risk_mode}",
-            "risk_mode": risk_mode,
-            "variance_weight": variance_weight,
+            "label": f"sim-{i:03d}-{risk_level:+.2f}",
+            "risk_level": risk_level,
             "max_ownership_differential": max_ownership_differential,
             "chip_aggressiveness": chip_aggressiveness,
         })

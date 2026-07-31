@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import argparse
+import dataclasses
 import logging
 import sys
 from pathlib import Path
@@ -26,6 +27,17 @@ from projection.rescore import load_bonus_2627_map, rescore_actuals, rescore_cov
 
 logger = logging.getLogger(__name__)
 
+# Pinned to the pre-risk-aware-cold-start scoring (plan/risk-aware-cold-
+# start-v1.md, 2026-07-31): OPTIMISER's global default gained a genuine
+# nonzero mu_baseline so "medium" risk carries real variance-awareness
+# live. This harness's whole purpose is to be a stable, comparable
+# yardstick across changes (the 52.48 pts/GW gate) -- letting it silently
+# pick up an untuned new mu_baseline would make that number incomparable
+# for reasons unrelated to any real model change. Cold-start's improved
+# MEAN estimates (real peer-bucket data replacing the old synthetic linear
+# prior) still flow through unpinned -- that's a projection-accuracy fix,
+# not a risk-preference one, and should affect the backtest too.
+_BACKTEST_CONFIG = dataclasses.replace(OPTIMISER, risk_level=0.0, mu_baseline=0.0, mu_range=0.0)
 
 _load_all_stats = assemble.load_all_stats  # moved to assemble.py (P3-0) — shared with pipeline.py
 
@@ -499,6 +511,7 @@ def run_backtest(
                     budget=budget,
                     horizon=horizon,
                     season=season,
+                    config=_BACKTEST_CONFIG,
                 )
                 new_squad_ids = solution.squad["id"].tolist()
                 transfers_made = 0
@@ -516,7 +529,10 @@ def run_backtest(
                 bench_xpts_val = None
                 try:
                     bench_ids = [pid for pid in current_squad_ids if pid not in
-                                 optimise_starting_xi(players[players["id"].isin(current_squad_ids)].copy(), projections, gw).starting_xi["id"].tolist()]
+                                 optimise_starting_xi(
+                                     players[players["id"].isin(current_squad_ids)].copy(),
+                                     projections, gw, config=_BACKTEST_CONFIG,
+                                 ).starting_xi["id"].tolist()]
                     bench_xpts_val = float(projections[
                         (projections["gameweek"] == gw) & projections["player_id"].isin(bench_ids)
                     ]["xpts"].sum())
@@ -538,6 +554,7 @@ def run_backtest(
                     bgw_affected_count=bgw_affected_count,
                     squad_age_gws=squad_age_gws,
                     season=season,
+                    config=_BACKTEST_CONFIG,
                 )
                 chip_played = chip_rec.chip
 
@@ -548,6 +565,7 @@ def run_backtest(
                         budget=current_cost,
                         horizon=horizon,
                         season=season,
+                        config=_BACKTEST_CONFIG,
                     )
                     new_squad_ids = solution.squad["id"].tolist()
                     transfers_made = len([p for p in new_squad_ids if p not in set(current_squad_ids)])
@@ -564,6 +582,7 @@ def run_backtest(
                         budget=current_cost,
                         horizon=1,
                         season=season,
+                        config=_BACKTEST_CONFIG,
                     )
                     pre_free_hit_squad = current_squad_ids[:]
                     new_squad_ids = fh_solution.squad["id"].tolist()
@@ -585,6 +604,7 @@ def run_backtest(
                         players=players,
                         free_transfers=free_transfers,
                         available_budget=current_cost,
+                        config=_BACKTEST_CONFIG,
                     )
                     incoming = {t["player_id"] for t in transfer_plan.transfers_in}
                     outgoing = {t["player_id"] for t in transfer_plan.transfers_out}
@@ -607,6 +627,7 @@ def run_backtest(
                             budget=budget,
                             horizon=horizon,
                             season=season,
+                            config=_BACKTEST_CONFIG,
                         )
                         new_squad_ids = solution.squad["id"].tolist()
                         transfers_made = 0
@@ -617,7 +638,9 @@ def run_backtest(
             continue
 
         try:
-            xi_solution = optimise_starting_xi(squad_df, projections, gw, season=season)
+            xi_solution = optimise_starting_xi(
+                squad_df, projections, gw, season=season, config=_BACKTEST_CONFIG
+            )
         except RuntimeError as e:
             pos_counts = squad_df["position"].value_counts().to_dict() if "position" in squad_df.columns else {}
             logger.error("GW%d: starting XI infeasible — squad size=%d pos=%s — %s", gw, len(squad_df), pos_counts, e)
@@ -821,7 +844,8 @@ def run_naive_xi_backtest(
         if not squad_ids:
             try:
                 solution = optimise_squad(projections=projections, players=players,
-                                          budget=budget, horizon=horizon, season=season)
+                                          budget=budget, horizon=horizon, season=season,
+                                          config=_BACKTEST_CONFIG)
             except Exception as e:
                 logger.error("GW%d: initial squad build failed — %s", gw, e)
                 continue
@@ -832,7 +856,9 @@ def run_naive_xi_backtest(
         squad_df = _merge_squad_dynamic(squad_static, players, squad_ids)
 
         try:
-            xi_solution = optimise_starting_xi(squad_df, projections, gw, season=season)
+            xi_solution = optimise_starting_xi(
+                squad_df, projections, gw, season=season, config=_BACKTEST_CONFIG
+            )
         except RuntimeError as e:
             logger.error("GW%d: starting XI infeasible — %s", gw, e)
             continue

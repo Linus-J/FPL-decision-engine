@@ -31,9 +31,13 @@ recomputing per candidate.
 candidate whose fixture has no persisted rows): falls back to the same
 additive own-variance approximation P3-3 already used, so a candidate with
 no sample data scores ``xpts + mu*xpts_var`` exactly as before. At
-``mu == 0`` (risk_mode="balanced", today's default) this short-circuits to
-plain mean argmax without touching the DB at all — byte-identical to
-pre-P3-4 behaviour, verified by test not assumed.
+``mu == 0`` this short-circuits to plain mean argmax without touching the
+DB at all — verified by test not assumed. ``mu`` is no longer 0 by default
+(plan/risk-aware-cold-start-v1.md gave ``risk_level=0`` a real, non-zero
+``mu_baseline``), so this short-circuit is now the exception rather than
+the common case for the real bot/simulations; ``scripts/backtest.py``
+pins its own calls to ``mu_baseline=0`` explicitly, so it still hits this
+path every time.
 """
 
 from __future__ import annotations

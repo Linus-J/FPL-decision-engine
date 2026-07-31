@@ -1,14 +1,15 @@
 """P3-3: the risk-adjusted objective wired into optimise_squad/
 optimise_starting_xi/evaluate_transfers.
 
-Two things matter here: (1) with the DEFAULT config (risk_mode="balanced",
-ownership=None — today's actual live state pre-GW1), every one of these
-functions must behave EXACTLY as before P3-3 existed — same picks, and
-`total_xpts`/`xpts_gain` must report TRUE expected points, not the
-risk-adjusted score (which happens to equal xpts when balanced, but the
-reporting must be correct even when it doesn't). (2) with EO data +
-risk_mode != balanced, EO must actually change captain/selection choices
-when it's the only thing distinguishing two options.
+Two things matter here: (1) with the DEFAULT config (risk_level=0.0,
+ownership=None — today's actual live state pre-GW1), ownership/EO must
+have EXACTLY zero effect (lambda=0 at risk_level=0), and `total_xpts`/
+`xpts_gain` must report TRUE expected points, not the risk-adjusted score
+— true regardless of ``mu`` (see plan/risk-aware-cold-start-v1.md: mu is
+no longer 0 by default, but that only affects the variance term, never
+ownership/EO or the true-xpts reporting). (2) with EO data + risk_level
+!= 0, EO must actually change captain/selection choices when it's the
+only thing distinguishing two options.
 """
 
 from __future__ import annotations
@@ -47,7 +48,9 @@ def test_optimise_starting_xi_default_config_ignores_ownership_entirely():
     ])
     without_eo = optimise_starting_xi(squad, projections, gw)
     with_eo_but_balanced = optimise_starting_xi(squad, projections, gw, ownership=ownership)
-    # risk_mode defaults to "balanced" -> lam=mu=0 -> EO must have zero effect
+    # risk_level defaults to 0.0 -> lam=0 (mu is non-zero by default now,
+    # but mu only touches the variance term, never EO) -> EO must have
+    # zero effect either way
     assert without_eo.captain_id == with_eo_but_balanced.captain_id
     assert without_eo.total_xpts == pytest.approx(with_eo_but_balanced.total_xpts)
 
@@ -70,7 +73,7 @@ def test_optimise_starting_xi_aggressive_mode_prefers_low_eo_captain(monkeypatch
     import optimiser.squad as squad_mod
 
     aggressive = OptimiserConfig(
-        risk_mode="aggressive", max_ownership_differential=0.5, variance_weight=0.0
+        risk_level=1.0, max_ownership_differential=0.5, mu_baseline=0.0, mu_range=0.0
     )
     monkeypatch.setattr(squad_mod, "OPTIMISER", aggressive)
 
@@ -100,7 +103,7 @@ def test_optimise_starting_xi_config_param_overrides_without_monkeypatch():
     by ``run_for_persona``) actually takes effect, not just that it's
     harmless when omitted (already covered by the untouched suite)."""
     aggressive = OptimiserConfig(
-        risk_mode="aggressive", max_ownership_differential=0.5, variance_weight=0.0
+        risk_level=1.0, max_ownership_differential=0.5, mu_baseline=0.0, mu_range=0.0
     )
     squad = _minimal_squad_for_xi()
     gw = 10

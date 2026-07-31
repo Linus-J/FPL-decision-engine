@@ -85,6 +85,10 @@ def test_projection_sources_and_no_silent_zero(temp_session):
     # the deliverable's core contract: no silent 0.0, every slot has a source
     assert (proj["xpts"] > 0).all()
     assert proj["proj_source"].notna().all()
+    # extended to variance (plan/risk-aware-cold-start-v1.md): never
+    # undefined/negative even with no raw_appearances supplied at all
+    assert proj["xpts_var"].notna().all()
+    assert (proj["xpts_var"] >= 0).all()
     # established player's xpts tracks prior ppg
     estab = proj[proj["name"] == "Estab"].iloc[0]
     assert estab["xpts"] == pytest.approx(6.0)
@@ -94,6 +98,114 @@ def test_projection_sources_and_no_silent_zero(temp_session):
 def test_price_prior_monotonic_in_price():
     assert cs._price_prior("MID", 10.0) > cs._price_prior("MID", 5.0)
     assert cs._price_prior("FWD", 4.0) >= cs._MIN_XPTS
+
+
+# --- real variance (plan/risk-aware-cold-start-v1.md, 2026-07-31) ----------
+
+
+def _seed_variance_pool(Local):
+    """One established player with KNOWN varying per-GW points (for an
+    exact hand-computed own-variance check), five established MID peers
+    all priced at exactly £8.0m forming a real (position, price-bucket)
+    pool of 25 pooled appearances (>= _MIN_BUCKET_SAMPLES=20), and a new
+    signing at that same price with no prior data of their own."""
+    s = Local()
+    try:
+        s.add(Player(fpl_id=1, code=1, first_name="A", second_name="A", web_name="Varied",
+                     team_id=1, position="MID", now_cost=9.0, status="a"))
+        for i in range(5):
+            s.add(Player(
+                fpl_id=10 + i, code=10 + i, first_name="P", second_name=str(i),
+                web_name=f"Peer{i}", team_id=1, position="MID", now_cost=8.0, status="a",
+            ))
+        s.add(Player(fpl_id=99, code=99, first_name="N", second_name="N", web_name="NewMid",
+                     team_id=1, position="MID", now_cost=8.0, status="a"))
+        s.commit()
+
+        varied_id = s.query(Player.id).filter_by(fpl_id=1).scalar()
+        for gw, pts in enumerate([2, 4, 6, 8, 10], start=1):
+            s.add(PlayerGameweekStats(player_id=varied_id, gameweek=gw, season="2025-26",
+                                      minutes=90, total_points=pts))
+
+        peer_values = [2, 4, 6, 8, 10]
+        for i, value in enumerate(peer_values):
+            peer_id = s.query(Player.id).filter_by(fpl_id=10 + i).scalar()
+            for gw in range(1, 6):
+                s.add(PlayerGameweekStats(player_id=peer_id, gameweek=gw, season="2025-26",
+                                          minutes=90, total_points=value))
+        s.commit()
+        return {"varied_id": varied_id}
+    finally:
+        s.close()
+
+
+def test_established_player_gets_real_own_variance(temp_session):
+    _seed_variance_pool(temp_session)
+    players = cs.load_current_players()
+    prior = cs.load_prior_season_features("2025-26")
+    raw = cs.load_prior_season_appearances("2025-26")
+    proj = cs.project_cold_start(players, prior, raw_appearances=raw)
+
+    by_name = players.set_index("id")["web_name"].to_dict()
+    proj["name"] = proj["player_id"].map(by_name)
+    row = proj[proj["name"] == "Varied"].iloc[0]
+
+    assert row["proj_source"] == "prior_season"
+    assert row["xpts"] == pytest.approx(6.0)  # mean of [2,4,6,8,10]
+    # sample variance (ddof=1) of [2,4,6,8,10]: sum((x-6)^2)/(5-1) = 40/4
+    assert row["xpts_var"] == pytest.approx(10.0)
+
+
+def test_new_signing_gets_pooled_peer_bucket_stats(temp_session):
+    _seed_variance_pool(temp_session)
+    players = cs.load_current_players()
+    prior = cs.load_prior_season_features("2025-26")
+    raw = cs.load_prior_season_appearances("2025-26")
+    proj = cs.project_cold_start(players, prior, raw_appearances=raw)
+
+    by_name = players.set_index("id")["web_name"].to_dict()
+    proj["name"] = proj["player_id"].map(by_name)
+    row = proj[proj["name"] == "NewMid"].iloc[0]
+
+    assert row["proj_source"] == "peer_bucket_prior"
+    # pool = five 2s, five 4s, five 6s, five 8s, five 10s (25 samples)
+    assert row["xpts"] == pytest.approx(6.0)
+    # sum((x-6)^2) = 5*(16+4+0+4+16) = 200; /(25-1) = 8.3333...
+    assert row["xpts_var"] == pytest.approx(200 / 24)
+
+
+def test_sparse_position_falls_back_to_synthetic_prior(temp_session):
+    """A position with far fewer than _MIN_BUCKET_SAMPLES pooled
+    appearances (even widened to position-only) must still get a real,
+    non-null xpts/xpts_var from the last-resort synthetic prior -- never
+    crash, never leave it undefined."""
+    s = temp_session()
+    try:
+        s.add(Player(fpl_id=1, code=1, first_name="A", second_name="A", web_name="OnlyGK",
+                     team_id=1, position="GKP", now_cost=8.0, status="a"))
+        s.commit()
+        gk_id = s.query(Player.id).filter_by(fpl_id=1).scalar()
+        for gw in range(1, 6):
+            s.add(PlayerGameweekStats(player_id=gk_id, gameweek=gw, season="2025-26",
+                                      minutes=90, total_points=5))
+        s.add(Player(fpl_id=2, code=2, first_name="B", second_name="B", web_name="NewGK",
+                     team_id=1, position="GKP", now_cost=4.5, status="a"))
+        s.commit()
+    finally:
+        s.close()
+
+    players = cs.load_current_players()
+    prior = cs.load_prior_season_features("2025-26")
+    raw = cs.load_prior_season_appearances("2025-26")
+    proj = cs.project_cold_start(players, prior, raw_appearances=raw)
+
+    by_name = players.set_index("id")["web_name"].to_dict()
+    proj["name"] = proj["player_id"].map(by_name)
+    row = proj[proj["name"] == "NewGK"].iloc[0]
+
+    assert row["proj_source"] == "position_price_prior"
+    assert row["xpts"] == pytest.approx(cs._price_prior("GKP", 4.5))
+    assert row["xpts_var"] == pytest.approx(cs._FALLBACK_VAR)
 
 
 def _seed_full_pool(Local):
@@ -158,7 +270,7 @@ def test_build_initial_squad_passes_config_through_to_optimise_squad(temp_sessio
     finally:
         s.close()
 
-    persona_config = OptimiserConfig(risk_mode="aggressive")
+    persona_config = OptimiserConfig(risk_level=1.0)
     received = {}
 
     import optimiser.squad as squad_module

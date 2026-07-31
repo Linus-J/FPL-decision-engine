@@ -6,7 +6,7 @@ import pulp
 
 from config.strategy import OPTIMISER, SQUAD, TRANSFERS, OptimiserConfig, TransferRules
 from optimiser.captaincy import scenario_based_captain
-from optimiser.scoring import lambda_mu_for_risk_mode, risk_adjusted_score
+from optimiser.scoring import lambda_mu_for_risk_level, risk_adjusted_score
 
 logger = logging.getLogger(__name__)
 
@@ -117,8 +117,8 @@ def optimise_squad(
     df["xpts_total"] = df["id"].map(xpts_by_player).fillna(0.0)
     df["var_total"] = df["id"].map(var_by_player).fillna(0.0)
 
-    lam, mu = lambda_mu_for_risk_mode(
-        cfg.risk_mode, cfg.max_ownership_differential, cfg.variance_weight
+    lam, mu = lambda_mu_for_risk_level(
+        cfg.risk_level, cfg.max_ownership_differential, cfg.mu_baseline, cfg.mu_range
     )
     if ownership is not None and not ownership.empty:
         eo_map = ownership.set_index("player_id")["top10k_selected_pct"]
@@ -336,9 +336,13 @@ def optimise_starting_xi(
     ``season`` (P3-4, optional, default None): enables scenario-based
     captaincy for this ``gw`` (see ``optimiser/captaincy.py``) — real joint
     MC samples over the additive own-variance approximation, where P3-1 has
-    persisted them. At ``risk_mode="balanced"`` (mu=0, today's default) this
-    is a no-op regardless of ``season`` — the P-XI gate stays byte-for-byte
-    reproducible whether or not ``season`` is passed.
+    persisted them. A no-op whenever the effective ``mu`` is exactly 0.0
+    (``captaincy.scenario_based_captain`` short-circuits before touching
+    the DB) — no longer ``OPTIMISER``'s default since
+    plan/risk-aware-cold-start-v1.md gave ``risk_level=0`` a real, non-zero
+    ``mu_baseline``. ``scripts/backtest.py`` pins its own calls to
+    ``mu_baseline=0`` explicitly (``_BACKTEST_CONFIG``) so the P-XI gate's
+    already-reported numbers stay a stable, comparable yardstick.
 
     ``config`` (optional): see ``optimise_squad``'s docstring — overrides
     the global ``OPTIMISER`` for this call only; ``None`` is byte-for-byte
@@ -352,8 +356,8 @@ def optimise_starting_xi(
     df["xpts"] = df["xpts"].fillna(0.0)
     df["xpts_var"] = df["xpts_var"].fillna(0.0) if "xpts_var" in df.columns else 0.0
 
-    lam, mu = lambda_mu_for_risk_mode(
-        cfg.risk_mode, cfg.max_ownership_differential, cfg.variance_weight
+    lam, mu = lambda_mu_for_risk_level(
+        cfg.risk_level, cfg.max_ownership_differential, cfg.mu_baseline, cfg.mu_range
     )
     if ownership is not None and not ownership.empty:
         eo_map = ownership.set_index("player_id")["top10k_selected_pct"]

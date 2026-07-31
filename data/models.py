@@ -609,8 +609,10 @@ class SimManager(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     season: Mapped[str] = mapped_column(String(7), nullable=False)
     label: Mapped[str] = mapped_column(String, nullable=False)
-    risk_mode: Mapped[str] = mapped_column(String, nullable=False)
-    variance_weight: Mapped[float] = mapped_column(Float, nullable=False)
+    # Continuous risk posture in [-1.0, 1.0], superseding the old 3-way
+    # "safe"/"balanced"/"aggressive" string switch (plan/risk-aware-cold-
+    # start-v1.md, 2026-07-31) -- see optimiser/scoring.py.
+    risk_level: Mapped[float] = mapped_column(Float, nullable=False)
     max_ownership_differential: Mapped[float] = mapped_column(Float, nullable=False)
     chip_aggressiveness: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

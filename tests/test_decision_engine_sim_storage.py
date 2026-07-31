@@ -34,7 +34,7 @@ def session(tmp_path, monkeypatch):
 def _add_sim_manager(session, manager_id: int) -> None:
     session.add(SimManager(
         id=manager_id, season="2026-27", label=f"sim-{manager_id}",
-        risk_mode="balanced", variance_weight=0.0, max_ownership_differential=0.5,
+        risk_level=0.0, max_ownership_differential=0.5,
         chip_aggressiveness=1.0,
     ))
     session.commit()

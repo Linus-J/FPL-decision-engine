@@ -10,8 +10,7 @@ from data.models import Base, SimManager
 from simulation.personas import (
     _CHIP_AGGRESSIVENESS_RANGE,
     _MAX_OWNERSHIP_DIFFERENTIAL_RANGE,
-    _RISK_MODES,
-    _VARIANCE_WEIGHT_RANGE,
+    _RISK_LEVEL_RANGE,
     generate_personas,
     load_or_create_personas,
 )
@@ -42,8 +41,7 @@ def test_generate_personas_different_seed_differs():
 def test_generate_personas_values_within_configured_ranges():
     personas = generate_personas("2026-27", n=50, seed=1)
     for p in personas:
-        assert p["risk_mode"] in _RISK_MODES
-        assert _VARIANCE_WEIGHT_RANGE[0] <= p["variance_weight"] <= _VARIANCE_WEIGHT_RANGE[1]
+        assert _RISK_LEVEL_RANGE[0] <= p["risk_level"] <= _RISK_LEVEL_RANGE[1]
         assert (
             _MAX_OWNERSHIP_DIFFERENTIAL_RANGE[0]
             <= p["max_ownership_differential"]
