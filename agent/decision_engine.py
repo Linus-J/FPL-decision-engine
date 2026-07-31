@@ -1,23 +1,23 @@
+import dataclasses
 import json
 import logging
-from dataclasses import asdict
 from datetime import datetime
 
 import pandas as pd
 from sqlalchemy import text
 
 from config.settings import settings
-from config.strategy import OPTIMISER, TRANSFERS
+from config.strategy import CHIP_TIMING, OPTIMISER, ChipTimingThresholds, OptimiserConfig
 from data.db import get_session
-from data.models import DecisionLog
+from data.models import DecisionLog, SimDecisionLog, SimManager
 from optimiser.chips import Chip, ChipRecommendation, chips_used_this_season, recommend_chip
-from optimiser.squad import SquadSolution, optimise_squad, optimise_starting_xi
-from optimiser.transfers import TransferPlan, evaluate_transfers, get_dgw_coverage, should_take_hit
+from optimiser.squad import optimise_squad, optimise_starting_xi
+from optimiser.transfers import TransferPlan, evaluate_transfers, get_dgw_coverage
 from projection import cold_start
 from projection.pipeline import (
+    _get_bgw_gameweeks,
     _get_current_and_next_gw,
     _get_dgw_gameweeks,
-    _get_bgw_gameweeks,
     get_latest_projections,
     run_projections,
 )
@@ -39,21 +39,41 @@ def _load_players() -> pd.DataFrame:
         db.close()
 
 
-def _load_my_squad(team_id: int) -> tuple[list[int], float, int]:
+def _load_squad_state(
+    sim_manager_id: int | None, team_id: int, config: OptimiserConfig
+) -> tuple[list[int], float, int]:
+    """``sim_manager_id is None`` reads the real bot's own ``decision_log``
+    (``team_id`` is informational only, not used in the query -- the real
+    squad is one continuous decision history, not partitioned per team_id).
+    A ``sim_manager_id`` reads that persona's own ``sim_decision_log`` rows
+    instead, completely isolated from the real squad's history.
+
+    ``budget``'s fallback-when-missing value (``config.transfer_planning_horizon_gws``,
+    3.0) looks like a units mismatch inherited unchanged from the pre-
+    refactor ``_load_my_squad`` -- preserved exactly rather than "fixed" as
+    a side effect of this refactor; flagged, not silently changed."""
     db = get_session()
     try:
-        query = text("""
-            SELECT dl.details
-            FROM decision_log dl
-            WHERE dl.decision_type = 'lineup'
-            ORDER BY dl.created_at DESC
-            LIMIT 1
-        """)
-        row = db.execute(query).fetchone()
+        if sim_manager_id is not None:
+            query = text("""
+                SELECT details FROM sim_decision_log
+                WHERE sim_manager_id = :sim_manager_id AND decision_type = 'lineup'
+                ORDER BY created_at DESC LIMIT 1
+            """)
+            row = db.execute(query, {"sim_manager_id": sim_manager_id}).fetchone()
+        else:
+            query = text("""
+                SELECT dl.details
+                FROM decision_log dl
+                WHERE dl.decision_type = 'lineup'
+                ORDER BY dl.created_at DESC
+                LIMIT 1
+            """)
+            row = db.execute(query).fetchone()
         if row:
             details = json.loads(row[0])
             squad_ids = details.get("squad_ids", [])
-            budget = details.get("budget", OPTIMISER.transfer_planning_horizon_gws)
+            budget = details.get("budget", config.transfer_planning_horizon_gws)
             free_transfers = details.get("free_transfers", 1)
             return squad_ids, float(budget), int(free_transfers)
         return [], 100.0, 1
@@ -61,16 +81,23 @@ def _load_my_squad(team_id: int) -> tuple[list[int], float, int]:
         db.close()
 
 
-def _load_decision_log() -> pd.DataFrame:
+def _load_own_decision_log(sim_manager_id: int | None) -> pd.DataFrame:
     db = get_session()
     try:
+        if sim_manager_id is not None:
+            query = text(
+                "SELECT * FROM sim_decision_log WHERE sim_manager_id = :id "
+                "ORDER BY created_at DESC"
+            )
+            return pd.read_sql(query, db.bind, params={"id": sim_manager_id})
         query = text("SELECT * FROM decision_log ORDER BY created_at DESC")
         return pd.read_sql(query, db.bind)
     finally:
         db.close()
 
 
-def _log_decision(
+def _record_decision(
+    sim_manager_id: int | None,
     gameweek: int,
     decision_type: str,
     details: dict,
@@ -79,14 +106,25 @@ def _log_decision(
 ) -> None:
     db = get_session()
     try:
-        entry = DecisionLog(
-            gameweek=gameweek,
-            decision_type=decision_type,
-            details=json.dumps(details),
-            projected_gain=projected_gain,
-            dry_run=dry_run,
-            created_at=datetime.utcnow(),
-        )
+        entry: SimDecisionLog | DecisionLog
+        if sim_manager_id is not None:
+            entry = SimDecisionLog(
+                sim_manager_id=sim_manager_id,
+                gameweek=gameweek,
+                decision_type=decision_type,
+                details=json.dumps(details),
+                projected_gain=projected_gain,
+                created_at=datetime.utcnow(),
+            )
+        else:
+            entry = DecisionLog(
+                gameweek=gameweek,
+                decision_type=decision_type,
+                details=json.dumps(details),
+                projected_gain=projected_gain,
+                dry_run=dry_run,
+                created_at=datetime.utcnow(),
+            )
         db.add(entry)
         db.commit()
     finally:
@@ -102,21 +140,34 @@ def _bench_xpts(squad_ids: list[int], projections: pd.DataFrame, gw: int) -> flo
     return float(gw_proj.iloc[11:]["xpts"].sum())
 
 
-def run(
-    season: str = "2026-27",
-    force_chip: Chip | None = None,
-    dry_run: bool | None = None,
+def _run_decision_cycle(
+    season: str,
+    dry_run: bool,
+    force_chip: Chip | None,
+    config: OptimiserConfig,
+    chip_timing: ChipTimingThresholds,
+    team_id: int | None,
+    sim_manager_id: int | None,
 ) -> dict:
-    dry_run = settings.dry_run if dry_run is None else dry_run
+    """The actual decision loop, shared by the real bot (``run()``) and every
+    simulated persona (``run_for_persona()``). Behaviour is governed
+    entirely by ``config``/``chip_timing`` and by which storage
+    (``sim_manager_id`` or not) it reads/writes -- never by mutating global
+    state. See plan/simulation-engine-v1.md."""
     current_gw, next_gw = _get_current_and_next_gw()
 
-    logger.info("Decision engine starting: current_gw=%d next_gw=%d dry_run=%s", current_gw, next_gw, dry_run)
+    logger.info(
+        "Decision cycle starting: current_gw=%d next_gw=%d dry_run=%s sim_manager_id=%s",
+        current_gw, next_gw, dry_run, sim_manager_id,
+    )
 
     logger.info("Running projection pipeline...")
     run_projections(season=season, persist=True)
     projections = get_latest_projections()
 
-    squad_ids, available_budget, free_transfers = _load_my_squad(settings.fpl_team_id)
+    squad_ids, available_budget, free_transfers = _load_squad_state(
+        sim_manager_id, team_id, config
+    )
 
     if projections.empty:
         if squad_ids:
@@ -136,8 +187,12 @@ def run(
             "building initial squad from prior-season data"
         )
         cs_players = _load_players()
-        solution, cs_projections = cold_start.build_initial_squad(season, players=cs_players)
-        xi_solution = optimise_starting_xi(solution.squad, cs_projections, next_gw, season=season)
+        solution, cs_projections = cold_start.build_initial_squad(
+            season, players=cs_players, config=config
+        )
+        xi_solution = optimise_starting_xi(
+            solution.squad, cs_projections, next_gw, season=season, config=config
+        )
         result = {
             "gameweek": next_gw,
             "dry_run": dry_run,
@@ -158,7 +213,8 @@ def run(
             "dgw_coverage": {},
             "cold_start": True,
         }
-        _log_decision(
+        _record_decision(
+            sim_manager_id,
             gameweek=next_gw,
             decision_type="lineup",
             details={
@@ -192,8 +248,8 @@ def run(
         available_budget = 100.0
         free_transfers = 15
 
-    dgw_gws = _get_dgw_gameweeks(OPTIMISER.transfer_planning_horizon_gws)
-    bgw_gws = _get_bgw_gameweeks(OPTIMISER.transfer_planning_horizon_gws)
+    dgw_gws = _get_dgw_gameweeks(config.transfer_planning_horizon_gws)
+    bgw_gws = _get_bgw_gameweeks(config.transfer_planning_horizon_gws)
     bgw_affected = sum(
         1 for pid in squad_ids
         if any(
@@ -204,7 +260,7 @@ def run(
         )
     ) if bgw_gws and squad_ids else 0
 
-    decision_log = _load_decision_log()
+    decision_log = _load_own_decision_log(sim_manager_id)
     chips_used = chips_used_this_season(decision_log)
 
     bench_pts = _bench_xpts(squad_ids, projections, next_gw) if squad_ids else 0.0
@@ -225,6 +281,8 @@ def run(
             dgw_gws=dgw_gws,
             bgw_affected_count=bgw_affected,
             season=season,
+            chip_timing=chip_timing,
+            config=config,
         )
 
     wildcard_active = chip_rec.chip == Chip.WILDCARD
@@ -240,6 +298,7 @@ def run(
             budget=available_budget,
             horizon=1,
             season=season,
+            config=config,
         )
     else:
         transfer_plan = evaluate_transfers(
@@ -250,6 +309,7 @@ def run(
             available_budget=available_budget,
             wildcard_active=wildcard_active,
             dgw_gws=dgw_gws,
+            config=config,
         )
 
         new_squad_ids = (
@@ -258,7 +318,9 @@ def run(
         ) if transfer_plan.transfers_in else squad_ids
 
         squad_df = players[players["id"].isin(new_squad_ids)].copy()
-        squad_solution = optimise_starting_xi(squad_df, projections, next_gw, season=season)
+        squad_solution = optimise_starting_xi(
+            squad_df, projections, next_gw, season=season, config=config
+        )
 
     xi_solution = squad_solution
 
@@ -283,7 +345,8 @@ def run(
         "dgw_coverage": dgw_coverage,
     }
 
-    _log_decision(
+    _record_decision(
+        sim_manager_id,
         gameweek=next_gw,
         decision_type="transfers",
         details={
@@ -295,7 +358,8 @@ def run(
         dry_run=dry_run,
     )
 
-    _log_decision(
+    _record_decision(
+        sim_manager_id,
         gameweek=next_gw,
         decision_type="lineup",
         details={
@@ -311,7 +375,8 @@ def run(
     )
 
     if chip_rec.chip:
-        _log_decision(
+        _record_decision(
+            sim_manager_id,
             gameweek=next_gw,
             decision_type="chip",
             details={"chip": chip_rec.chip.value, "reason": chip_rec.reason},
@@ -331,3 +396,59 @@ def run(
     )
 
     return result
+
+
+def run(
+    season: str = "2026-27",
+    force_chip: Chip | None = None,
+    dry_run: bool | None = None,
+) -> dict:
+    dry_run = settings.dry_run if dry_run is None else dry_run
+    return _run_decision_cycle(
+        season=season,
+        dry_run=dry_run,
+        force_chip=force_chip,
+        config=OPTIMISER,
+        chip_timing=CHIP_TIMING,
+        team_id=settings.fpl_team_id,
+        sim_manager_id=None,
+    )
+
+
+def run_for_persona(persona: SimManager, season: str = "2026-27") -> dict:
+    """Runs one simulated persona through the exact same decision logic as
+    the real bot (plan/simulation-engine-v1.md) -- never touches
+    ``agent/fpl_client.py``; no submission path exists in this code path at
+    all, not a disabled flag. ``persona`` supplies risk_mode/
+    variance_weight/max_ownership_differential/chip_aggressiveness; every
+    other config field stays at today's real default."""
+    config = dataclasses.replace(
+        OPTIMISER,
+        risk_mode=persona.risk_mode,
+        variance_weight=persona.variance_weight,
+        max_ownership_differential=persona.max_ownership_differential,
+    )
+    chip_timing = dataclasses.replace(
+        CHIP_TIMING,
+        wildcard_pts_gain_threshold=(
+            CHIP_TIMING.wildcard_pts_gain_threshold * persona.chip_aggressiveness
+        ),
+        free_hit_single_gw_gain_threshold=(
+            CHIP_TIMING.free_hit_single_gw_gain_threshold * persona.chip_aggressiveness
+        ),
+        bench_boost_min_bench_xpts=(
+            CHIP_TIMING.bench_boost_min_bench_xpts * persona.chip_aggressiveness
+        ),
+        triple_captain_min_gain=(
+            CHIP_TIMING.triple_captain_min_gain * persona.chip_aggressiveness
+        ),
+    )
+    return _run_decision_cycle(
+        season=season,
+        dry_run=True,
+        force_chip=None,
+        config=config,
+        chip_timing=chip_timing,
+        team_id=None,
+        sim_manager_id=persona.id,
+    )

@@ -595,3 +595,45 @@ class DecisionLog(Base):
     actual_outcome: Mapped[float | None] = mapped_column(Float, nullable=True)
     dry_run: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SimManager(Base):
+    """A simulated "shadow" manager persona (plan/simulation-engine-v1.md):
+    never submitted to the real FPL app, run purely to compare risk
+    postures against the real squad and each other post-season. Generated
+    once per season with a fixed seed and persisted -- a given persona's
+    parameters never change mid-season."""
+
+    __tablename__ = "sim_managers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    season: Mapped[str] = mapped_column(String(7), nullable=False)
+    label: Mapped[str] = mapped_column(String, nullable=False)
+    risk_mode: Mapped[str] = mapped_column(String, nullable=False)
+    variance_weight: Mapped[float] = mapped_column(Float, nullable=False)
+    max_ownership_differential: Mapped[float] = mapped_column(Float, nullable=False)
+    chip_aggressiveness: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SimDecisionLog(Base):
+    """Exact mirror of ``DecisionLog``'s shape, scoped to one ``SimManager``
+    -- lets every existing decision_log-shaped query (chips_used_this_season,
+    the dashboard's Decision History queries) work unmodified against sim
+    data by simply pointing it at this table instead."""
+
+    __tablename__ = "sim_decision_log"
+    __table_args__ = (
+        Index("ix_sim_decision_log_manager_gw", "sim_manager_id", "gameweek"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sim_manager_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("sim_managers.id"), nullable=False
+    )
+    gameweek: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision_type: Mapped[str] = mapped_column(String, nullable=False)
+    details: Mapped[str] = mapped_column(String, nullable=False)
+    projected_gain: Mapped[float] = mapped_column(Float, default=0.0)
+    actual_outcome: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
