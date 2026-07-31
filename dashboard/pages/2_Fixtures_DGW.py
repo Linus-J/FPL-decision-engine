@@ -26,13 +26,20 @@ finally:
     db.close()
 
 st.subheader("Upcoming fixtures")
+st.caption("FDR: 1 = easiest opponent, 5 = hardest (FPL's own per-team strength rating).")
 if fixtures.empty:
     st.info("No upcoming fixtures in the DB yet.")
 else:
-    display = fixtures.assign(DGW=fixtures["is_dgw"].map({True: "DGW", False: ""}))
+    display = fixtures.assign(
+        DGW=fixtures["is_dgw"].map({True: "DGW", False: ""}),
+        Kickoff=fixtures["kickoff_time"].dt.strftime("%a %d %b, %H:%M"),
+    )
     st.dataframe(
-        display[["gameweek", "home", "away", "kickoff_time", "DGW"]].rename(
-            columns={"gameweek": "GW", "home": "Home", "away": "Away", "kickoff_time": "Kickoff"}
+        display[["gameweek", "home", "home_fdr", "away", "away_fdr", "Kickoff", "DGW"]].rename(
+            columns={
+                "gameweek": "GW", "home": "Home", "home_fdr": "Home FDR",
+                "away": "Away", "away_fdr": "Away FDR",
+            }
         ),
         hide_index=True, use_container_width=True,
     )

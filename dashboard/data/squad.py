@@ -28,28 +28,42 @@ def _players_by_fpl_id(db: Session) -> pd.DataFrame:
     return pd.read_sql(query, db.bind)
 
 
-def _fallback_lineup(db: Session) -> tuple[list[int], int | None, int | None, int]:
-    """Latest logged lineup: (starting_ids, captain_id, vice_captain_id, gameweek)."""
+def _fallback_lineup(
+    db: Session,
+) -> tuple[list[int], list[int], int | None, int | None, int, float]:
+    """Latest logged lineup: (squad_ids, starting_ids, captain_id,
+    vice_captain_id, gameweek, projected_gain). ``projected_gain`` is the
+    total XI xPts recorded at decision time -- the only xPts figure
+    available for a true cold-start squad, since the cold-start build
+    doesn't persist per-player projections to ``player_projections``."""
     row = db.execute(
         text(
-            "SELECT details, gameweek FROM decision_log WHERE decision_type = 'lineup' "
-            "ORDER BY created_at DESC LIMIT 1"
+            "SELECT details, gameweek, projected_gain FROM decision_log "
+            "WHERE decision_type = 'lineup' ORDER BY created_at DESC LIMIT 1"
         )
     ).fetchone()
     if not row:
-        return [], None, None, 0
+        return [], [], None, None, 0, 0.0
     details = json.loads(row[0])
     return (
+        details.get("squad_ids", []),
         details.get("starting_ids", []),
         details.get("captain_id"),
         details.get("vice_captain_id"),
         row[1],
+        row[2],
     )
 
 
 def get_current_squad(db: Session, team_id: int) -> pd.DataFrame:
     """Columns: player_id, fpl_id, web_name, position, now_cost, team_short,
-    is_starting, multiplier, is_captain, is_vice_captain, xpts, gameweek."""
+    is_starting, multiplier, is_captain, is_vice_captain, xpts, gameweek.
+
+    ``xpts`` is NaN (not 0.0) when no per-player projection exists yet --
+    e.g. a true pre-season cold-start squad, where ``player_projections``
+    has no rows at all. ``squad.attrs["fallback_projected_total"]`` carries
+    the decision's own recorded total XI xPts in that case, since that
+    number does exist even though the per-player breakdown doesn't."""
     players = _players_by_fpl_id(db)
     if players.empty:
         return pd.DataFrame()
@@ -63,26 +77,32 @@ def get_current_squad(db: Session, team_id: int) -> pd.DataFrame:
             gw_used = gw
             break
 
+    fallback_total: float | None = None
     if payload.get("picks"):
         picks = pd.DataFrame(payload["picks"]).rename(columns={"position": "squad_slot"})
         squad = players.merge(picks, left_on="fpl_id", right_on="element", how="inner")
         squad["is_starting"] = squad["multiplier"] > 0
     else:
         logger.info("No live FPL picks for team=%s; falling back to decision_log", team_id)
-        starting_ids, captain_id, vice_captain_id, gw_used = _fallback_lineup(db)
-        if not starting_ids:
+        squad_ids, starting_ids, captain_id, vice_captain_id, gw_used, projected_gain = (
+            _fallback_lineup(db)
+        )
+        if not squad_ids:
             return pd.DataFrame()
-        squad = players[players["player_id"].isin(starting_ids)].copy()
-        squad["is_starting"] = True
+        squad = players[players["player_id"].isin(squad_ids)].copy()
+        squad["is_starting"] = squad["player_id"].isin(starting_ids)
         squad["multiplier"] = squad["player_id"].apply(lambda pid: 2 if pid == captain_id else 1)
         squad["is_captain"] = squad["player_id"] == captain_id
         squad["is_vice_captain"] = squad["player_id"] == vice_captain_id
+        fallback_total = projected_gain
 
     projections = get_latest_projections(gw_used)
     if not projections.empty:
         squad = squad.merge(projections[["player_id", "xpts"]], on="player_id", how="left")
     else:
-        squad["xpts"] = 0.0
-    squad["xpts"] = squad["xpts"].fillna(0.0)
+        squad["xpts"] = float("nan")
     squad["gameweek"] = gw_used
+    squad.attrs["fallback_projected_total"] = (
+        fallback_total if squad["xpts"].isna().all() else None
+    )
     return squad

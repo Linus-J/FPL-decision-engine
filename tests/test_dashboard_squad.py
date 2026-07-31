@@ -93,11 +93,42 @@ def test_falls_back_to_decision_log_when_no_live_picks(session, monkeypatch):
 
     squad = squad_module.get_current_squad(session, team_id=12345)
 
-    assert len(squad) == 2
+    assert len(squad) == 3
     assert squad["gameweek"].iloc[0] == 7
-    assert squad["is_starting"].all()
+    starters = squad[squad["is_starting"]]
+    bench = squad[~squad["is_starting"]]
+    assert set(starters["player_id"]) == {1, 2}
+    assert list(bench["player_id"]) == [3]
     captain = squad[squad["is_captain"]]
     assert captain["player_id"].iloc[0] == 2
+
+
+def test_fallback_with_no_projections_yet_reports_nan_xpts_and_decision_total(session, monkeypatch):
+    """True cold-start case: player_projections has no rows at all, so
+    per-player xPts should be NaN (not misleadingly 0.0), and the squad's
+    .attrs should carry the decision's own recorded total for display."""
+    _seed_players(session)
+    session.add(DecisionLog(
+        gameweek=1, decision_type="lineup",
+        details=json.dumps({
+            "squad_ids": [1, 2, 3], "starting_ids": [1, 2],
+            "captain_id": 1, "vice_captain_id": 2,
+        }),
+        projected_gain=42.5, dry_run=True,
+    ))
+    session.commit()
+
+    monkeypatch.setattr(squad_module, "_get_current_and_next_gw", lambda: (1, 1))
+    monkeypatch.setattr(squad_module, "get_picks", lambda team_id, gw: {})
+    monkeypatch.setattr(
+        squad_module, "get_latest_projections",
+        lambda gw: pd.DataFrame(columns=["player_id", "xpts"]),
+    )
+
+    squad = squad_module.get_current_squad(session, team_id=12345)
+
+    assert squad["xpts"].isna().all()
+    assert squad.attrs["fallback_projected_total"] == 42.5
 
 
 def test_returns_empty_when_nothing_available(session, monkeypatch):

@@ -25,8 +25,10 @@ def session(tmp_path):
 
 def test_get_upcoming_fixtures_filters_by_window(session, monkeypatch):
     session.add_all([
-        Team(id=1, name="Team A", short_name="TMA"),
-        Team(id=2, name="Team B", short_name="TMB"),
+        Team(id=1, name="Team A", short_name="TMA",
+             strength_overall_home=4, strength_overall_away=5),
+        Team(id=2, name="Team B", short_name="TMB",
+             strength_overall_home=2, strength_overall_away=3),
     ])
     session.add_all([
         Fixture(fpl_id=1, season="2026-27", gameweek=6, team_h_id=1, team_a_id=2,
@@ -44,6 +46,9 @@ def test_get_upcoming_fixtures_filters_by_window(session, monkeypatch):
     assert list(df["gameweek"]) == [6]
     assert df.iloc[0]["home"] == "TMA"
     assert df.iloc[0]["away"] == "TMB"
+    assert df.iloc[0]["home_fdr"] == 3  # TMB's strength_overall_away
+    assert df.iloc[0]["away_fdr"] == 4  # TMA's strength_overall_home
+    assert pd.api.types.is_datetime64_any_dtype(df["kickoff_time"])
 
 
 def test_get_squad_dgw_exposure_empty_without_squad(session):

@@ -16,21 +16,30 @@ from projection.pipeline import (
 
 
 def get_upcoming_fixtures(db: Session, lookahead_gws: int = 8) -> pd.DataFrame:
+    """``home_fdr``/``away_fdr`` reuse FPL's own already-ingested per-team
+    ``strength_overall_{home,away}`` (small int scale, higher = stronger
+    opponent = harder fixture) -- from the OPPONENT's perspective for that
+    venue, same convention FPL's own FDR uses."""
     _, next_gw = _get_current_and_next_gw()
     season = _get_current_season()
     query = text("""
         SELECT f.gameweek, f.kickoff_time, f.is_dgw,
-               th.short_name AS home, ta.short_name AS away
+               th.short_name AS home, ta.short_name AS away,
+               ta.strength_overall_away AS home_fdr,
+               th.strength_overall_home AS away_fdr
         FROM fixtures f
         JOIN teams th ON th.id = f.team_h_id
         JOIN teams ta ON ta.id = f.team_a_id
         WHERE f.season = :season AND f.gameweek >= :start AND f.gameweek < :end
         ORDER BY f.gameweek, f.kickoff_time
     """)
-    return pd.read_sql(
+    df = pd.read_sql(
         query, db.bind,
         params={"season": season, "start": next_gw, "end": next_gw + lookahead_gws},
     )
+    if not df.empty:
+        df["kickoff_time"] = pd.to_datetime(df["kickoff_time"])
+    return df
 
 
 def get_squad_dgw_exposure(
