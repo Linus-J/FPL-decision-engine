@@ -154,13 +154,17 @@ Internal player IDs can be looked up via `SELECT id, fpl_id, web_name FROM playe
 uv run python scripts/run_agent.py --dry-run
 ```
 
-### 7. Install the scheduler
+### 7. Scheduler (optional — disabled by default, see below)
 
 ```bash
 bash deploy/install.sh
 ```
 
 Fires at 06:00 Fri/Sat/Sun — well before FPL's typical 11:00/11:30 deadlines.
+**Disabled as of 2026-07-31**: the host machine isn't always on, so a
+systemd timer can silently miss a deadline entirely. Manual weekly kickoff
+(below) is the current workflow — re-enable with
+`systemctl --user enable --now fpl-bot.timer` if that changes.
 
 ---
 
@@ -172,6 +176,16 @@ uv run python scripts/run_agent.py --live                 # live submission
 uv run python scripts/run_agent.py --chip wildcard        # force a specific chip
 uv run python scripts/run_agent.py --json-out out.json    # save full decision to file
 ```
+
+**Manual weekly kickoff** (real decision + all simulation personas, in the
+right order — see plan/simulation-engine-v1.md):
+```bash
+uv run python scripts/run_weekly.py                       # uses .env's DRY_RUN default
+uv run python scripts/run_weekly.py --live                # live submission
+```
+Runs `run_simulations.py` regardless of `run_agent.py`'s exit code — it
+legitimately exits 1 on the benign pre-season "no_projections" case, which
+must never block the simulation batch.
 
 Backtest (walk-forward, retrains per GW):
 ```bash
