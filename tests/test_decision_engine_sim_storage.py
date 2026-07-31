@@ -125,6 +125,43 @@ def test_record_decision_sim_writes_sim_decision_log_not_real(session):
     assert json.loads(row.details)["chip"] == "bboost"
 
 
+def test_run_for_persona_never_refreshes_projections(session, monkeypatch):
+    """Real gap found while building the simulation engine: run_for_persona
+    must NOT call run_projections(persist=True) -- scripts/run_simulations.py
+    runs right after scripts/run_agent.py in the same scheduled job, which
+    has already refreshed this gameweek's projections. Calling it again per
+    persona would silently redo the same computation up to 100x and write
+    near-duplicate rows to player_projections every single run.
+
+    Uses the early "squad already exists but projections are empty ->
+    abort" branch (a pre-existing SimDecisionLog lineup row) so the test
+    stays a pure unit check on the refresh-projections wiring, without
+    needing a full players/PuLP fixture for a real cold-start build."""
+    import pandas as pd
+
+    _add_sim_manager(session, 1)
+    persona = session.query(SimManager).filter_by(id=1).one()
+    decision_engine._record_decision(
+        1, gameweek=1, decision_type="lineup",
+        details={"squad_ids": [1, 2, 3], "budget": 100.0, "free_transfers": 1},
+        projected_gain=10.0,
+    )
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("run_projections must not be called by run_for_persona")
+
+    monkeypatch.setattr(decision_engine, "run_projections", _boom)
+    monkeypatch.setattr(decision_engine, "_get_current_and_next_gw", lambda: (1, 1))
+    monkeypatch.setattr(
+        decision_engine, "get_latest_projections",
+        lambda: pd.DataFrame(columns=["player_id", "gameweek", "xpts"]),
+    )
+
+    result = decision_engine.run_for_persona(persona, season="2026-27")
+
+    assert result == {"error": "no_projections"}
+
+
 def test_load_own_decision_log_isolates_personas(session):
     _add_sim_manager(session, 1)
     _add_sim_manager(session, 2)

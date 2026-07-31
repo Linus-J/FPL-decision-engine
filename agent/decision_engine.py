@@ -148,12 +148,21 @@ def _run_decision_cycle(
     chip_timing: ChipTimingThresholds,
     team_id: int | None,
     sim_manager_id: int | None,
+    refresh_projections: bool = True,
 ) -> dict:
     """The actual decision loop, shared by the real bot (``run()``) and every
     simulated persona (``run_for_persona()``). Behaviour is governed
     entirely by ``config``/``chip_timing`` and by which storage
     (``sim_manager_id`` or not) it reads/writes -- never by mutating global
-    state. See plan/simulation-engine-v1.md."""
+    state. See plan/simulation-engine-v1.md.
+
+    ``refresh_projections`` (default True, ``run()``'s only behaviour):
+    re-runs and persists the projection pipeline before reading it back.
+    Simulated personas pass False -- ``scripts/run_simulations.py`` runs
+    right after ``scripts/run_agent.py`` in the same scheduled job, which
+    has already refreshed this gameweek's projections; recomputing (and
+    re-persisting near-duplicate rows) per persona would be 100x wasted
+    work and DB writes for identical numbers."""
     current_gw, next_gw = _get_current_and_next_gw()
 
     logger.info(
@@ -161,8 +170,9 @@ def _run_decision_cycle(
         current_gw, next_gw, dry_run, sim_manager_id,
     )
 
-    logger.info("Running projection pipeline...")
-    run_projections(season=season, persist=True)
+    if refresh_projections:
+        logger.info("Running projection pipeline...")
+        run_projections(season=season, persist=True)
     projections = get_latest_projections()
 
     squad_ids, available_budget, free_transfers = _load_squad_state(
@@ -451,4 +461,5 @@ def run_for_persona(persona: SimManager, season: str = "2026-27") -> dict:
         chip_timing=chip_timing,
         team_id=None,
         sim_manager_id=persona.id,
+        refresh_projections=False,
     )
