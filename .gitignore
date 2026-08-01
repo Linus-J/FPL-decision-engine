@@ -68,3 +68,6 @@ coverage.xml
 .sisyphus/
 .omc/
 .claude/
+
+# SeleniumBase driver-management lock files (left behind by FBref/prior-league scrapes)
+downloaded_files/
