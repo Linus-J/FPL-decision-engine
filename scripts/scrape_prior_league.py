@@ -31,7 +31,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 from data.db import init_db
-from data.ingestors.fbref_prior import PRIOR_LEAGUES, ingest_prior_league_season
+from data.ingestors.fbref_prior import (
+    PRIOR_LEAGUES,
+    backfill_prior_league_codes,
+    ingest_prior_league_season,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +77,8 @@ def main(argv: list[str]) -> None:
             logger.warning("%s %s failed: %s", lg, season, exc)
             if "hampionship" in lg:
                 logger.warning("%s", _CHAMP_SNIPPET)
+    matched = backfill_prior_league_codes()
+    logger.info("Identity mapping: %d prior_league_stats rows matched to a players.code", matched)
     logger.info("Prior-league scrape complete")
 
 

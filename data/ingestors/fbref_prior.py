@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session
-from data.models import PriorLeagueStats
+from data.models import Player, PriorLeagueStats
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,35 @@ def row_to_prior_stats(row: Mapping, league: str, season: str) -> dict | None:
         "matches": int(_first(row, _MP)),
         **per90,
     }
+
+
+def backfill_prior_league_codes() -> int:
+    """Match every code-less prior_league_stats row to a players.code via the
+    existing, hardened fbref.py name matcher (exact -> normalized substring
+    -> unique token-subset, plus its hand-verified alias table) rather than
+    writing new fuzzy-matching logic. Idempotent -- only ever touches rows
+    where code IS NULL, so it's safe to call after every scrape. Returns the
+    number of rows newly matched this call."""
+    from data.ingestors.fbref import _match_player, _normalize_name
+
+    db = get_session()
+    try:
+        name_map: dict[str, int] = {}
+        for p in db.query(Player).filter(Player.code.isnot(None)).all():
+            name_map[_normalize_name(f"{p.first_name} {p.second_name}")] = p.code
+            name_map[_normalize_name(p.web_name)] = p.code
+
+        unmatched = db.query(PriorLeagueStats).filter(PriorLeagueStats.code.is_(None)).all()
+        matched = 0
+        for row in unmatched:
+            code = _match_player(row.player_name, name_map)
+            if code is not None:
+                row.code = code
+                matched += 1
+        db.commit()
+        return matched
+    finally:
+        db.close()
 
 
 def ingest_prior_league_season(  # pragma: no cover - live network + browser
