@@ -1368,3 +1368,52 @@ cannot be done in this sandboxed environment):
 3. Re-run the full test suite once more after the config change (a pure data
    substitution — no code path changes, but worth confirming nothing assumed the
    literature defaults specifically).
+
+**Done 2026-08-01 — calibration attempted, REJECTED on sanity-check grounds,
+literature defaults kept.** The user completed all 25 scrapes (real row
+counts: 500-800 per (league, season), identity-mapping matched 24-157
+players per season). Running the calibration script against this real data
+produced:
+
+| League | Factor | n | Verdict |
+|---|---|---|---|
+| Championship | 0.957 | 107 | too generous |
+| La Liga | **2.112** | 47 | implausible |
+| Serie A | 1.208 | 42 | plausible |
+| Bundesliga | 1.171 | 43 | plausible |
+| Ligue 1 | 0.751 | 62 | plausible |
+
+**Sanity check (web search, Opta Power Rankings) failed for two of five.**
+La Liga is the world's 2nd-strongest league, nearly on par with the PL —
+a 2.11x factor (implying PL output roughly *doubles* La Liga output) is not
+credible; it should sit close to 1.0 like the other top-5 leagues.
+Championship at 0.96 (barely any discount) also contradicts both the
+plan's own literature prior and general football-analytics consensus that
+Championship quality sits meaningfully below the PL (ranked 10th globally
+by the same source).
+
+**Root cause identified, not just asserted:** inspected the raw La Liga
+hold-out directly — 7 of 47 players have exactly 0.0 prior-league goal
+contribution, and the pooled median (0.13) sits in a noisy near-zero
+region, so the ratio-of-medians is dividing two small, unstable numbers.
+More fundamentally, `build_holdout`'s own construction has a **survivorship
+bias**: a player only qualifies if they get real minutes in BOTH their
+prior-league season AND the following PL season — which conditions on
+"the move worked out," disproportionately keeping proven-success stories
+(especially attackers bought specifically to keep scoring) and inflating
+every factor upward, most visibly for La Liga (whose real qualifying
+transfers this era skew toward defensive players, so the small,
+unrepresentative attacking subset dominates) and Championship (where the
+qualifying sample skews toward confirmed promoted-team goalscorers, not
+the many who get benched and never accumulate enough PL minutes to
+qualify at all).
+
+**Decision:** `config/strategy.py`'s `PriorLeagueRules` stays on the
+literature-default values (Championship 0.65, top-5 1.0) — the calibrated
+numbers were not applied. This is a genuine limitation of the calibration
+methodology as designed in this plan, not a data or scraping problem — a
+future recalibration attempt should address the survivorship-bias
+mechanism above (e.g. relaxing or removing the PL-side minutes
+requirement, or using a metric less sensitive to near-zero denominators
+than a raw per-90 ratio) before trusting its output over the literature
+prior.
