@@ -1,6 +1,39 @@
 # P11 — Promoted-team / new-signing cold-start prior (completion)
 
-**Status:** design approved 2026-08-01, ready for implementation planning.
+**Status:** implemented and merged 2026-08-01 (commits ad3d2a5..9ffd51c on
+`v2`). Superseded by the final whole-branch review, which found and fixed 6
+real defects the per-task design/pseudocode below did not anticipate --
+this doc is kept as the historical design record, not as an accurate
+description of the shipped code. Read `projection/cold_start.py` and
+`projection/prior_league_translation.py` directly for current behavior.
+Notably, the shipped code differs from Task 5's pseudocode/code block below
+in two load-bearing ways the plan got wrong:
+
+1. **`load_prior_league_lookup` filters on `minutes >= MIN_HOLDOUT_MINUTES`**
+   (imported from `prior_league_translation.py`) -- the plan's version below
+   has no such filter, which was a Critical bug: the calibration module
+   only trains its translation factor on players with >=450 season
+   minutes, but the plan's serve-time query would apply that factor to a
+   player with as few as 1 minute, capable of ranking a one-cameo player
+   above a 34-game standout.
+2. **`project_cold_start` floors a matched player's `xpts` at
+   `max(prior_league_xpts, fallback_xpts)`** (where `fallback_xpts` is
+   whatever the existing peer-bucket/position-price cascade would have
+   given that player) instead of always trusting the prior-league tier's
+   own number -- the plan's version below has no floor, which meant every
+   GKP/DEF match was a guaranteed regression below what the player would
+   have scored without this feature at all (the tier has no defensive/CS
+   signal, so it always underscored those positions). `xpts_var` and
+   `proj_source` travel with whichever value actually won the floor, not
+   unconditionally with the prior-league model.
+
+Also: `_SEASON_MATCHES`'s season-length lookup covers Bundesliga/Ligue 1 at
+34 matches (not the 38 the plan implicitly assumed via the top-5-leagues
+framing), and the plan's repeated "Expected: `All checks passed!`" for
+`ruff check .` was wrong about this repo's baseline -- it has 101
+pre-existing errors in unrelated files throughout this whole session; the
+real, correct bar every task actually verified against was "no NEW errors
+in touched files," never a fully clean repo-wide run.
 
 ## Why
 
