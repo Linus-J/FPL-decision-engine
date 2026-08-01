@@ -425,6 +425,53 @@ class DepartureRiskRules:
 
 
 # ---------------------------------------------------------------------------
+# PRIOR LEAGUE RULES (P11) — cross-league translation factors for cold-start
+# prior tier. Controls how much non-PL league data translates to PL projections.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PriorLeagueRules:
+    """P11: cross-league translation factors + variance for the cold-start
+    prior-league prior tier (plan/p11-prior-league-cold-start.md). Defaults
+    are the plan's literature-style guess (Championship discounted, top-5
+    treated as roughly PL-equivalent) -- replace with
+    scripts/calibrate_prior_league_factors.py's real output once the
+    historical hold-out has actually been scraped (needs a browser)."""
+
+    translation_factor_championship: float = 0.65
+    translation_factor_la_liga: float = 1.0
+    translation_factor_serie_a: float = 1.0
+    translation_factor_bundesliga: float = 1.0
+    translation_factor_ligue_1: float = 1.0
+
+    # Deliberately unremarkable variance guess (mirrors cold_start.py's own
+    # _FALLBACK_VAR reasoning) until a real hold-out replaces it.
+    translation_variance_championship: float = 6.0
+    translation_variance_la_liga: float = 6.0
+    translation_variance_serie_a: float = 6.0
+    translation_variance_bundesliga: float = 6.0
+    translation_variance_ligue_1: float = 6.0
+
+    def translation_factor(self, league: str) -> float:
+        return {
+            "ENG-Championship": self.translation_factor_championship,
+            "ESP-La Liga": self.translation_factor_la_liga,
+            "ITA-Serie A": self.translation_factor_serie_a,
+            "GER-Bundesliga": self.translation_factor_bundesliga,
+            "FRA-Ligue 1": self.translation_factor_ligue_1,
+        }[league]
+
+    def translation_variance(self, league: str) -> float:
+        return {
+            "ENG-Championship": self.translation_variance_championship,
+            "ESP-La Liga": self.translation_variance_la_liga,
+            "ITA-Serie A": self.translation_variance_serie_a,
+            "GER-Bundesliga": self.translation_variance_bundesliga,
+            "FRA-Ligue 1": self.translation_variance_ligue_1,
+        }[league]
+
+
+# ---------------------------------------------------------------------------
 # SINGLETON INSTANCES — import these everywhere
 # ---------------------------------------------------------------------------
 
@@ -449,3 +496,4 @@ DGW = DGWStrategy()
 CHIP_TIMING = ChipTimingThresholds()
 OPTIMISER = OptimiserConfig()
 DEPARTURE_RISK = DepartureRiskRules()
+PRIOR_LEAGUE = PriorLeagueRules()
