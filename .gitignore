@@ -71,3 +71,7 @@ coverage.xml
 
 # SeleniumBase driver-management lock files (left behind by FBref/prior-league scrapes)
 downloaded_files/
+
+# Generated calendar reminders (personal artifact, regenerate with
+# scripts/generate_gw_reminders_ical.py)
+*.ics
