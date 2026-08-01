@@ -34,6 +34,24 @@ cold-start wiring.
   plus a hand-verified alias table for nickname/transliteration variants). Built and
   scarred by real matching bugs during the 2026-07-28 data-completeness audit. Reused
   here rather than writing new fuzzy-matching logic.
+- **Real bug found + fixed 2026-08-01: Serie A ingestion was silently broken, not a
+  network/Cloudflare issue.** `~/soccerdata/config/league_dict.json`'s `"ITA-Serie A"`
+  entry mapped to FBref's raw label `"Serie A"`, but FBref has since relabelled the
+  page `"Serie A (M)"` (disambiguating from a newer women's competition) — the
+  already-cached `leagues.html` genuinely contains the Serie A row (confirmed via
+  direct grep, 12 hits), but `soccerdata.FBref.read_leagues()`'s name-translation step
+  silently dropped it since `"Serie A"` no longer matched anything in the page, while
+  Championship/La Liga/Bundesliga/Ligue 1 (whose labels didn't change) kept working.
+  Not a soccerdata code bug — a stale local machine config left over from whenever
+  Serie A was first registered. **Fixed** by updating the local config's `"FBref"`
+  value to `"Serie A (M)"`; verified `read_leagues()` now resolves the league from the
+  existing cache with no new network call. This is a machine-local config file (not
+  git-tracked) — re-verify the same fix is needed on whatever machine actually runs
+  the P11 scrape, since `~/soccerdata/config/league_dict.json` isn't shared via this
+  repo. Manual HTML download (the user's fallback offer) should no longer be
+  necessary now that the real cause is fixed, but keep it in mind as a fallback if
+  Serie A's actual season/player-stats pages turn out to have their own separate
+  issues once a live scrape is attempted.
 
 ## Scope for this pass
 
@@ -64,6 +82,14 @@ Scrape, via `scripts/scrape_prior_league.py` (already exists, browser-only):
 - All season-aggregate (`read_player_season_stats`), same light call the existing
   ingestor already makes — not the heavier 380-match-per-season grind of the live
   match-event scrape.
+- **Manual-HTML fallback (kept in reserve):** `soccerdata`'s `.get(url, filepath)`
+  returns the cached file's contents unread from the network whenever `filepath`
+  already exists (confirmed by reading its source) — so if any league's live scrape
+  still fails for a reason that isn't the Serie A config bug above, the fix is to
+  manually download the relevant FBref page and drop it at the exact cache path
+  `soccerdata` expects (`~/soccerdata/data/FBref/seasons_<league>.html` and
+  `players_<league>_<season>_standard.html`), then re-run the ingest — it reads the
+  seeded file instead of hitting the network, no code change needed.
 
 ### 2. Identity mapping
 
