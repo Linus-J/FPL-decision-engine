@@ -51,10 +51,9 @@ class ScoringRules:
     points_yellow_card: int = -1
     points_red_card: int = -3
 
-    # --- Bonus points (final award — see BPSWeights for the metric table) ---
-    points_bps_first: int = 3
-    points_bps_second: int = 2
-    points_bps_third: int = 1
+    # points_bps_first/second/third removed 2026-08-01 -- confirmed dead,
+    # no test coverage. The real 3/2/1 bonus award is hardcoded directly in
+    # projection/bonus.py, which never read these.
 
 
 # ---------------------------------------------------------------------------
@@ -161,14 +160,11 @@ class BPSWeights:
 
 @dataclass(frozen=True)
 class ChipRules:
-    wildcards_total: int = 2             # total WCs per season (1 per half)
     wildcard_first_half_deadline_gw: int = 19  # GW after which WC1/FH1/BB1/TC1 expire
-    free_hits_total: int = 2             # 1 per half, no carryover
-    bench_boosts_total: int = 2          # 1 per half, no carryover
-    triple_captains_total: int = 2       # 1 per half, no carryover
-
-    # Can two chips be played in the same GW? (FPL rule: no)
-    allow_chip_stacking: bool = False
+    # wildcards_total/free_hits_total/bench_boosts_total/triple_captains_total/
+    # allow_chip_stacking removed 2026-08-01 -- confirmed dead, no test
+    # coverage. The real "1 per half, no carryover" cap is hardcoded directly
+    # in optimiser/chips.py::_chip_uses_remaining, which never read these.
 
 
 # ---------------------------------------------------------------------------
@@ -240,22 +236,12 @@ class DGWStrategy:
     # How many GWs ahead to scan for confirmed DGWs
     lookahead_gws: int = 6
 
-    # Minimum DGW starters to target when a DGW is within lookahead window
-    target_dgw_starters: int = 9
-
-    # How many extra hits we're willing to take to build DGW coverage
-    max_extra_hits_for_dgw: int = 2
-
-    # Point premium applied to DGW players' xPts (they play twice)
-    # Set to ~1.85 rather than 2.0 to discount rotation/injury risk in DGW
-    dgw_xpts_multiplier: float = 1.85
-
-    # BGW (blank GW) discount — players with blanks get xPts multiplied by this
-    bgw_xpts_multiplier: float = 0.0     # blanked player = 0 projected pts
-
-    # When DGW is this many GWs away, start preferring DGW-eligible players
-    # in transfers even if they're not the immediate best pick
-    dgw_preparation_window_gws: int = 3
+    # target_dgw_starters/max_extra_hits_for_dgw/dgw_xpts_multiplier/
+    # bgw_xpts_multiplier/dgw_preparation_window_gws removed 2026-08-01 --
+    # confirmed dead (P12 already flagged the two multipliers; the other
+    # three turned out to be the same pattern). DGW/BGW-aware transfer
+    # preference was never actually implemented beyond what falls out of
+    # projection/assemble.py's per-fixture summing (P12).
 
 
 # ---------------------------------------------------------------------------
@@ -334,15 +320,16 @@ class OptimiserConfig:
     # Number of GWs to project ahead for transfer decisions
     transfer_planning_horizon_gws: int = 3
 
-    # Rolling window for recent form (xG, xA, minutes)
-    form_window_gws: int = 5
+    # form_window_gws removed 2026-08-01 -- confirmed dead, no test coverage.
+    # Rolling windows are hardcoded as [3, 5] directly in
+    # projection/minutes_model.py, which never read this.
 
     # Minimum P(starts) threshold — players below this are excluded
     min_start_probability: float = 0.4
 
-    # Extra points gain required above the raw hit cost to justify taking a hit.
-    # With hit_cost=-4 and buffer=2, we only hit when net gain >= 6 over horizon.
-    hit_min_gain_buffer: float = 2.0
+    # hit_min_gain_buffer removed 2026-08-01 -- confirmed dead (found while
+    # config-threading the simulation engine's persona knobs, never read by
+    # optimiser/transfers.py), no test coverage.
 
     # Ownership-differential weight magnitude (P3-3, plan §5's λ) — was a
     # dead field (read nowhere) until optimiser/scoring.py wired it in.
