@@ -148,7 +148,20 @@ Point-in-time SAFE inputs available: snapshots (T3), real FDR historical (T3b), 
 - **Gate:** the **≥57 pts/GW** exit gate ran on the P-XI harness with P-RS scoring, MC seeded (deterministic) — **result: 52.48, gate FAILS by 4.5.** Progression: 42.21 (pre-P10 baseline) → 41.97 (P10 v1) → 42.64 (+GK calib) → 50.70 (+WhoScored real data) → 52.48 (+dribbles/GK recalib). The real-data fix dwarfed every calibration fix combined, confirming the data gap (not code bugs, not calibration) was the dominant lever throughout. Decision (2026-07-28): accept 52.48 as a strong stopping point and move to Phase 3 — see decision 3, closed below.
 - **Deferred, not done:** `projection/pipeline.py::run_projections` (the LIVE 2026-27 serving path, D5's other listed target) still uses the old `cs_model`/`points_model` combo — P10 only rewired the backtest path. Rewiring live serving needs the same odds/defcon-events plumbing plus handling the live (as-yet-unplayed) horizon, which P-FIX was scoped for separately; treating this as a fast-follow once Phase 2's component quality is settled, not silently dropped.
 
-### P11 — Promoted-team / new-signing prior model  *(Phase-1 T7 deferred; the biggest alpha source)*
+### P11 — Promoted-team / new-signing prior model  ⚠️ CODE COMPLETE, CALIBRATION PENDING (see plan/p11-prior-league-cold-start.md)
+
+**2026-08-01:** identity mapping, translation-factor calibration module, and
+cold-start wiring are all built and tested (see
+plan/p11-prior-league-cold-start.md). `config/strategy.py`'s
+`PriorLeagueRules` currently holds the plan's literature-style default
+factors (Championship 0.65, top-5 1.0) -- the REAL calibration
+(`scripts/calibrate_prior_league_factors.py`) needs the historical
+prior-league scrape (5 leagues x 4 past seasons + the current season, all
+browser-only) run on a machine with Chromium before it produces real
+numbers. Until that scrape runs, new 26/27 signings/promoted players with a
+name-matched prior-league record still get a real per-player projection
+(not the flat fallback) -- just with an uncalibrated discount factor.
+
 The 102 brand-new 26/27 codes (foreign signings + promoted-team players) have **no PL history**, so T7's cold-start collapses them to a weak position+price prior — i.e. the most-mispriced group gets the worst projection. P11 gives them a real prior from their **prior-league** 2025-26 stats.
 
 - **Prior-league ingest (FBref, same infra as T5b):** scope = **ENG-Championship + top-5** (La Liga, Serie A, Bundesliga, Ligue 1). Top-5 are in soccerdata's default league dict; Championship needs a one-line `~/soccerdata/config/league_dict.json` entry. Season = 2025-26 (the just-finished season the incomers played). Same headed-Chromium + cache-resume workflow (`scripts/scrape_fbref.py`, generalise it to take a league). Store into `player_match_events`/an analogous prior-league stats table keyed by `code`/name.
