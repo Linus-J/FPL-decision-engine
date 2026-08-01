@@ -214,9 +214,10 @@ def _price_prior(position: str, now_cost: float) -> float:
     return max(_MIN_XPTS, base + _PRICE_SLOPE * (now_cost - 4.0))
 
 
-# Games in a full season, by league -- Championship plays 46, the top-5
-# and PL both play 38. Used as prior_minutes_share's denominator so it
-# measures real season-long availability, not "when picked, does he
+# Games in a full season, by league -- Championship plays 46 (24 clubs),
+# Bundesliga/Ligue 1 play 34 (18 clubs), La Liga/Serie A/PL play 38 (20
+# clubs, the default below). Used as prior_minutes_share's denominator so
+# it measures real season-long availability, not "when picked, does he
 # start" (which a 3-appearance fringe player could ace).
 _SEASON_MATCHES = {"ENG-Championship": 46, "GER-Bundesliga": 34, "FRA-Ligue 1": 34}
 _DEFAULT_SEASON_MATCHES = 38
@@ -341,6 +342,14 @@ def project_cold_start(
                 else:
                     xpts, xpts_var = fallback_xpts, fallback_xpts_var
                     source = fallback_source
+                # start_prob always comes from the prior-league minutes-share
+                # signal, even when xpts/xpts_var above came from the
+                # fallback instead -- a matched player's own playing-time
+                # data is real information regardless of whether their
+                # attacking output alone cleared the fallback floor. This
+                # means `source` no longer indicates which start_prob rule
+                # applied (a matched GKP can show fallback_source with a
+                # higher start_prob than an unmatched one at the same price).
                 start_prob = pl_start_prob
             else:
                 xpts, xpts_var = fallback_xpts, fallback_xpts_var
