@@ -149,6 +149,8 @@ def upsert_gameweeks(bootstrap: dict, season: str = "2026-27") -> None:
                 .on_conflict_do_update(
                     index_elements=["id", "season"],
                     set_={
+                        "name": gw["name"],
+                        "deadline_time": deadline,
                         "finished": gw["finished"],
                         "is_current": gw["is_current"],
                         "is_next": gw["is_next"],
