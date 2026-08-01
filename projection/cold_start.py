@@ -177,6 +177,7 @@ def load_prior_league_lookup(season: str) -> dict[int, dict]:
     data) -- the P11 translated prior for players with no PL history.
     Empty dict (never crashes) if nothing has been ingested yet."""
     from data.ingestors.fbref import SEASON_MAP
+    from projection.prior_league_translation import MIN_HOLDOUT_MINUTES
 
     prior_season = prior_season_of(season)
     soccerdata_season = SEASON_MAP.get(prior_season, prior_season)
@@ -185,9 +186,12 @@ def load_prior_league_lookup(season: str) -> dict[int, dict]:
         query = text("""
             SELECT code, league, goals90, assists90, npxg90, xa90, minutes, matches
             FROM prior_league_stats
-            WHERE season = :season AND code IS NOT NULL
+            WHERE season = :season AND code IS NOT NULL AND minutes >= :min_minutes
         """)
-        df = pd.read_sql(query, db.bind, params={"season": soccerdata_season})
+        df = pd.read_sql(
+            query, db.bind,
+            params={"season": soccerdata_season, "min_minutes": MIN_HOLDOUT_MINUTES},
+        )
     finally:
         db.close()
     if df.empty:
@@ -208,6 +212,18 @@ def apply_departure_gate(players: pd.DataFrame) -> pd.DataFrame:
 def _price_prior(position: str, now_cost: float) -> float:
     base = _POSITION_BASE.get(position, 3.0)
     return max(_MIN_XPTS, base + _PRICE_SLOPE * (now_cost - 4.0))
+
+
+# Games in a full season, by league -- Championship plays 46, the top-5
+# and PL both play 38. Used as prior_minutes_share's denominator so it
+# measures real season-long availability, not "when picked, does he
+# start" (which a 3-appearance fringe player could ace).
+_SEASON_MATCHES = {"ENG-Championship": 46}
+_DEFAULT_SEASON_MATCHES = 38
+
+
+def _season_length(league: str) -> int:
+    return _SEASON_MATCHES.get(league, _DEFAULT_SEASON_MATCHES)
 
 
 def _prior_league_projection(position: str, pl_row: dict) -> tuple[float, float, float]:
@@ -231,7 +247,9 @@ def _prior_league_projection(position: str, pl_row: dict) -> tuple[float, float,
         + SCORING.points_full_appearance,
     )
     xpts_var = PRIOR_LEAGUE.translation_variance(pl_row["league"])
-    prior_minutes_share = min(1.0, pl_row["minutes"] / max(1, pl_row["matches"] * 90))
+    prior_minutes_share = min(
+        1.0, pl_row["minutes"] / max(1, _season_length(pl_row["league"]) * 90)
+    )
     start_prob = (
         (1 - _PRIOR_LEAGUE_START_PROB_WEIGHT) * NEW_PLAYER_START_PROB
         + _PRIOR_LEAGUE_START_PROB_WEIGHT * prior_minutes_share
@@ -293,6 +311,16 @@ def project_cold_start(
             start_prob = float(r.starts_rate)
             source = "prior_season"
         else:
+            peer_stats = _peer_bucket_stats(r.position, float(r.now_cost), peer_buckets)
+            if peer_stats is not None:
+                fallback_xpts = max(_MIN_XPTS, peer_stats[0])
+                fallback_xpts_var = peer_stats[1]
+                fallback_source = "peer_bucket_prior"
+            else:
+                fallback_xpts = _price_prior(r.position, float(r.now_cost))
+                fallback_xpts_var = _FALLBACK_VAR
+                fallback_source = "position_price_prior"
+
             code = getattr(r, "code", None)
             pl_row = (
                 prior_league_lookup.get(int(code))
@@ -300,19 +328,21 @@ def project_cold_start(
                 else None
             )
             if pl_row is not None:
-                xpts, xpts_var, start_prob = _prior_league_projection(r.position, pl_row)
+                pl_xpts, pl_xpts_var, pl_start_prob = _prior_league_projection(
+                    r.position, pl_row
+                )
+                # the prior-league tier has no defensive/bonus signal, so it
+                # must never score a matched player below what the existing
+                # peer-bucket/position-price fallback would have given them
+                # (plan/p11-prior-league-cold-start.md final review, Fix 2).
+                xpts = max(pl_xpts, fallback_xpts)
+                xpts_var = pl_xpts_var
+                start_prob = pl_start_prob
                 source = "prior_league_prior"
             else:
-                peer_stats = _peer_bucket_stats(r.position, float(r.now_cost), peer_buckets)
-                if peer_stats is not None:
-                    xpts, xpts_var = peer_stats
-                    xpts = max(_MIN_XPTS, xpts)
-                    source = "peer_bucket_prior"
-                else:
-                    xpts = _price_prior(r.position, float(r.now_cost))
-                    xpts_var = _FALLBACK_VAR
-                    source = "position_price_prior"
+                xpts, xpts_var = fallback_xpts, fallback_xpts_var
                 start_prob = NEW_PLAYER_START_PROB
+                source = fallback_source
         rows.append({
             "player_id": int(r.id),
             "gameweek": target_gw,

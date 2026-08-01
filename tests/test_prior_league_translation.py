@@ -28,6 +28,19 @@ def test_championship_factor_discounted_below_top5():
     assert PRIOR_LEAGUE.translation_factor("ESP-La Liga") == 1.0
 
 
+def test_prior_league_rules_covers_every_registered_league():
+    # regression guard: PRIOR_LEAGUES (fbref_prior.py), PriorLeagueRules's
+    # two lookup dicts (config/strategy.py), and calibrate_prior_league_
+    # factors.py's _FIELD_SUFFIX separately enumerate the same 5 league
+    # strings -- a drift would raise a bare KeyError inside the live GW1
+    # build path (build_initial_squad) with nothing today catching it.
+    from data.ingestors.fbref_prior import PRIOR_LEAGUES
+
+    for league in PRIOR_LEAGUES:
+        PRIOR_LEAGUE.translation_factor(league)
+        PRIOR_LEAGUE.translation_variance(league)
+
+
 @pytest.fixture
 def temp_session(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 'plt.db'}")

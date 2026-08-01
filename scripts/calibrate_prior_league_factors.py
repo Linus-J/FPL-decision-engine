@@ -20,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from config.strategy import PRIOR_LEAGUE
 from data.ingestors.fbref_prior import PRIOR_LEAGUES
 from projection.prior_league_translation import (
     MIN_CALIBRATION_SAMPLES,
@@ -40,16 +41,6 @@ _FIELD_SUFFIX = {
     "FRA-Ligue 1": "ligue_1",
 }
 
-# The literature-style fallback already checked into PriorLeagueRules --
-# reused here so a sparse league's printed line matches what's already live
-# rather than silently proposing something different.
-_CURRENT_DEFAULT_FACTOR = {
-    "ENG-Championship": 0.65, "ESP-La Liga": 1.0, "ITA-Serie A": 1.0,
-    "GER-Bundesliga": 1.0, "FRA-Ligue 1": 1.0,
-}
-_CURRENT_DEFAULT_VARIANCE = 6.0
-
-
 def main() -> None:
     print("# Paste into config/strategy.py's PriorLeagueRules if these look sane:")
     for league in PRIOR_LEAGUES:
@@ -57,11 +48,17 @@ def main() -> None:
         factor, variance, n = compute_league_stats(holdout)
         suffix = _FIELD_SUFFIX[league]
         if factor is None:
+            # reads the live config rather than a second hardcoded copy, so
+            # a sparse league's printed line always matches what's actually
+            # live instead of silently proposing to revert a real
+            # calibration back to a stale placeholder.
+            default_factor = PRIOR_LEAGUE.translation_factor(league)
+            default_variance = PRIOR_LEAGUE.translation_variance(league)
             logger.warning(
                 "%s: hold-out too sparse (n=%d < %d) -- keeping literature default %.2f",
-                league, n, MIN_CALIBRATION_SAMPLES, _CURRENT_DEFAULT_FACTOR[league],
+                league, n, MIN_CALIBRATION_SAMPLES, default_factor,
             )
-            factor, variance = _CURRENT_DEFAULT_FACTOR[league], _CURRENT_DEFAULT_VARIANCE
+            factor, variance = default_factor, default_variance
         else:
             logger.info("%s: n=%d, factor=%.3f, variance=%.3f", league, n, factor, variance)
         print(f"    translation_factor_{suffix}: float = {factor:.3f}  # n={n}")

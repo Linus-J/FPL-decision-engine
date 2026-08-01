@@ -232,6 +232,30 @@ def test_new_signing_with_matched_prior_league_row_gets_prior_league_prior(temp_
     assert row["start_probability"] > cs.NEW_PLAYER_START_PROB
 
 
+def test_prior_league_prior_never_scores_below_the_peer_bucket_floor(temp_session):
+    _seed_variance_pool(temp_session)  # MID peer pool (mean 6.0) + a code=99 "NewMid"
+    players = cs.load_current_players()
+    prior = cs.load_prior_season_features("2025-26")
+    raw = cs.load_prior_season_appearances("2025-26")
+    # a matched prior-league row with a low, unremarkable attacking record --
+    # the prior-league tier models attacking output only, so unfloored this
+    # would score well below the peer-bucket pool's real mean of 6.0.
+    lookup = {
+        99: {"league": "ENG-Championship", "goals90": 0.02, "assists90": 0.01,
+             "npxg90": 0.02, "xa90": 0.01, "minutes": 3000, "matches": 34},
+    }
+    proj = cs.project_cold_start(players, prior, raw_appearances=raw, prior_league_lookup=lookup)
+
+    by_name = players.set_index("id")["web_name"].to_dict()
+    proj["name"] = proj["player_id"].map(by_name)
+    row = proj[proj["name"] == "NewMid"].iloc[0]
+
+    assert row["proj_source"] == "prior_league_prior"
+    # must never score below what the peer-bucket cascade alone would give
+    # the same player (pool mean 6.0 from _seed_variance_pool's fixture)
+    assert row["xpts"] >= 6.0
+
+
 def test_new_signing_with_no_prior_league_match_falls_through_unchanged(temp_session):
     # regression guard: passing an EMPTY lookup must behave exactly like
     # passing none at all (today's existing peer_bucket_prior cascade).
