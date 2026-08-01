@@ -218,7 +218,7 @@ def _price_prior(position: str, now_cost: float) -> float:
 # and PL both play 38. Used as prior_minutes_share's denominator so it
 # measures real season-long availability, not "when picked, does he
 # start" (which a 3-appearance fringe player could ace).
-_SEASON_MATCHES = {"ENG-Championship": 46}
+_SEASON_MATCHES = {"ENG-Championship": 46, "GER-Bundesliga": 34, "FRA-Ligue 1": 34}
 _DEFAULT_SEASON_MATCHES = 38
 
 
@@ -335,10 +335,13 @@ def project_cold_start(
                 # must never score a matched player below what the existing
                 # peer-bucket/position-price fallback would have given them
                 # (plan/p11-prior-league-cold-start.md final review, Fix 2).
-                xpts = max(pl_xpts, fallback_xpts)
-                xpts_var = pl_xpts_var
+                if pl_xpts >= fallback_xpts:
+                    xpts, xpts_var = pl_xpts, pl_xpts_var
+                    source = "prior_league_prior"
+                else:
+                    xpts, xpts_var = fallback_xpts, fallback_xpts_var
+                    source = fallback_source
                 start_prob = pl_start_prob
-                source = "prior_league_prior"
             else:
                 xpts, xpts_var = fallback_xpts, fallback_xpts_var
                 start_prob = NEW_PLAYER_START_PROB

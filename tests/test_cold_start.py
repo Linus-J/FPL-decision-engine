@@ -250,7 +250,9 @@ def test_prior_league_prior_never_scores_below_the_peer_bucket_floor(temp_sessio
     proj["name"] = proj["player_id"].map(by_name)
     row = proj[proj["name"] == "NewMid"].iloc[0]
 
-    assert row["proj_source"] == "prior_league_prior"
+    # the fallback floor binds here, so the reported source must be the
+    # fallback's own source, not the mismatched "prior_league_prior" label.
+    assert row["proj_source"] == "peer_bucket_prior"
     # must never score below what the peer-bucket cascade alone would give
     # the same player (pool mean 6.0 from _seed_variance_pool's fixture)
     assert row["xpts"] >= 6.0
@@ -284,6 +286,11 @@ def test_load_prior_league_lookup_reads_matched_rows_for_the_right_prior_season(
         s.add(PriorLeagueStats(
             player_name="Stale Season", team="Leeds", league="ENG-Championship",
             season="2024-2025", code=43, position="FW", minutes=3000, matches=34,
+            goals90=0.6, assists90=0.2, npxg90=0.5, xa90=0.15,
+        ))
+        s.add(PriorLeagueStats(
+            player_name="One Cameo", team="Leeds", league="ENG-Championship",
+            season="2025-2026", code=44, position="FW", minutes=90, matches=1,
             goals90=0.6, assists90=0.2, npxg90=0.5, xa90=0.15,
         ))
         s.commit()
