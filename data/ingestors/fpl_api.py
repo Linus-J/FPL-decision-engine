@@ -527,7 +527,15 @@ async def run_full_ingest(season: str = "2026-27") -> None:
     db = get_session()
     try:
         players = db.query(Player).all()
-        player_map = {p.fpl_id: p.id for p in players}
+        # status 'u' = confirmed departed (not a PL player right now, same
+        # convention as cold_start.py's _DEPARTED_STATUS) -- their OLD
+        # fpl_id's element-summary endpoint is gone from FPL's API once
+        # they leave, so this is a guaranteed 404 every single sync, not a
+        # transient failure. Real bug found 2026-08-01 (live-testing on the
+        # user's machine): 169/733 players failed this way on one run,
+        # spamming warnings for data that was never coming back -- their
+        # history from when they WERE active is already in our DB.
+        player_map = {p.fpl_id: p.id for p in players if p.status != "u"}
     finally:
         db.close()
 
