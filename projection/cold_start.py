@@ -18,13 +18,20 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
+from config.strategy import PRIOR_LEAGUE, SCORING
 from data.db import get_session
+from projection.assists import expected_assist_points
+from projection.goals import expected_goal_points
 
 # A player needs at least this many prior-season appearances to use their
 # own history rather than the position/price prior.
 MIN_PRIOR_APPEARANCES = 5
 # Start probability assumed for a player with no usable prior (new signing).
 NEW_PLAYER_START_PROB = 0.6
+# Blend weight toward a matched prior-league player's own minutes-share when
+# setting their start probability (P11) -- 0.5 is a deliberately moderate
+# starting choice, not itself backtested.
+_PRIOR_LEAGUE_START_PROB_WEIGHT = 0.5
 # Position/price prior: expected GW points ≈ base + slope·(price − £4.0m).
 # Last-resort fallback only now (plan/risk-aware-cold-start-v1.md,
 # 2026-07-31) -- superseded by _peer_bucket_stats's real peer data
@@ -156,12 +163,39 @@ def load_current_players() -> pd.DataFrame:
     db = get_session()
     try:
         query = text("""
-            SELECT id, web_name, position, now_cost, status, team_id
+            SELECT id, code, web_name, position, now_cost, status, team_id
             FROM players
         """)
         return pd.read_sql(query, db.bind)
     finally:
         db.close()
+
+
+def load_prior_league_lookup(season: str) -> dict[int, dict]:
+    """code -> matched prior_league_stats row for the season immediately
+    before ``season`` (e.g. season="2026-27" reads 2025-26 prior-league
+    data) -- the P11 translated prior for players with no PL history.
+    Empty dict (never crashes) if nothing has been ingested yet."""
+    from data.ingestors.fbref import SEASON_MAP
+
+    prior_season = prior_season_of(season)
+    soccerdata_season = SEASON_MAP.get(prior_season, prior_season)
+    db = get_session()
+    try:
+        query = text("""
+            SELECT code, league, goals90, assists90, npxg90, xa90, minutes, matches
+            FROM prior_league_stats
+            WHERE season = :season AND code IS NOT NULL
+        """)
+        df = pd.read_sql(query, db.bind, params={"season": soccerdata_season})
+    finally:
+        db.close()
+    if df.empty:
+        return {}
+    # a code should map to exactly one league per season; if a mid-season
+    # transfer somehow produced two rows, keep the one with more minutes.
+    df = df.sort_values("minutes", ascending=False).drop_duplicates(subset="code", keep="first")
+    return df.set_index("code").to_dict("index")
 
 
 def apply_departure_gate(players: pd.DataFrame) -> pd.DataFrame:
@@ -176,32 +210,67 @@ def _price_prior(position: str, now_cost: float) -> float:
     return max(_MIN_XPTS, base + _PRICE_SLOPE * (now_cost - 4.0))
 
 
+def _prior_league_projection(position: str, pl_row: dict) -> tuple[float, float, float]:
+    """(xpts, xpts_var, start_probability) for a matched prior-league
+    player (P11). xpts is built from translated npxG90/xA90 (the smoother,
+    luck-adjusted quality metrics -- one prior season's raw goals/assists is
+    a small, high-variance sample) plus a flat appearance-points constant.
+    The translation factor itself is still fit against realized RAW
+    goal+assist output (the actual ground truth being predicted) --
+    projection/prior_league_translation.py -- only this application uses
+    the smoother inputs. Clean sheets/bonus/cards are NOT estimated:
+    prior_league_stats has no defensive data for these players, an honest
+    limitation, not an oversight."""
+    factor = PRIOR_LEAGUE.translation_factor(pl_row["league"])
+    translated_npxg90 = pl_row["npxg90"] * factor
+    translated_xa90 = pl_row["xa90"] * factor
+    xpts = max(
+        _MIN_XPTS,
+        expected_goal_points(translated_npxg90, position)
+        + expected_assist_points(translated_xa90)
+        + SCORING.points_full_appearance,
+    )
+    xpts_var = PRIOR_LEAGUE.translation_variance(pl_row["league"])
+    prior_minutes_share = min(1.0, pl_row["minutes"] / max(1, pl_row["matches"] * 90))
+    start_prob = (
+        (1 - _PRIOR_LEAGUE_START_PROB_WEIGHT) * NEW_PLAYER_START_PROB
+        + _PRIOR_LEAGUE_START_PROB_WEIGHT * prior_minutes_share
+    )
+    return xpts, xpts_var, start_prob
+
+
 def project_cold_start(
     players: pd.DataFrame,
     prior_features: pd.DataFrame,
     target_gw: int = 1,
     raw_appearances: pd.DataFrame | None = None,
+    prior_league_lookup: dict[int, dict] | None = None,
 ) -> pd.DataFrame:
     """GW1 xPts + xpts_var + start probability per player, tagged with its
     source.
 
     proj_source is 'prior_season' (established players, real own-variance),
-    'peer_bucket_prior' (new signings/promoted players, pooled real peer
-    data by position+price), or 'position_price_prior' (last-resort
-    synthetic fallback, only when even a position-only peer pool is too
-    sparse). Neither xpts nor xpts_var is ever left 0.0/undefined by
-    default — the gate depends on it (plan/risk-aware-cold-start-v1.md,
-    2026-07-31, extending T7's original "no silent 0.0" contract to
-    variance).
+    'prior_league_prior' (new signings/promoted players matched to a
+    translated non-PL prior-season record, P11), 'peer_bucket_prior' (no PL
+    or prior-league match, pooled real peer data by position+price), or
+    'position_price_prior' (last-resort synthetic fallback). Neither xpts
+    nor xpts_var is ever left 0.0/undefined by default -- the gate depends
+    on it (plan/risk-aware-cold-start-v1.md, extended to variance).
 
     ``raw_appearances`` (optional, from ``load_prior_season_appearances``):
     powers the real variance computation. ``None`` (or empty) degrades
     every player straight to the synthetic fallback for BOTH xpts and
-    xpts_var -- never crashes, matching this module's existing
-    graceful-degradation style.
+    xpts_var -- never crashes.
+
+    ``prior_league_lookup`` (optional, from ``load_prior_league_lookup``):
+    code -> translated prior-league row (P11). ``None`` (or a code with no
+    entry) falls through to the existing peer_bucket_prior /
+    position_price_prior cascade, unchanged.
     """
     if raw_appearances is None:
         raw_appearances = pd.DataFrame(columns=["player_id", "total_points"])
+    if prior_league_lookup is None:
+        prior_league_lookup = {}
 
     merged = players.merge(
         prior_features, left_on="id", right_on="player_id", how="left"
@@ -224,16 +293,26 @@ def project_cold_start(
             start_prob = float(r.starts_rate)
             source = "prior_season"
         else:
-            peer_stats = _peer_bucket_stats(r.position, float(r.now_cost), peer_buckets)
-            if peer_stats is not None:
-                xpts, xpts_var = peer_stats
-                xpts = max(_MIN_XPTS, xpts)
-                source = "peer_bucket_prior"
+            code = getattr(r, "code", None)
+            pl_row = (
+                prior_league_lookup.get(int(code))
+                if code is not None and not pd.isna(code)
+                else None
+            )
+            if pl_row is not None:
+                xpts, xpts_var, start_prob = _prior_league_projection(r.position, pl_row)
+                source = "prior_league_prior"
             else:
-                xpts = _price_prior(r.position, float(r.now_cost))
-                xpts_var = _FALLBACK_VAR
-                source = "position_price_prior"
-            start_prob = NEW_PLAYER_START_PROB
+                peer_stats = _peer_bucket_stats(r.position, float(r.now_cost), peer_buckets)
+                if peer_stats is not None:
+                    xpts, xpts_var = peer_stats
+                    xpts = max(_MIN_XPTS, xpts)
+                    source = "peer_bucket_prior"
+                else:
+                    xpts = _price_prior(r.position, float(r.now_cost))
+                    xpts_var = _FALLBACK_VAR
+                    source = "position_price_prior"
+                start_prob = NEW_PLAYER_START_PROB
         rows.append({
             "player_id": int(r.id),
             "gameweek": target_gw,
@@ -280,7 +359,11 @@ def build_initial_squad(
     prior_season = prior_season_of(season)
     prior = load_prior_season_features(prior_season)
     raw_appearances = load_prior_season_appearances(prior_season)
-    projections = project_cold_start(players, prior, raw_appearances=raw_appearances)
+    prior_league_lookup = load_prior_league_lookup(season)
+    projections = project_cold_start(
+        players, prior, raw_appearances=raw_appearances,
+        prior_league_lookup=prior_league_lookup,
+    )
 
     players = players.merge(
         projections[["player_id", "start_probability"]],

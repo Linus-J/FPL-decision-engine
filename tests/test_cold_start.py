@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from data.models import Base, Player, PlayerGameweekStats
+from data.models import Base, Player, PlayerGameweekStats, PriorLeagueStats
 from projection import cold_start as cs
 
 
@@ -206,6 +206,74 @@ def test_sparse_position_falls_back_to_synthetic_prior(temp_session):
     assert row["proj_source"] == "position_price_prior"
     assert row["xpts"] == pytest.approx(cs._price_prior("GKP", 4.5))
     assert row["xpts_var"] == pytest.approx(cs._FALLBACK_VAR)
+
+
+def test_new_signing_with_matched_prior_league_row_gets_prior_league_prior(temp_session):
+    _seed(temp_session)  # p2 = NewSign, code=2, position FWD, price 6.5
+    players = cs.apply_departure_gate(cs.load_current_players())
+    prior = cs.load_prior_season_features("2025-26")
+    lookup = {
+        2: {"league": "ENG-Championship", "goals90": 0.6, "assists90": 0.2,
+            "npxg90": 0.5, "xa90": 0.15, "minutes": 3000, "matches": 34},
+    }
+    proj = cs.project_cold_start(players, prior, prior_league_lookup=lookup)
+
+    by_name = players.set_index("id")["web_name"].to_dict()
+    proj["name"] = proj["player_id"].map(by_name)
+    row = proj[proj["name"] == "NewSign"].iloc[0]
+
+    assert row["proj_source"] == "prior_league_prior"
+    assert row["xpts"] > cs._price_prior("FWD", 6.5)
+    assert row["xpts_var"] == pytest.approx(
+        cs.PRIOR_LEAGUE.translation_variance("ENG-Championship")
+    )
+    # nailed-on Championship starter (3000/34/90 ~= 0.98 share) blended 50/50
+    # with the flat 0.6 default -> higher than the flat default alone.
+    assert row["start_probability"] > cs.NEW_PLAYER_START_PROB
+
+
+def test_new_signing_with_no_prior_league_match_falls_through_unchanged(temp_session):
+    # regression guard: passing an EMPTY lookup must behave exactly like
+    # passing none at all (today's existing peer_bucket_prior cascade).
+    _seed_variance_pool(temp_session)
+    players = cs.load_current_players()
+    prior = cs.load_prior_season_features("2025-26")
+    raw = cs.load_prior_season_appearances("2025-26")
+    proj = cs.project_cold_start(players, prior, raw_appearances=raw, prior_league_lookup={})
+
+    by_name = players.set_index("id")["web_name"].to_dict()
+    proj["name"] = proj["player_id"].map(by_name)
+    row = proj[proj["name"] == "NewMid"].iloc[0]
+    assert row["proj_source"] == "peer_bucket_prior"
+
+
+def test_load_prior_league_lookup_reads_matched_rows_for_the_right_prior_season(
+    temp_session,
+):
+    s = temp_session()
+    try:
+        s.add(PriorLeagueStats(
+            player_name="Prolific Striker", team="Leeds", league="ENG-Championship",
+            season="2025-2026", code=42, position="FW", minutes=3000, matches=34,
+            goals90=0.6, assists90=0.2, npxg90=0.5, xa90=0.15,
+        ))
+        s.add(PriorLeagueStats(
+            player_name="Stale Season", team="Leeds", league="ENG-Championship",
+            season="2024-2025", code=43, position="FW", minutes=3000, matches=34,
+            goals90=0.6, assists90=0.2, npxg90=0.5, xa90=0.15,
+        ))
+        s.commit()
+    finally:
+        s.close()
+
+    lookup = cs.load_prior_league_lookup("2026-27")
+    assert set(lookup.keys()) == {42}
+    assert lookup[42]["league"] == "ENG-Championship"
+    assert lookup[42]["npxg90"] == pytest.approx(0.5)
+
+
+def test_load_prior_league_lookup_empty_when_nothing_ingested(temp_session):
+    assert cs.load_prior_league_lookup("2026-27") == {}
 
 
 def _seed_full_pool(Local):
