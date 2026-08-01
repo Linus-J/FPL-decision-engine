@@ -22,6 +22,7 @@ to use its own .env-based DRY_RUN default, same as the systemd service.
 """
 import argparse
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -36,13 +37,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _run(args: list[str]) -> int:
+def _run(args: list[str], env: dict[str, str] | None = None) -> int:
     logger.info("Running: %s", " ".join(args))
-    return subprocess.run(args, cwd=REPO_ROOT).returncode
+    return subprocess.run(args, cwd=REPO_ROOT, env=env).returncode
 
 
-def _run_or_warn(step_name: str, args: list[str]) -> None:
-    code = _run(args)
+def _run_or_warn(step_name: str, args: list[str], env: dict[str, str] | None = None) -> None:
+    code = _run(args, env=env)
     if code != 0:
         logger.warning(
             "%s exited with code %d -- continuing with whatever data is already "
@@ -80,9 +81,16 @@ def main() -> None:
     if args.skip_match_events:
         logger.info("Skipping FBref/WhoScored match-event refresh (--skip-match-events)")
     else:
+        # scrape_fbref.py's own default is headless, but FBref sits behind
+        # Cloudflare and headless mode cannot clear its CAPTCHA (confirmed
+        # 2026-08-01: a real headless run on the user's machine hit
+        # "CAPTCHA detected... attempting to solve" and failed) -- force
+        # headed unless the user has already set an explicit override.
+        fbref_env = {**os.environ, "FBREF_HEADED": os.environ.get("FBREF_HEADED", "1")}
         _run_or_warn(
             "scripts/scrape_fbref.py",
             [sys.executable, "scripts/scrape_fbref.py", args.season],
+            env=fbref_env,
         )
         _run_or_warn(
             "scripts/scrape_whoscored.py",
