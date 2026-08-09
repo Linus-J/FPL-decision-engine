@@ -70,3 +70,30 @@ def test_commit_and_push_pushes_to_remote_when_push_true(tmp_path, repo):
         ["git", "log", "-1", "--pretty=%s", "main"], cwd=remote, check=True, capture_output=True, text=True,
     )
     assert remote_log.stdout.strip() == "export: GW3 site data"
+
+
+def test_commit_and_push_does_not_commit_unrelated_staged_changes(repo):
+    """Regression test: unrelated staged changes must not be swept into the commit."""
+    data_dir = repo / "data" / "simulations"
+    data_dir.mkdir(parents=True)
+    (data_dir / "gw3.json").write_text("{}")
+
+    unrelated = repo / "unrelated.txt"
+    unrelated.write_text("unrelated content\n")
+
+    subprocess.run(["git", "add", "unrelated.txt"], cwd=repo, check=True)
+
+    committed = git_sync.commit_and_push(repo, data_dir, "export: GW3 site data", push=False)
+
+    assert committed is True
+
+    diff_names = subprocess.run(
+        ["git", "diff", "--name-only", "HEAD~1", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+    )
+    committed_files = diff_names.stdout.strip().split("\n")
+    assert committed_files == ["data/simulations/gw3.json"], f"Expected only data/simulations/gw3.json, got {committed_files}"
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True,
+    )
+    assert "unrelated.txt" in status.stdout, "unrelated.txt should still be staged but not committed"

@@ -10,11 +10,11 @@ def commit_and_push(repo_root: Path, data_dir: Path, message: str, push: bool = 
     rel = data_dir.relative_to(repo_root)
     subprocess.run(["git", "add", str(rel)], cwd=repo_root, check=True)
 
-    staged = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo_root)
+    staged = subprocess.run(["git", "diff", "--cached", "--quiet", "--", str(rel)], cwd=repo_root)
     if staged.returncode == 0:
         return False
 
-    subprocess.run(["git", "commit", "-m", message], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-m", message, "--", str(rel)], cwd=repo_root, check=True)
     if push:
         subprocess.run(["git", "push"], cwd=repo_root, check=True)
     return True
