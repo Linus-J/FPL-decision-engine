@@ -127,20 +127,20 @@ def test_build_squad_entries_orders_bench_gk_first_then_by_xpts():
          "xpts": 8.0},
         {"player_id": 2, "web_name": "BenchGK", "position": "GKP", "team_short": "ARS",
          "now_cost": 4.5, "is_starting": False, "is_captain": False, "is_vice_captain": False,
-         "xpts": 3.0},
+         "xpts": 0.5},
         {"player_id": 3, "web_name": "BenchLow", "position": "DEF", "team_short": "ARS",
          "now_cost": 4.5, "is_starting": False, "is_captain": False, "is_vice_captain": False,
          "xpts": 1.0},
         {"player_id": 4, "web_name": "BenchHigh", "position": "MID", "team_short": "ARS",
          "now_cost": 6.0, "is_starting": False, "is_captain": False, "is_vice_captain": False,
-         "xpts": 2.0},
+         "xpts": 3.0},
     ])
 
     entries = payload_module._build_squad_entries(squad_df, dist={})
 
     by_id = {e["player_id"]: e for e in entries}
     assert by_id[1]["bench_order"] is None
-    assert by_id[2]["bench_order"] == 1   # GK bench slot always first
+    assert by_id[2]["bench_order"] == 1   # GK bench slot always first (despite lowest xPts)
     assert by_id[4]["bench_order"] == 2   # then outfield by xPts descending
     assert by_id[3]["bench_order"] == 3
     assert by_id[1]["xpts"] == {"p10": 8.0, "median": 8.0, "mean": 8.0, "p90": 8.0}
