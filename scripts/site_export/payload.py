@@ -80,3 +80,42 @@ def _build_squad_entries(squad_df: pd.DataFrame, dist: dict[int, dict[str, float
             "xpts": _xpts_entry(player_id, dist, row["xpts"]),
         })
     return entries
+
+
+def _build_top15_entries(
+    projections_df: pd.DataFrame, dist: dict[int, dict[str, float]], team_names: dict[int, str]
+) -> list[dict]:
+    entries = []
+    for _, row in projections_df.head(15).iterrows():
+        player_id = int(row["player_id"])
+        entries.append({
+            "player_id": player_id,
+            "web_name": row["web_name"],
+            "position": row["position"],
+            "team_short": team_names.get(int(row["team_id"]), ""),
+            "xpts": _xpts_entry(player_id, dist, row["xpts_mean"]),
+        })
+    return entries
+
+
+def _build_history_entries(history_df: pd.DataFrame) -> list[dict]:
+    entries = []
+    for _, row in history_df.iterrows():
+        details = row["details"]
+        if row["decision_type"] == "transfers":
+            entries.append({
+                "gameweek": int(row["gameweek"]),
+                "type": "transfers",
+                "transfers_in": [t["web_name"] for t in details.get("transfers_in", [])],
+                "transfers_out": [t["web_name"] for t in details.get("transfers_out", [])],
+                "hits_taken": details.get("hits_taken", 0),
+                "net_xpts_gain": float(row["projected_gain"]),
+            })
+        elif row["decision_type"] == "chip":
+            entries.append({
+                "gameweek": int(row["gameweek"]),
+                "type": "chip",
+                "chip": details.get("chip"),
+                "reason": details.get("reason", ""),
+            })
+    return entries

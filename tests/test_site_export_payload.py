@@ -144,3 +144,46 @@ def test_build_squad_entries_orders_bench_gk_first_then_by_xpts():
     assert by_id[4]["bench_order"] == 2   # then outfield by xPts descending
     assert by_id[3]["bench_order"] == 3
     assert by_id[1]["xpts"] == {"p10": 8.0, "median": 8.0, "mean": 8.0, "p90": 8.0}
+
+
+def test_build_top15_entries_takes_first_15_and_maps_team_short():
+    projections_df = pd.DataFrame([
+        {"player_id": i, "web_name": f"P{i}", "position": "MID", "team_id": 1, "xpts_mean": 20.0 - i}
+        for i in range(20)
+    ])
+    team_names = {1: "ARS"}
+
+    entries = payload_module._build_top15_entries(projections_df, dist={}, team_names=team_names)
+
+    assert len(entries) == 15
+    assert entries[0]["player_id"] == 0
+    assert entries[0]["team_short"] == "ARS"
+    assert entries[0]["xpts"]["mean"] == 20.0
+
+
+def test_build_history_entries_maps_transfers_and_chips_and_drops_lineup():
+    history_df = pd.DataFrame([
+        {"gameweek": 3, "decision_type": "transfers", "projected_gain": 1.4, "details": {
+            "transfers_in": [{"player_id": 1, "web_name": "Haaland", "cost": 15.1}],
+            "transfers_out": [{"player_id": 2, "web_name": "Wilson", "cost": 6.5}],
+            "hits_taken": 0,
+        }},
+        {"gameweek": 3, "decision_type": "chip", "projected_gain": 0.0, "details": {
+            "chip": "wildcard", "reason": "squad overhaul",
+        }},
+        {"gameweek": 3, "decision_type": "lineup", "projected_gain": 55.0, "details": {
+            "squad_ids": [1, 2],
+        }},
+    ])
+
+    entries = payload_module._build_history_entries(history_df)
+
+    assert len(entries) == 2
+    assert entries[0] == {
+        "gameweek": 3, "type": "transfers",
+        "transfers_in": ["Haaland"], "transfers_out": ["Wilson"],
+        "hits_taken": 0, "net_xpts_gain": 1.4,
+    }
+    assert entries[1] == {
+        "gameweek": 3, "type": "chip", "chip": "wildcard", "reason": "squad overhaul",
+    }
