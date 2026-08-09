@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import math
 from datetime import datetime
 
+import dashboard.data.squad as squad_module
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from data.models import Base, Gameweek, ProjectionSample, Team
+from data.models import Base, DecisionLog, Gameweek, Player, ProjectionSample, Team
 from scripts.site_export import payload as payload_module
 
 
@@ -187,3 +189,80 @@ def test_build_history_entries_maps_transfers_and_chips_and_drops_lineup():
     assert entries[1] == {
         "gameweek": 3, "type": "chip", "chip": "wildcard", "reason": "squad overhaul",
     }
+
+
+def _seed_full_squad(session):
+    session.add(Team(id=1, name="Man City", short_name="MCI"))
+    session.add(Team(id=2, name="Arsenal", short_name="ARS"))
+    session.add_all([
+        Player(id=1, fpl_id=101, code=101, first_name="E", second_name="Haaland",
+               web_name="Haaland", team_id=1, position="FWD", now_cost=15.1),
+        Player(id=2, fpl_id=102, code=102, first_name="C", second_name="Wilson",
+               web_name="Wilson", team_id=2, position="FWD", now_cost=6.5),
+    ])
+    session.add(DecisionLog(
+        gameweek=3, decision_type="lineup",
+        details=json.dumps({
+            "squad_ids": [1, 2], "starting_ids": [1],
+            "captain_id": 1, "vice_captain_id": 2,
+        }),
+        projected_gain=8.0, dry_run=True,
+    ))
+    session.add(DecisionLog(
+        gameweek=3, decision_type="transfers",
+        details=json.dumps({
+            "transfers_in": [{"player_id": 1, "web_name": "Haaland", "cost": 15.1}],
+            "transfers_out": [{"player_id": 3, "web_name": "Old", "cost": 6.0}],
+            "hits_taken": 0,
+        }),
+        projected_gain=1.4, dry_run=True,
+    ))
+    session.add(Gameweek(
+        id=3, season="2026-27", name="Gameweek 3", deadline_time=datetime(2026, 8, 3, 10, 30),
+    ))
+    session.add_all([
+        ProjectionSample(
+            player_id=1, gameweek=3, season="2026-27", scenario_id=i, xpts=v,
+            created_at=datetime(2026, 8, 3, 6, 0),
+        )
+        for i, v in enumerate([6.0, 8.0, 10.0])
+    ])
+    session.commit()
+
+
+def test_build_run_payload_assembles_full_schema(session, monkeypatch):
+    _seed_full_squad(session)
+
+    monkeypatch.setattr(squad_module, "_get_current_and_next_gw", lambda: (3, 3))
+    monkeypatch.setattr(squad_module, "get_picks", lambda team_id, gw: {})
+    monkeypatch.setattr(
+        squad_module, "get_latest_projections",
+        lambda gw: pd.DataFrame({"player_id": [1, 2], "xpts": [8.0, 2.0]}),
+    )
+    monkeypatch.setattr(payload_module, "_get_current_season", lambda: "2026-27")
+    monkeypatch.setattr(
+        payload_module, "get_latest_projections",
+        lambda gw: pd.DataFrame([
+            {"player_id": 1, "web_name": "Haaland", "position": "FWD", "team_id": 1,
+             "xpts_mean": 8.0},
+            {"player_id": 2, "web_name": "Wilson", "position": "FWD", "team_id": 2,
+             "xpts_mean": 2.0},
+        ]),
+    )
+
+    payload = payload_module.build_run_payload(session, team_id=12345)
+
+    assert payload["schema_version"] == 1
+    assert payload["gameweek"] == 3
+    assert payload["label"] == "GW3 — 3 Aug"
+    assert len(payload["squad"]) == 2
+    assert len(payload["top15"]) == 2
+    haaland_squad_entry = next(e for e in payload["squad"] if e["player_id"] == 1)
+    assert haaland_squad_entry["xpts"]["mean"] == 8.0  # from real projection_samples rows
+    assert len(payload["history"]) == 1
+    assert payload["history"][0]["type"] == "transfers"
+
+
+def test_build_run_payload_raises_when_no_squad_available(session):
+    with pytest.raises(RuntimeError, match="No current squad"):
+        payload_module.build_run_payload(session, team_id=12345)

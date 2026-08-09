@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from dashboard.data.decisions import get_decision_history
+from dashboard.data.squad import get_current_squad
 from data.models import Gameweek
+from projection.pipeline import _get_current_season, get_latest_projections
+
+SCHEMA_VERSION = 1
 
 
 def get_projection_distributions(db: Session, gw: int, season: str) -> dict[int, dict[str, float]]:
@@ -119,3 +126,27 @@ def _build_history_entries(history_df: pd.DataFrame) -> list[dict]:
                 "reason": details.get("reason", ""),
             })
     return entries
+
+
+def build_run_payload(db: Session, team_id: int) -> dict:
+    squad_df = get_current_squad(db, team_id)
+    if squad_df.empty:
+        raise RuntimeError("No current squad found -- cannot export site data")
+
+    gw = int(squad_df["gameweek"].iloc[0])
+    season = _get_current_season()
+    dist = get_projection_distributions(db, gw, season)
+
+    projections_df = get_latest_projections(gw)
+    team_names = _team_short_names(db)
+    history_df = get_decision_history(db, limit_gws=20)
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "gameweek": gw,
+        "label": _label_for_gw(db, season, gw),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "squad": _build_squad_entries(squad_df, dist),
+        "top15": _build_top15_entries(projections_df, dist, team_names),
+        "history": _build_history_entries(history_df),
+    }
