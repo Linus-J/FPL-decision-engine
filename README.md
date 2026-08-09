@@ -245,6 +245,17 @@ the Decision History / Simulations dashboard pages):
 uv run python scripts/backfill_decision_outcomes.py --season 2026-27
 ```
 
+**Site data export** (after reviewing/overruling a `run_agent.py --dry-run` decision, to publish
+the current squad + top-15 xPts + transfer/chip history to the portfolio site's `$ fpl status`
+panel — see `linus-j.github.io`'s own repo for the display side):
+```bash
+uv run python scripts/export_site_data.py            # writes, commits, and pushes
+uv run python scripts/export_site_data.py --no-push   # writes + commits locally only, for review
+```
+Writes `data/simulations/gw{N}.json` and updates `data/simulations/index.json`. Not run
+automatically by anything — a deliberate manual step, run once you're happy with the week's
+decision (matches why the systemd timer below is disabled by default).
+
 Backtest (walk-forward, retrains per GW):
 ```bash
 uv run python scripts/backtest.py --season 2026-27 --start-gw 6 --end-gw 38 --out results/backtest.csv
