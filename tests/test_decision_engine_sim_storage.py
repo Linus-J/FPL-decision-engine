@@ -156,10 +156,67 @@ def test_run_for_persona_never_refreshes_projections(session, monkeypatch):
         decision_engine, "get_latest_projections",
         lambda: pd.DataFrame(columns=["player_id", "gameweek", "xpts"]),
     )
+    # Mid-season signal, so the empty-projections branch takes the real
+    # "abort" path rather than the cold-start path -- see
+    # test_run_decision_cycle_reruns_cold_start_when_still_preseason for the
+    # complementary case.
+    monkeypatch.setattr(decision_engine, "season_has_played_history", lambda season: True)
 
     result = decision_engine.run_for_persona(persona, season="2026-27")
 
     assert result == {"error": "no_projections"}
+
+
+def test_run_decision_cycle_reruns_cold_start_when_still_preseason(session, monkeypatch):
+    """Real bug found 2026-08-09 (the user's own manual --dry-run rerun):
+    gating the abort-vs-cold-start branch on `squad_ids` alone meant that
+    once the FIRST cold-start run recorded a squad, every later rerun during
+    the same still-pre-season window aborted with no_projections instead of
+    rebuilding -- the user could never re-run to refine the initial squad as
+    new signal data came in. A squad already existing must NOT force the
+    abort branch while the season genuinely has no played-gameweek history
+    yet."""
+    import pandas as pd
+
+    decision_engine._record_decision(
+        None, gameweek=1, decision_type="lineup",
+        details={"squad_ids": [1, 2, 3], "budget": 100.0, "free_transfers": 1},
+        projected_gain=10.0,
+    )
+
+    fake_squad = pd.DataFrame({
+        "id": [1, 2, 3], "web_name": ["A", "B", "C"], "position": ["GKP", "DEF", "FWD"],
+        "now_cost": [5.0, 5.0, 5.0], "is_starting": [True, True, True],
+        "is_captain": [True, False, False], "is_vice_captain": [False, True, False],
+        "bench_order": [None, None, None],
+    })
+    fake_solution = type("Solution", (), {"squad": fake_squad, "total_cost": 15.0})()
+    fake_xi = type("XI", (), {
+        "squad": fake_squad, "starting_xi": fake_squad,
+        "captain_id": 1, "vice_captain_id": 2, "total_xpts": 12.5,
+    })()
+
+    monkeypatch.setattr(decision_engine, "run_projections", lambda **kwargs: None)
+    monkeypatch.setattr(decision_engine, "_get_current_and_next_gw", lambda: (1, 1))
+    monkeypatch.setattr(
+        decision_engine, "get_latest_projections",
+        lambda: pd.DataFrame(columns=["player_id", "gameweek", "xpts"]),
+    )
+    monkeypatch.setattr(decision_engine, "season_has_played_history", lambda season: False)
+    monkeypatch.setattr(decision_engine, "_load_players", lambda: pd.DataFrame())
+    monkeypatch.setattr(
+        decision_engine.cold_start, "build_initial_squad",
+        lambda season, players, config: (fake_solution, pd.DataFrame()),
+    )
+    monkeypatch.setattr(decision_engine, "optimise_starting_xi", lambda *a, **kw: fake_xi)
+
+    result = decision_engine._run_decision_cycle(
+        season="2026-27", dry_run=True, force_chip=None, config=OPTIMISER,
+        chip_timing=decision_engine.CHIP_TIMING, team_id=1, sim_manager_id=None,
+    )
+
+    assert result["cold_start"] is True
+    assert "error" not in result
 
 
 def test_load_own_decision_log_isolates_personas(session):

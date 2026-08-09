@@ -20,6 +20,7 @@ from projection.pipeline import (
     _get_dgw_gameweeks,
     get_latest_projections,
     run_projections,
+    season_has_played_history,
 )
 
 logger = logging.getLogger(__name__)
@@ -180,7 +181,7 @@ def _run_decision_cycle(
     )
 
     if projections.empty:
-        if squad_ids:
+        if squad_ids and season_has_played_history(season):
             logger.error("No projections available — aborting")
             return {"error": "no_projections"}
         # Real gap found 2026-07-30 (the user's own live-smoke-test request):
@@ -192,9 +193,19 @@ def _run_decision_cycle(
         # season-opening squad. Falls back to the same prior-season-
         # carryover projection cold_start.py already provides (T7),
         # matching scripts/backtest.py's GW1 handling (2026-07-30).
+        #
+        # Second real gap found 2026-08-09: gating this purely on
+        # `squad_ids` meant that once the FIRST cold-start run recorded a
+        # squad, every later rerun during the same still-pre-season window
+        # took the abort branch instead — the user could never re-run
+        # --dry-run to refine the initial squad as new signal data (odds,
+        # injuries, press) came in. `season_has_played_history` distinguishes
+        # "genuinely mid-season and something broke" (real abort) from
+        # "still pre-season, rebuild from prior-season data" (cold start),
+        # independent of whether a squad was already recorded.
         logger.warning(
-            "No projections and no saved squad — true cold start, "
-            "building initial squad from prior-season data"
+            "No projections available and still pre-season — cold start, "
+            "(re)building initial squad from prior-season data"
         )
         cs_players = _load_players()
         solution, cs_projections = cold_start.build_initial_squad(

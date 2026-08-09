@@ -199,6 +199,16 @@ def _load_live_match_odds(season: str, target_gws: list[int]) -> pd.DataFrame:
         db.close()
 
 
+def season_has_played_history(season: str) -> bool:
+    """True once there's real rolling history to condition on for this
+    season -- i.e. we're past the true pre-season cold-start gap. Callers
+    that need to distinguish "genuinely no projections available" from
+    "still pre-season, use the cold-start path" should check this rather
+    than any state that persists across cold-start reruns (e.g. whether a
+    squad was already recorded)."""
+    return not assemble.load_all_stats(season).empty
+
+
 def run_projections(
     season: str = "2026-27",
     horizon: int | None = None,
