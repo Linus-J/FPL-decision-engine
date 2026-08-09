@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 
+import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -101,3 +103,44 @@ def test_label_for_gw_uses_deadline_time(session):
 def test_label_for_gw_falls_back_when_gameweek_missing(session):
     label = payload_module._label_for_gw(session, "2026-27", 99)
     assert label == "GW99"
+
+
+def test_xpts_entry_uses_distribution_when_available():
+    dist = {1: {"p10": 1.0, "median": 2.0, "mean": 2.5, "p90": 4.0}}
+    assert payload_module._xpts_entry(1, dist, fallback_mean=99.0) == dist[1]
+
+
+def test_xpts_entry_falls_back_to_flat_mean_when_no_samples():
+    entry = payload_module._xpts_entry(1, {}, fallback_mean=5.0)
+    assert entry == {"p10": 5.0, "median": 5.0, "mean": 5.0, "p90": 5.0}
+
+
+def test_xpts_entry_returns_none_when_nothing_available():
+    assert payload_module._xpts_entry(1, {}, fallback_mean=None) is None
+    assert payload_module._xpts_entry(1, {}, fallback_mean=math.nan) is None
+
+
+def test_build_squad_entries_orders_bench_gk_first_then_by_xpts():
+    squad_df = pd.DataFrame([
+        {"player_id": 1, "web_name": "Starter", "position": "FWD", "team_short": "MCI",
+         "now_cost": 10.0, "is_starting": True, "is_captain": True, "is_vice_captain": False,
+         "xpts": 8.0},
+        {"player_id": 2, "web_name": "BenchGK", "position": "GKP", "team_short": "ARS",
+         "now_cost": 4.5, "is_starting": False, "is_captain": False, "is_vice_captain": False,
+         "xpts": 3.0},
+        {"player_id": 3, "web_name": "BenchLow", "position": "DEF", "team_short": "ARS",
+         "now_cost": 4.5, "is_starting": False, "is_captain": False, "is_vice_captain": False,
+         "xpts": 1.0},
+        {"player_id": 4, "web_name": "BenchHigh", "position": "MID", "team_short": "ARS",
+         "now_cost": 6.0, "is_starting": False, "is_captain": False, "is_vice_captain": False,
+         "xpts": 2.0},
+    ])
+
+    entries = payload_module._build_squad_entries(squad_df, dist={})
+
+    by_id = {e["player_id"]: e for e in entries}
+    assert by_id[1]["bench_order"] is None
+    assert by_id[2]["bench_order"] == 1   # GK bench slot always first
+    assert by_id[4]["bench_order"] == 2   # then outfield by xPts descending
+    assert by_id[3]["bench_order"] == 3
+    assert by_id[1]["xpts"] == {"p10": 8.0, "median": 8.0, "mean": 8.0, "p90": 8.0}

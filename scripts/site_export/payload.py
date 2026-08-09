@@ -41,3 +41,42 @@ def _label_for_gw(db: Session, season: str, gw: int) -> str:
     if row and row.deadline_time:
         return f"GW{gw} — {row.deadline_time.day} {row.deadline_time.strftime('%b')}"
     return f"GW{gw}"
+
+
+def _xpts_entry(
+    player_id: int, dist: dict[int, dict[str, float]], fallback_mean: float | None
+) -> dict[str, float] | None:
+    if player_id in dist:
+        return dist[player_id]
+    if fallback_mean is not None and not pd.isna(fallback_mean):
+        mean = float(fallback_mean)
+        return {"p10": mean, "median": mean, "mean": mean, "p90": mean}
+    return None
+
+
+def _build_squad_entries(squad_df: pd.DataFrame, dist: dict[int, dict[str, float]]) -> list[dict]:
+    bench = squad_df[~squad_df["is_starting"]]
+    gk_bench = bench[bench["position"] == "GKP"]
+    other_bench = bench[bench["position"] != "GKP"].sort_values("xpts", ascending=False)
+    bench_order_by_player: dict[int, int] = {}
+    for order, player_id in enumerate(
+        [*gk_bench["player_id"], *other_bench["player_id"]], start=1
+    ):
+        bench_order_by_player[int(player_id)] = order
+
+    entries = []
+    for _, row in squad_df.iterrows():
+        player_id = int(row["player_id"])
+        entries.append({
+            "player_id": player_id,
+            "web_name": row["web_name"],
+            "position": row["position"],
+            "team_short": row["team_short"],
+            "now_cost": float(row["now_cost"]),
+            "is_starting": bool(row["is_starting"]),
+            "is_captain": bool(row["is_captain"]),
+            "is_vice_captain": bool(row["is_vice_captain"]),
+            "bench_order": bench_order_by_player.get(player_id),
+            "xpts": _xpts_entry(player_id, dist, row["xpts"]),
+        })
+    return entries
