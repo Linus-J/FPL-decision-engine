@@ -585,7 +585,10 @@ def _seed_full_squad(session):
         id=3, season="2026-27", name="Gameweek 3", deadline_time=datetime(2026, 8, 3, 10, 30),
     ))
     session.add_all([
-        ProjectionSample(player_id=1, gameweek=3, season="2026-27", scenario_id=i, xpts=v)
+        ProjectionSample(
+            player_id=1, gameweek=3, season="2026-27", scenario_id=i, xpts=v,
+            created_at=datetime(2026, 8, 3, 6, 0),
+        )
         for i, v in enumerate([6.0, 8.0, 10.0])
     ])
     session.commit()
