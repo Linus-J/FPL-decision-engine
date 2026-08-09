@@ -12,6 +12,10 @@ def get_projection_distributions(db: Session, gw: int, season: str) -> dict[int,
         SELECT player_id, xpts
         FROM projection_samples
         WHERE gameweek = :gw AND season = :season
+          AND created_at = (
+              SELECT MAX(created_at) FROM projection_samples
+              WHERE gameweek = :gw AND season = :season
+          )
     """)
     df = pd.read_sql(query, db.bind, params={"gw": gw, "season": season})
     out: dict[int, dict[str, float]] = {}

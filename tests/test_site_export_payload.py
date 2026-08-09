@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -20,17 +22,18 @@ def session(tmp_path):
     s.close()
 
 
-def _add_samples(session, player_id: int, gw: int, season: str, values: list[float]) -> None:
+def _add_samples(session, player_id: int, gw: int, season: str, values: list[float], created_at: datetime | None = None) -> None:
     session.add_all([
-        ProjectionSample(player_id=player_id, gameweek=gw, season=season, scenario_id=i, xpts=v)
+        ProjectionSample(player_id=player_id, gameweek=gw, season=season, scenario_id=i, xpts=v, created_at=created_at)
         for i, v in enumerate(values)
     ])
     session.commit()
 
 
 def test_get_projection_distributions_returns_summary_per_player(session):
-    _add_samples(session, player_id=1, gw=3, season="2026-27", values=[2.0, 4.0, 6.0, 8.0, 10.0])
-    _add_samples(session, player_id=2, gw=3, season="2026-27", values=[1.0, 1.0, 1.0, 1.0, 1.0])
+    batch_ts = datetime(2026, 8, 1, 6, 0)
+    _add_samples(session, player_id=1, gw=3, season="2026-27", values=[2.0, 4.0, 6.0, 8.0, 10.0], created_at=batch_ts)
+    _add_samples(session, player_id=2, gw=3, season="2026-27", values=[1.0, 1.0, 1.0, 1.0, 1.0], created_at=batch_ts)
 
     dist = payload_module.get_projection_distributions(session, gw=3, season="2026-27")
 
@@ -43,9 +46,10 @@ def test_get_projection_distributions_returns_summary_per_player(session):
 
 
 def test_get_projection_distributions_ignores_other_gameweeks_and_seasons(session):
-    _add_samples(session, player_id=1, gw=3, season="2026-27", values=[5.0, 5.0])
-    _add_samples(session, player_id=1, gw=4, season="2026-27", values=[99.0])
-    _add_samples(session, player_id=1, gw=3, season="2025-26", values=[99.0])
+    batch_ts = datetime(2026, 8, 1, 6, 0)
+    _add_samples(session, player_id=1, gw=3, season="2026-27", values=[5.0, 5.0], created_at=batch_ts)
+    _add_samples(session, player_id=1, gw=4, season="2026-27", values=[99.0], created_at=batch_ts)
+    _add_samples(session, player_id=1, gw=3, season="2025-26", values=[99.0], created_at=batch_ts)
 
     dist = payload_module.get_projection_distributions(session, gw=3, season="2026-27")
 
@@ -55,3 +59,14 @@ def test_get_projection_distributions_ignores_other_gameweeks_and_seasons(sessio
 def test_get_projection_distributions_empty_when_no_samples(session):
     dist = payload_module.get_projection_distributions(session, gw=3, season="2026-27")
     assert dist == {}
+
+
+def test_get_projection_distributions_uses_only_latest_batch(session):
+    batch1_ts = datetime(2026, 8, 1, 6, 0)
+    batch2_ts = datetime(2026, 8, 3, 6, 0)
+    _add_samples(session, player_id=1, gw=3, season="2026-27", values=[1.0, 1.0, 4.0], created_at=batch1_ts)
+    _add_samples(session, player_id=1, gw=3, season="2026-27", values=[7.0, 8.0, 9.0], created_at=batch2_ts)
+
+    dist = payload_module.get_projection_distributions(session, gw=3, season="2026-27")
+
+    assert dist[1]["mean"] == 8.0
