@@ -17,6 +17,10 @@ SCHEMA_VERSION = 1
 def get_projection_distributions(db: Session, gw: int, season: str) -> dict[int, dict[str, float]]:
     """Per-player {p10, median, mean, p90} xPts summary from projection_samples,
     aggregated across every MC scenario for one gameweek."""
+    # created_at is shared across all rows of one persist batch (see
+    # projection/assemble.py::_write_projection_samples), so scoping to
+    # MAX(created_at) selects exactly the latest run's scenarios. Without
+    # this the query averages every historical run together.
     query = text("""
         SELECT player_id, xpts
         FROM projection_samples

@@ -261,6 +261,7 @@ def test_build_run_payload_assembles_full_schema(session, monkeypatch):
     assert haaland_squad_entry["xpts"]["mean"] == 8.0  # from real projection_samples rows
     assert len(payload["history"]) == 1
     assert payload["history"][0]["type"] == "transfers"
+    json.dumps(payload)  # must be JSON-serializable end to end
 
 
 def test_build_run_payload_raises_when_no_squad_available(session):
