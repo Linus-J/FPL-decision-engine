@@ -50,7 +50,7 @@ def _team_short_names(db: Session) -> dict[int, str]:
 def _label_for_gw(db: Session, season: str, gw: int) -> str:
     row = db.query(Gameweek).filter(Gameweek.season == season, Gameweek.id == gw).first()
     if row and row.deadline_time:
-        return f"GW{gw} — {row.deadline_time.day} {row.deadline_time.strftime('%b')}"
+        return f"GW{gw} — {row.deadline_time.day} {row.deadline_time.strftime('%b %Y')}"
     return f"GW{gw}"
 
 

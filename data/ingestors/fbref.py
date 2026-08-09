@@ -372,6 +372,7 @@ def ingest_fbref_season(  # pragma: no cover - live network + browser only
         fbref_kwargs["path_to_browser"] = path_to_browser
     fbref = sd.FBref(**fbref_kwargs)
     schedule = fbref.read_schedule()
+    _validate_schedule_season(schedule, season)
     summary = _flatten_columns(fbref.read_player_match_stats(stat_type="summary"))
     keepers = _flatten_columns(fbref.read_player_match_stats(stat_type="keepers"))
 
@@ -385,6 +386,34 @@ def ingest_fbref_season(  # pragma: no cover - live network + browser only
     written = _write_events(rows)
     logger.info("FBref %s: %d event rows written, %d unmatched", season, written, unmatched)
     return written, unmatched
+
+
+def _validate_schedule_season(schedule, season: str) -> None:  # pragma: no cover - live path
+    """Guard against soccerdata's season-code collision: '2026-2027' and
+    '1926-1927' both truncate to the same internal code '2627', since the
+    parser keeps only the last two digits of each year. If FBref's site
+    doesn't list the requested season yet (e.g. it hasn't started), the
+    lookup can silently resolve to a decades-old season sharing that code
+    instead of raising. Check the schedule's actual match dates fall in the
+    requested season's real year range and fail loudly if not."""
+    if schedule is None or schedule.empty:
+        return
+    date_col = next((c for c in ("date", "Date") if c in schedule.columns), None)
+    if date_col is None:
+        return
+    import pandas as pd
+
+    expected_start_year = int(season[:4])
+    valid_years = {expected_start_year, expected_start_year + 1}
+    actual_years = set(pd.to_datetime(schedule[date_col]).dt.year.dropna().astype(int))
+    if actual_years and not actual_years & valid_years:
+        raise ValueError(
+            f"FBref schedule for season {season!r} has match dates in "
+            f"{sorted(actual_years)}, expected {sorted(valid_years)}. This "
+            "looks like soccerdata's season-code collision (the site likely "
+            "doesn't have this season listed yet) -- refusing to ingest data "
+            "from the wrong season."
+        )
 
 
 def _schedule_gameweeks(schedule) -> dict[str, int | None]:  # pragma: no cover
@@ -488,6 +517,7 @@ def ingest_fbref_xg_season(  # pragma: no cover - live network + browser (cache-
         kwargs["path_to_browser"] = path_to_browser
     fbref = sd.FBref(**kwargs)
     schedule = fbref.read_schedule()
+    _validate_schedule_season(schedule, season)
     summary = _flatten_columns(fbref.read_player_match_stats(stat_type="summary"))
     gw_of = _schedule_gameweeks(schedule)
     name_map = _build_name_map()

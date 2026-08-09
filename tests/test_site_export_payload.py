@@ -99,7 +99,7 @@ def test_label_for_gw_uses_deadline_time(session):
 
     label = payload_module._label_for_gw(session, "2026-27", 3)
 
-    assert label == "GW3 — 3 Aug"
+    assert label == "GW3 — 3 Aug 2026"
 
 
 def test_label_for_gw_falls_back_when_gameweek_missing(session):
@@ -254,7 +254,7 @@ def test_build_run_payload_assembles_full_schema(session, monkeypatch):
 
     assert payload["schema_version"] == 1
     assert payload["gameweek"] == 3
-    assert payload["label"] == "GW3 — 3 Aug"
+    assert payload["label"] == "GW3 — 3 Aug 2026"
     assert len(payload["squad"]) == 2
     assert len(payload["top15"]) == 2
     haaland_squad_entry = next(e for e in payload["squad"] if e["player_id"] == 1)
