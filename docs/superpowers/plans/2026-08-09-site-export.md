@@ -907,6 +907,30 @@ def test_commit_and_push_pushes_to_remote_when_push_true(tmp_path, repo):
         ["git", "log", "-1", "--pretty=%s", "main"], cwd=remote, check=True, capture_output=True, text=True,
     )
     assert remote_log.stdout.strip() == "export: GW3 site data"
+
+
+def test_commit_and_push_does_not_sweep_up_unrelated_staged_changes(repo):
+    """Guards against a real bug found during review: an unscoped `git
+    commit`/`git diff --cached` would sweep in and push anything else
+    already staged, under this function's own commit message."""
+    (repo / "unrelated.txt").write_text("wip")
+    subprocess.run(["git", "add", "unrelated.txt"], cwd=repo, check=True)
+
+    data_dir = repo / "data" / "simulations"
+    data_dir.mkdir(parents=True)
+    (data_dir / "gw3.json").write_text("{}")
+
+    committed = git_sync.commit_and_push(repo, data_dir, "export: GW3 site data", push=False)
+
+    assert committed is True
+    changed_files = subprocess.run(
+        ["git", "diff", "--name-only", "HEAD~1", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.split()
+    assert changed_files == ["data/simulations/gw3.json"]
+    still_staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"], cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.split()
+    assert still_staged == ["unrelated.txt"]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -927,15 +951,21 @@ from pathlib import Path
 
 def commit_and_push(repo_root: Path, data_dir: Path, message: str, push: bool = True) -> bool:
     """Stage only data_dir, commit if there are staged changes, optionally push.
-    Returns True if a commit was created, False if there was nothing to commit."""
+    Returns True if a commit was created, False if there was nothing to commit.
+
+    The diff-check and commit are both scoped to data_dir's own pathspec, not
+    just the `git add` -- otherwise anything else already staged in the index
+    when this runs would get swept into the same commit and pushed under this
+    message (found during Task 7 review, 2026-08-09, reproduced against a
+    real repo: an unrelated staged file ended up in the export commit)."""
     rel = data_dir.relative_to(repo_root)
     subprocess.run(["git", "add", str(rel)], cwd=repo_root, check=True)
 
-    staged = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo_root)
+    staged = subprocess.run(["git", "diff", "--cached", "--quiet", "--", str(rel)], cwd=repo_root)
     if staged.returncode == 0:
         return False
 
-    subprocess.run(["git", "commit", "-m", message], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-m", message, "--", str(rel)], cwd=repo_root, check=True)
     if push:
         subprocess.run(["git", "push"], cwd=repo_root, check=True)
     return True
