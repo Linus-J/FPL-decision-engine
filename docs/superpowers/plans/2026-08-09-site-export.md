@@ -63,6 +63,8 @@ Create `tests/test_site_export_payload.py`:
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -81,9 +83,13 @@ def session(tmp_path):
     s.close()
 
 
-def _add_samples(session, player_id: int, gw: int, season: str, values: list[float]) -> None:
+def _add_samples(
+    session, player_id: int, gw: int, season: str, values: list[float],
+    created_at: datetime | None = None,
+) -> None:
+    kwargs = {"created_at": created_at} if created_at is not None else {}
     session.add_all([
-        ProjectionSample(player_id=player_id, gameweek=gw, season=season, scenario_id=i, xpts=v)
+        ProjectionSample(player_id=player_id, gameweek=gw, season=season, scenario_id=i, xpts=v, **kwargs)
         for i, v in enumerate(values)
     ])
     session.commit()
@@ -116,6 +122,26 @@ def test_get_projection_distributions_ignores_other_gameweeks_and_seasons(sessio
 def test_get_projection_distributions_empty_when_no_samples(session):
     dist = payload_module.get_projection_distributions(session, gw=3, season="2026-27")
     assert dist == {}
+
+
+def test_get_projection_distributions_uses_only_latest_batch(session):
+    """Guards against blending two pipeline runs' samples together: each
+    persist_samples call shares one created_at across its whole batch
+    (projection/assemble.py::_write_projection_samples), and old batches
+    are never deleted, so a re-run for the same (gw, season) must not
+    silently average with the stale batch."""
+    _add_samples(
+        session, player_id=1, gw=3, season="2026-27", values=[1.0, 1.0, 4.0],
+        created_at=datetime(2026, 8, 1, 6, 0),
+    )
+    _add_samples(
+        session, player_id=1, gw=3, season="2026-27", values=[7.0, 8.0, 9.0],
+        created_at=datetime(2026, 8, 3, 6, 0),
+    )
+
+    dist = payload_module.get_projection_distributions(session, gw=3, season="2026-27")
+
+    assert dist[1]["mean"] == 8.0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -139,11 +165,22 @@ from sqlalchemy.orm import Session
 
 def get_projection_distributions(db: Session, gw: int, season: str) -> dict[int, dict[str, float]]:
     """Per-player {p10, median, mean, p90} xPts summary from projection_samples,
-    aggregated across every MC scenario for one gameweek."""
+    aggregated across every MC scenario for one gameweek.
+
+    Scoped to the latest persist_samples batch for this (gw, season):
+    projection/assemble.py::_write_projection_samples computes one shared
+    created_at per batch and never deletes prior batches, so an unscoped
+    query would blend every historical run's samples together if the
+    pipeline is ever re-run for the same upcoming gameweek (found during
+    Task 1 review, 2026-08-09)."""
     query = text("""
         SELECT player_id, xpts
         FROM projection_samples
         WHERE gameweek = :gw AND season = :season
+          AND created_at = (
+              SELECT MAX(created_at) FROM projection_samples
+              WHERE gameweek = :gw AND season = :season
+          )
     """)
     df = pd.read_sql(query, db.bind, params={"gw": gw, "season": season})
     out: dict[int, dict[str, float]] = {}
@@ -160,7 +197,7 @@ def get_projection_distributions(db: Session, gw: int, season: str) -> dict[int,
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd /home/linus/Projects/FPL-26-27-bot && uv run python -m pytest tests/test_site_export_payload.py -v`
-Expected: PASS (3 passed)
+Expected: PASS (4 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -243,7 +280,7 @@ def _label_for_gw(db: Session, season: str, gw: int) -> str:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd /home/linus/Projects/FPL-26-27-bot && uv run python -m pytest tests/test_site_export_payload.py -v`
-Expected: PASS (6 passed)
+Expected: PASS (7 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -363,7 +400,7 @@ def _build_squad_entries(squad_df: pd.DataFrame, dist: dict[int, dict[str, float
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd /home/linus/Projects/FPL-26-27-bot && uv run python -m pytest tests/test_site_export_payload.py -v`
-Expected: PASS (10 passed)
+Expected: PASS (11 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -485,7 +522,7 @@ def _build_history_entries(history_df: pd.DataFrame) -> list[dict]:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd /home/linus/Projects/FPL-26-27-bot && uv run python -m pytest tests/test_site_export_payload.py -v`
-Expected: PASS (12 passed)
+Expected: PASS (13 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -644,7 +681,7 @@ def build_run_payload(db: Session, team_id: int) -> dict:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd /home/linus/Projects/FPL-26-27-bot && uv run python -m pytest tests/test_site_export_payload.py -v`
-Expected: PASS (14 passed)
+Expected: PASS (15 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -900,7 +937,7 @@ def commit_and_push(repo_root: Path, data_dir: Path, message: str, push: bool = 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd /home/linus/Projects/FPL-26-27-bot && uv run python -m pytest tests/test_site_export_git_sync.py -v`
-Expected: PASS (3 passed)
+Expected: PASS (4 passed)
 
 - [ ] **Step 5: Commit**
 
