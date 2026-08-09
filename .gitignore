@@ -76,4 +76,7 @@ downloaded_files/
 # scripts/generate_gw_reminders_ical.py)
 *.ics
 fpl_gw_reminders/
-fpl_gw_reminders.zip.worktrees/
+fpl_gw_reminders.zip
+
+# Isolated implementation worktrees
+.worktrees/
