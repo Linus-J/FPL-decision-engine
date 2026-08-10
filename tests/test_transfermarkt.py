@@ -359,6 +359,54 @@ def test_scrape_rumours_empty_html_returns_empty_list():
     assert tm.scrape_rumours("", {}) == []
 
 
+def test_scrape_rumours_handles_club_cell_without_inline_table_wrapper():
+    # Regression test: the Club cell (cells[3]) on the live site does NOT have
+    # a `<table class="inline-table">` wrapper, unlike Player/Interested club
+    # cells. The selector was changed from `table.inline-table a[title]` to plain
+    # `a[title]` to handle this. This test verifies the parser correctly extracts
+    # club name from an unwrapped anchor, proving the fix works against the real
+    # live-site structure.
+    fixture_html = """
+    <html><body>
+    <table class="items">
+    <thead><tr><th>Player</th><th>Nation</th><th>Age</th><th>Club</th>
+    <th>Interested club</th><th>Most recent source from</th>
+    <th>Assessment</th></tr></thead>
+    <tbody>
+    <tr>
+      <td><table class="inline-table"><tr><td rowspan="2">
+        <img alt="Wrapper Test Player"/></td><td class="hauptlink">
+        <a href="/wrapper-test-player/profil/spieler/500"
+        title="Wrapper Test Player">Wrapper Test Player</a>
+      </td></tr><tr><td>Midfielder</td></tr></table></td>
+      <td></td>
+      <td>26</td>
+      <td class="zentriert"><a href="/leeds/startseite/verein/399"
+      title="Leeds United"><img alt="Leeds"/></a></td>
+      <td><table class="inline-table"><tr><td rowspan="2"><a
+        href="/some-club/startseite/verein/1"
+        title="Some Foreign Club"><img alt="Foreign"/></a></td>
+        <td class="hauptlink"><a href="/some-club/startseite/verein/1"
+        title="Some Foreign Club">Some Foreign Club</a></td></tr></table></td>
+      <td>10/08/2026</td>
+      <td class="rechts hauptlink">55 %</td>
+    </tr>
+    </tbody>
+    </table>
+    </body></html>
+    """
+    name_map = {"wrapper test player": 250}
+    result = tm.scrape_rumours(fixture_html, name_map)
+    assert result == [
+        {
+            "code": 250,
+            "p_leave": 0.55,
+            "reason": "Transfermarkt rumour: Leeds United -> Some Foreign Club",
+            "as_of": tm._today_str(),
+        }
+    ]
+
+
 @pytest.fixture
 def overrides_file(tmp_path, monkeypatch):
     path = tmp_path / "transfer_overrides.yaml"
