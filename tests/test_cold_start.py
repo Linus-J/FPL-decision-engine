@@ -12,7 +12,15 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from data.models import Base, Player, PlayerGameweekStats, PriorLeagueStats
+from data.models import (
+    Base,
+    Fixture,
+    Player,
+    PlayerGameweekStats,
+    PriorLeagueStats,
+    Team,
+    TeamSeasonStrength,
+)
 from projection import cold_start as cs
 
 
@@ -438,3 +446,138 @@ def test_build_initial_squad_discounts_rumoured_player(temp_session, monkeypatch
     _, projections = cs.build_initial_squad("2026-27", players=injected)
     row = projections[projections["player_id"] == rumoured_id]
     assert (row["xpts"] == 0.0).all()  # p_leave=0.9 -> stay-probability multiplier 0.0
+
+
+def _seed_two_team_fixture(Local, season="2026-27", gw=1, def_home=1000.0, def_away=1400.0):
+    """Team 1 (weak defence, 1000) hosts Team 2 (strong defence, 1400) at
+    ``gw`` for ``season``. Player p1 is on Team 1 (an easy home fixture vs a
+    weak defence); p2 is on Team 2 (a hard away fixture vs a strong one)."""
+    s = Local()
+    try:
+        s.add_all([
+            Team(id=1, name="Weak", short_name="WEA"),
+            Team(id=2, name="Strong", short_name="STR"),
+        ])
+        s.add(TeamSeasonStrength(
+            season=season, team_id=1, code=101,
+            strength_defence_home=def_home, strength_defence_away=def_home,
+        ))
+        s.add(TeamSeasonStrength(
+            season=season, team_id=2, code=202,
+            strength_defence_home=def_away, strength_defence_away=def_away,
+        ))
+        s.add(Fixture(fpl_id=1, season=season, gameweek=gw, team_h_id=1, team_a_id=2))
+        s.add(Player(fpl_id=1, code=1, first_name="A", second_name="A", web_name="Home",
+                     team_id=1, position="MID", now_cost=8.0, status="a"))
+        s.add(Player(fpl_id=2, code=2, first_name="B", second_name="B", web_name="Away",
+                     team_id=2, position="MID", now_cost=8.0, status="a"))
+        s.commit()
+    finally:
+        s.close()
+
+
+def test_load_horizon_fixtures_resolves_opponent_and_home_away(temp_session):
+    _seed_two_team_fixture(temp_session)
+    players = cs.load_current_players()
+    out = cs.load_horizon_fixtures(players, "2026-27", target_gw=1, horizon=1)
+
+    home_id = players.loc[players["web_name"] == "Home", "id"].iloc[0]
+    away_id = players.loc[players["web_name"] == "Away", "id"].iloc[0]
+    home_row = out[out["player_id"] == home_id].iloc[0]
+    away_row = out[out["player_id"] == away_id].iloc[0]
+    assert home_row["gameweek"] == 1
+    assert bool(home_row["was_home"]) is True
+    assert home_row["opp_defence_strength"] == pytest.approx(1400.0)
+    assert bool(away_row["was_home"]) is False
+    assert away_row["opp_defence_strength"] == pytest.approx(1000.0)
+
+
+def test_load_horizon_fixtures_prior_season_fallback_when_current_is_zero(temp_session):
+    # Current season (2026-27): both teams' defence strength unpublished (0,
+    # the real pre-season state as of 2026-08-10). Prior season (2025-26)
+    # has real values, joined on the stable `code`.
+    s = temp_session()
+    try:
+        s.add_all([
+            Team(id=1, name="Weak", short_name="WEA"),
+            Team(id=2, name="Strong", short_name="STR"),
+        ])
+        s.add(TeamSeasonStrength(season="2026-27", team_id=1, code=101,
+                                  strength_defence_home=0, strength_defence_away=0))
+        s.add(TeamSeasonStrength(season="2026-27", team_id=2, code=202,
+                                  strength_defence_home=0, strength_defence_away=0))
+        s.add(TeamSeasonStrength(season="2025-26", team_id=1, code=101,
+                                  strength_defence_home=1000, strength_defence_away=1000))
+        s.add(TeamSeasonStrength(season="2025-26", team_id=2, code=202,
+                                  strength_defence_home=1400, strength_defence_away=1400))
+        s.add(Fixture(fpl_id=1, season="2026-27", gameweek=1, team_h_id=1, team_a_id=2))
+        s.add(Player(fpl_id=1, code=1, first_name="A", second_name="A", web_name="Home",
+                     team_id=1, position="MID", now_cost=8.0, status="a"))
+        s.commit()
+    finally:
+        s.close()
+
+    players = cs.load_current_players()
+    out = cs.load_horizon_fixtures(players, "2026-27", target_gw=1, horizon=1)
+    home_id = players.loc[players["web_name"] == "Home", "id"].iloc[0]
+    home_row = out[out["player_id"] == home_id].iloc[0]
+    assert home_row["opp_defence_strength"] == pytest.approx(1400.0)  # from 2025-26, via code=202
+
+
+def test_load_horizon_fixtures_degrades_to_none_when_no_strength_data_at_all(temp_session):
+    s = temp_session()
+    try:
+        s.add_all([
+            Team(id=1, name="Weak", short_name="WEA"),
+            Team(id=2, name="Strong", short_name="STR"),
+        ])
+        s.add(Fixture(fpl_id=1, season="2026-27", gameweek=1, team_h_id=1, team_a_id=2))
+        s.add(Player(fpl_id=1, code=1, first_name="A", second_name="A", web_name="Home",
+                     team_id=1, position="MID", now_cost=8.0, status="a"))
+        s.commit()
+    finally:
+        s.close()
+
+    players = cs.load_current_players()
+    out = cs.load_horizon_fixtures(players, "2026-27", target_gw=1, horizon=1)
+    home_id = players.loc[players["web_name"] == "Home", "id"].iloc[0]
+    home_row = out[out["player_id"] == home_id].iloc[0]
+    assert home_row["opp_defence_strength"] is None
+
+
+def test_load_horizon_fixtures_spans_multiple_gws(temp_session):
+    s = temp_session()
+    try:
+        s.add_all([
+            Team(id=1, name="Weak", short_name="WEA"),
+            Team(id=2, name="Strong", short_name="STR"),
+            Team(id=3, name="Mid", short_name="MID"),
+        ])
+        s.add(TeamSeasonStrength(season="2026-27", team_id=1, code=101,
+                                  strength_defence_home=1000, strength_defence_away=1000))
+        s.add(TeamSeasonStrength(season="2026-27", team_id=2, code=202,
+                                  strength_defence_home=1400, strength_defence_away=1400))
+        s.add(TeamSeasonStrength(season="2026-27", team_id=3, code=303,
+                                  strength_defence_home=1200, strength_defence_away=1200))
+        s.add(Fixture(fpl_id=1, season="2026-27", gameweek=1, team_h_id=1, team_a_id=2))
+        s.add(Fixture(fpl_id=2, season="2026-27", gameweek=2, team_h_id=3, team_a_id=1))
+        s.add(Player(fpl_id=1, code=1, first_name="A", second_name="A", web_name="Home",
+                     team_id=1, position="MID", now_cost=8.0, status="a"))
+        s.commit()
+    finally:
+        s.close()
+
+    players = cs.load_current_players()
+    out = cs.load_horizon_fixtures(players, "2026-27", target_gw=1, horizon=2)
+    pid = players.loc[players["web_name"] == "Home", "id"].iloc[0]
+    rows = out[out["player_id"] == pid].sort_values("gameweek")
+    assert list(rows["gameweek"]) == [1, 2]
+    assert rows.iloc[0]["opp_defence_strength"] == pytest.approx(1400.0)  # GW1 vs Strong
+    assert rows.iloc[1]["opp_defence_strength"] == pytest.approx(1200.0)  # GW2 vs Mid
+
+
+def test_load_horizon_fixtures_empty_players_or_gws_returns_empty(temp_session):
+    empty = pd.DataFrame(columns=["id", "team_id"])
+    out = cs.load_horizon_fixtures(empty, "2026-27", target_gw=1, horizon=1)
+    assert out.empty
+    assert list(out.columns) == ["player_id", "gameweek", "opp_defence_strength", "was_home"]

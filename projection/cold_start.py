@@ -208,6 +208,155 @@ def load_prior_league_lookup(season: str) -> dict[int, dict]:
     return df.set_index("code").to_dict("index")
 
 
+def load_current_defence_strength(season: str) -> dict[int, float]:
+    """team_id -> average(strength_defence_home, strength_defence_away) for
+    ``season``, treating an all-zero row (FPL hasn't published it yet -- the
+    real 2026-27 pre-season state as of 2026-08-10) as ABSENT rather than a
+    genuine 0 -- callers fall through to the prior-season fallback instead
+    of being misled by a value on the wrong scale (using
+    strength_overall_home/away, which IS populated this early but on an
+    incompatible ~2-5 scale vs strength_defence's ~1000-1400, was
+    considered and rejected -- see the design spec)."""
+    db = get_session()
+    try:
+        query = text("""
+            SELECT team_id, strength_defence_home, strength_defence_away
+            FROM team_season_strength WHERE season = :season
+        """)
+        df = pd.read_sql(query, db.bind, params={"season": season})
+    finally:
+        db.close()
+    result: dict[int, float] = {}
+    for r in df.itertuples():
+        avg = (r.strength_defence_home + r.strength_defence_away) / 2
+        if avg > 0:
+            result[int(r.team_id)] = avg
+    return result
+
+
+def load_team_codes(season: str) -> dict[int, int]:
+    """team_id -> stable code for ``season`` (only rows where FPL has
+    supplied one) -- used to resolve an opponent's PRIOR-season strength via
+    the identity that survives promotion/relegation reshuffling team_id."""
+    db = get_session()
+    try:
+        query = text("""
+            SELECT team_id, code FROM team_season_strength
+            WHERE season = :season AND code IS NOT NULL
+        """)
+        df = pd.read_sql(query, db.bind, params={"season": season})
+    finally:
+        db.close()
+    return {int(r.team_id): int(r.code) for r in df.itertuples()}
+
+
+def load_prior_defence_strength_by_code(prior_season: str) -> dict[int, float]:
+    """code -> average defence strength from ``prior_season`` -- the
+    fallback used when the CURRENT season's strength is still unpublished,
+    so Feature A has real fixture-difficulty signal now rather than only
+    once FPL catches up close to the GW1 deadline."""
+    db = get_session()
+    try:
+        query = text("""
+            SELECT code, strength_defence_home, strength_defence_away
+            FROM team_season_strength WHERE season = :season AND code IS NOT NULL
+        """)
+        df = pd.read_sql(query, db.bind, params={"season": prior_season})
+    finally:
+        db.close()
+    result: dict[int, float] = {}
+    for r in df.itertuples():
+        avg = (r.strength_defence_home + r.strength_defence_away) / 2
+        if avg > 0:
+            result[int(r.code)] = avg
+    return result
+
+
+def load_horizon_fixtures(
+    players: pd.DataFrame, season: str, target_gw: int, horizon: int,
+) -> pd.DataFrame:
+    """(player_id, gameweek, opp_defence_strength, was_home) for each of the
+    ``horizon`` GWs starting at ``target_gw``, resolved from ``players``'
+    OWN team_id column -- post Feature-B override, since it is never
+    re-derived by re-querying the players table from the DB. This is what
+    lets a manual team_id correction (Feature B) actually change which
+    fixtures a player is attributed to.
+
+    opp_defence_strength resolution, per fixture: (1) current season's
+    TeamSeasonStrength if non-zero, (2) prior-season TeamSeasonStrength for
+    the same club, joined on the stable `code` (not team_id -- a per-season
+    alphabetical index that shifts under promotion/relegation), (3) None if
+    neither exists -- `fixture_multiplier` already treats None as neutral
+    (1.0), so a promoted club with no 2025-26 row degrades safely rather
+    than crashing or defaulting to a misleading value.
+    """
+    empty = pd.DataFrame(columns=["player_id", "gameweek", "opp_defence_strength", "was_home"])
+    if players.empty or horizon <= 0:
+        return empty
+
+    team_ids = sorted({int(t) for t in players["team_id"].dropna().unique()})
+    target_gws = list(range(target_gw, target_gw + horizon))
+    if not team_ids or not target_gws:
+        return empty
+
+    db = get_session()
+    try:
+        team_placeholders = ",".join(f":team{i}" for i in range(len(team_ids)))
+        gw_placeholders = ",".join(f":gw{i}" for i in range(len(target_gws)))
+        params = {
+            "season": season,
+            **{f"team{i}": tid for i, tid in enumerate(team_ids)},
+            **{f"gw{i}": gw for i, gw in enumerate(target_gws)},
+        }
+        query = text(f"""
+            SELECT f.team_h_id, f.team_a_id, f.gameweek
+            FROM fixtures f
+            WHERE f.season = :season AND f.gameweek IN ({gw_placeholders})
+              AND (f.team_h_id IN ({team_placeholders}) OR f.team_a_id IN ({team_placeholders}))
+        """)
+        raw = pd.read_sql(query, db.bind, params=params)
+    finally:
+        db.close()
+    if raw.empty:
+        return empty
+
+    current_strength = load_current_defence_strength(season)
+    team_codes = load_team_codes(season)
+    prior_strength_by_code = load_prior_defence_strength_by_code(prior_season_of(season))
+
+    def _resolve(opp_team_id: int) -> float | None:
+        if opp_team_id in current_strength:
+            return current_strength[opp_team_id]
+        code = team_codes.get(opp_team_id)
+        if code is not None and code in prior_strength_by_code:
+            return prior_strength_by_code[code]
+        return None
+
+    team_id_set = set(team_ids)
+    fixture_rows: list[dict] = []
+    for r in raw.itertuples():
+        if r.team_h_id in team_id_set:
+            fixture_rows.append({
+                "team_id": r.team_h_id, "gameweek": r.gameweek,
+                "opp_defence_strength": _resolve(r.team_a_id), "was_home": True,
+            })
+        if r.team_a_id in team_id_set:
+            fixture_rows.append({
+                "team_id": r.team_a_id, "gameweek": r.gameweek,
+                "opp_defence_strength": _resolve(r.team_h_id), "was_home": False,
+            })
+    fixtures_by_team = pd.DataFrame(
+        fixture_rows, columns=["team_id", "gameweek", "opp_defence_strength", "was_home"]
+    )
+    if fixtures_by_team.empty:
+        return empty
+
+    merged = players[["id", "team_id"]].merge(fixtures_by_team, on="team_id", how="inner")
+    return merged.rename(columns={"id": "player_id"})[
+        ["player_id", "gameweek", "opp_defence_strength", "was_home"]
+    ]
+
+
 def apply_departure_gate(players: pd.DataFrame) -> pd.DataFrame:
     """§6.5 confirmed tier: drop players FPL marks unavailable (status 'u')."""
     if "status" not in players.columns:
