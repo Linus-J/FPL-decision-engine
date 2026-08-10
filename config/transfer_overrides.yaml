@@ -1,0 +1,25 @@
+# Manual transfer/rumour overrides (hand-edited, version-controlled).
+# See docs/superpowers/specs/2026-08-10-cold-start-lookahead-and-transfer-overrides-design.md
+#
+# `code` is the player's/team's stable FPL `code` (NOT `id` -- `id` is
+# reassigned per season and doesn't survive a transfer; `code` does).
+#
+# confirmed: a signing/move you know about that FPL's own team_id hasn't
+# caught up to yet. Corrects team_id for squad-building (max-3-per-club,
+# fixture lookahead) until FPL's bootstrap data itself updates.
+#   - code: 123456
+#     team_id: 1
+#     reason: "Signed from Newcastle, not yet reflected in FPL team_id"
+#     as_of: "2026-08-10"
+#
+# rumoured: a not-yet-confirmed departure. Discounts (does not exclude) the
+# player's projected points by (1 - p_leave), and logs a warning if the
+# optimiser still picks them into a squad.
+#   - code: 234567
+#     p_leave: 0.35
+#     reason: "Strongly linked to a January move per <source>"
+#     as_of: "2026-08-10"
+
+confirmed: []
+
+rumoured: []
