@@ -10,8 +10,9 @@ from config.settings import settings
 from config.strategy import CHIP_TIMING, OPTIMISER, ChipTimingThresholds, OptimiserConfig
 from data.db import get_session
 from data.models import DecisionLog, SimDecisionLog, SimManager
-from data.overrides import apply_team_overrides
+from data.overrides import apply_team_overrides, load_p_leave_overrides, log_rumoured_squad_members
 from optimiser.chips import Chip, ChipRecommendation, chips_used_this_season, recommend_chip
+from optimiser.departure_risk import apply_departure_discount
 from optimiser.squad import optimise_squad, optimise_starting_xi
 from optimiser.transfers import TransferPlan, evaluate_transfers, get_dgw_coverage
 from projection import cold_start
@@ -177,6 +178,9 @@ def _run_decision_cycle(
         logger.info("Running projection pipeline...")
         run_projections(season=season, persist=True)
     projections = get_latest_projections()
+    # Feature B (plan 2026-08-10): rumour-discount tier, real data for the
+    # first time (previously always an empty dict).
+    projections = apply_departure_discount(projections, load_p_leave_overrides())
 
     squad_ids, available_budget, free_transfers = _load_squad_state(
         sim_manager_id, team_id, config
@@ -350,6 +354,8 @@ def _run_decision_cycle(
     dgw_coverage = get_dgw_coverage(
         squad_solution.squad["id"].tolist(), players, dgw_gws, projections
     )
+
+    log_rumoured_squad_members(squad_solution.squad["id"].tolist(), players)
 
     result = {
         "gameweek": next_gw,

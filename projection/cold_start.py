@@ -398,6 +398,8 @@ def build_initial_squad(
     projection layer stays testable without PuLP.
     """
     from config.strategy import SQUAD
+    from data.overrides import load_p_leave_overrides, log_rumoured_squad_members
+    from optimiser.departure_risk import apply_departure_discount
     from optimiser.squad import optimise_squad
 
     budget = SQUAD.budget_total if budget is None else budget
@@ -412,6 +414,11 @@ def build_initial_squad(
         players, prior, raw_appearances=raw_appearances,
         prior_league_lookup=prior_league_lookup,
     )
+    # Feature B (plan 2026-08-10): the rumour-discount tier of the
+    # already-existing departure-risk gate, fed with real data for the
+    # first time -- previously always an empty dict (Phase 4's news layer
+    # was never built), so this call was always a no-op before today.
+    projections = apply_departure_discount(projections, load_p_leave_overrides())
 
     players = players.merge(
         projections[["player_id", "start_probability"]],
@@ -422,4 +429,5 @@ def build_initial_squad(
         projections=projections, players=players, budget=budget, horizon=1, season=season,
         config=config,
     )
+    log_rumoured_squad_members(solution.squad["id"].tolist(), players)
     return solution, projections

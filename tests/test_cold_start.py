@@ -403,3 +403,38 @@ def test_build_initial_squad_passes_config_through_to_optimise_squad(temp_sessio
     monkeypatch.setattr(squad_module, "optimise_squad", _spy)
     cs.build_initial_squad("2026-27", players=injected, config=persona_config)
     assert received["config"] is persona_config
+
+
+def test_build_initial_squad_discounts_rumoured_player(temp_session, monkeypatch, tmp_path):
+    import yaml
+
+    from data import overrides as ov
+
+    _seed_full_pool(temp_session)
+    s = temp_session()
+    try:
+        rumoured_id = s.query(Player.id).filter_by(fpl_id=2).scalar()  # a non-leaver "p1"
+        rumoured_code = s.query(Player.code).filter_by(fpl_id=2).scalar()
+        injected = pd.read_sql(
+            "SELECT id, code, web_name, position, now_cost, status, team_id FROM players", s.bind
+        )
+    finally:
+        s.close()
+
+    overrides_path = tmp_path / "transfer_overrides.yaml"
+    overrides_path.write_text(yaml.safe_dump({
+        "rumoured": [
+            {"code": rumoured_code, "p_leave": 0.9, "reason": "x", "as_of": "2026-08-10"},
+        ],
+    }))
+    monkeypatch.setattr(ov, "OVERRIDES_PATH", overrides_path)
+    # data/overrides.py resolves rumoured codes against the live players
+    # table via its own `get_session` binding (separate from cs.get_session,
+    # which the `temp_session` fixture above already patches) -- same
+    # isolation fix tests/test_overrides.py's own `temp_session` fixture
+    # applies, otherwise this reads the real DB instead of the seeded one.
+    monkeypatch.setattr(ov, "get_session", lambda: temp_session())
+
+    _, projections = cs.build_initial_squad("2026-27", players=injected)
+    row = projections[projections["player_id"] == rumoured_id]
+    assert (row["xpts"] == 0.0).all()  # p_leave=0.9 -> stay-probability multiplier 0.0
