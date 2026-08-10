@@ -20,6 +20,7 @@ from sqlalchemy import text
 
 from config.strategy import PRIOR_LEAGUE, SCORING
 from data.db import get_session
+from data.overrides import apply_team_overrides
 from projection.assists import expected_assist_points
 from projection.goals import expected_goal_points
 
@@ -159,16 +160,21 @@ def load_prior_season_features(prior_season: str) -> pd.DataFrame:
 
 
 def load_current_players() -> pd.DataFrame:
-    """Candidate universe for the initial squad: the current bootstrap players."""
+    """Candidate universe for the initial squad: the current bootstrap
+    players, with any manual team_id correction (Feature B, plan 2026-08-10)
+    already applied -- a confirmed transfer FPL hasn't updated team_id for
+    yet is visible to the max-3-per-club constraint and fixture lookahead
+    from here on."""
     db = get_session()
     try:
         query = text("""
             SELECT id, code, web_name, position, now_cost, status, team_id
             FROM players
         """)
-        return pd.read_sql(query, db.bind)
+        players = pd.read_sql(query, db.bind)
     finally:
         db.close()
+    return apply_team_overrides(players)
 
 
 def load_prior_league_lookup(season: str) -> dict[int, dict]:

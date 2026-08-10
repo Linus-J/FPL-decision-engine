@@ -354,6 +354,27 @@ def test_build_initial_squad_uses_injected_players_not_live_bootstrap(temp_sessi
     assert not projections.empty
 
 
+def test_load_current_players_applies_team_overrides(temp_session, monkeypatch, tmp_path):
+    import yaml
+
+    from data import overrides as ov
+
+    s = temp_session()
+    try:
+        s.add(Player(fpl_id=1, code=111, first_name="A", second_name="A", web_name="Moved",
+                     team_id=1, position="MID", now_cost=8.0, status="a"))
+        s.commit()
+    finally:
+        s.close()
+
+    overrides_path = tmp_path / "transfer_overrides.yaml"
+    overrides_path.write_text(yaml.safe_dump({"confirmed": [{"code": 111, "team_id": 99}]}))
+    monkeypatch.setattr(ov, "OVERRIDES_PATH", overrides_path)
+
+    players = cs.load_current_players()
+    assert players.loc[players["web_name"] == "Moved", "team_id"].iloc[0] == 99
+
+
 def test_build_initial_squad_passes_config_through_to_optimise_squad(temp_session, monkeypatch):
     """Simulation-engine entry point: run_for_persona cold-starts a persona
     via build_initial_squad(config=...) -- must actually reach the internal

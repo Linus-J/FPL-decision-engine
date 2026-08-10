@@ -10,6 +10,7 @@ from config.settings import settings
 from config.strategy import CHIP_TIMING, OPTIMISER, ChipTimingThresholds, OptimiserConfig
 from data.db import get_session
 from data.models import DecisionLog, SimDecisionLog, SimManager
+from data.overrides import apply_team_overrides
 from optimiser.chips import Chip, ChipRecommendation, chips_used_this_season, recommend_chip
 from optimiser.squad import optimise_squad, optimise_starting_xi
 from optimiser.transfers import TransferPlan, evaluate_transfers, get_dgw_coverage
@@ -30,14 +31,15 @@ def _load_players() -> pd.DataFrame:
     db = get_session()
     try:
         query = text("""
-            SELECT id, fpl_id, web_name, position, team_id, now_cost,
+            SELECT id, code, fpl_id, web_name, position, team_id, now_cost,
                    status, chance_of_playing_next_round, selected_by_percent,
                    form, ict_index, influence, creativity, threat
             FROM players
         """)
-        return pd.read_sql(query, db.bind)
+        players = pd.read_sql(query, db.bind)
     finally:
         db.close()
+    return apply_team_overrides(players)
 
 
 def _load_squad_state(
