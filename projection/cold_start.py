@@ -593,11 +593,12 @@ def build_initial_squad(
     Returns (SquadSolution, projections_df). Imports the optimiser lazily so the
     projection layer stays testable without PuLP.
     """
-    from config.strategy import SQUAD
+    from config.strategy import OPTIMISER, SQUAD
     from data.overrides import load_p_leave_overrides, log_rumoured_squad_members
     from optimiser.departure_risk import apply_departure_discount
     from optimiser.squad import optimise_squad
 
+    cfg = config or OPTIMISER
     budget = SQUAD.budget_total if budget is None else budget
     if players is None:
         players = load_current_players()
@@ -609,6 +610,7 @@ def build_initial_squad(
     projections = project_cold_start(
         players, prior, raw_appearances=raw_appearances,
         prior_league_lookup=prior_league_lookup,
+        horizon=cfg.cold_start_lookahead_gws, season=season,
     )
     # Feature B (plan 2026-08-10): the rumour-discount tier of the
     # already-existing departure-risk gate, fed with real data for the
@@ -617,13 +619,13 @@ def build_initial_squad(
     projections = apply_departure_discount(projections, load_p_leave_overrides())
 
     players = players.merge(
-        projections[["player_id", "start_probability"]],
+        projections[["player_id", "start_probability"]].drop_duplicates("player_id"),
         left_on="id", right_on="player_id", how="left",
     ).drop(columns=["player_id"], errors="ignore")
 
     solution = optimise_squad(
-        projections=projections, players=players, budget=budget, horizon=1, season=season,
-        config=config,
+        projections=projections, players=players, budget=budget,
+        horizon=cfg.cold_start_lookahead_gws, season=season, config=config,
     )
     log_rumoured_squad_members(solution.squad["id"].tolist(), players)
     return solution, projections

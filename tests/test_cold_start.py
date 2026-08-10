@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from config.strategy import OptimiserConfig
 from data.models import (
     Base,
     Fixture,
@@ -673,3 +674,59 @@ def test_project_cold_start_horizon_with_no_fixture_data_repeats_base_row_neutra
     # pandas/pytest interaction quirk); exact equality is safe here since
     # the degrade path is a literal copy of the base row with no arithmetic.
     assert rows["xpts"].tolist() == [6.0, 6.0, 6.0]
+
+
+def test_build_initial_squad_uses_horizon_sum_not_single_gw(temp_session):
+    _seed_full_pool(temp_session)
+    s = temp_session()
+    try:
+        # give every club a real GW1-5 fixture list against itself in a
+        # round-robin so load_horizon_fixtures has something to resolve
+        # (content doesn't matter here -- only that >1 distinct GW exists).
+        club_ids = list(range(1, 9))
+        fpl_id = 1
+        for gw in range(1, 6):
+            for i in range(0, len(club_ids), 2):
+                s.add(Fixture(fpl_id=fpl_id, season="2026-27", gameweek=gw,
+                              team_h_id=club_ids[i], team_a_id=club_ids[i + 1]))
+                fpl_id += 1
+        s.commit()
+        injected = pd.read_sql(
+            "SELECT id, code, web_name, position, now_cost, status, team_id FROM players", s.bind
+        )
+    finally:
+        s.close()
+
+    solution_5gw, proj_5gw = cs.build_initial_squad("2026-27", players=injected)
+    solution_1gw, proj_1gw = cs.build_initial_squad(
+        "2026-27", players=injected,
+        config=OptimiserConfig(cold_start_lookahead_gws=1),
+    )
+
+    assert proj_5gw["gameweek"].nunique() == 5
+    assert proj_1gw["gameweek"].nunique() == 1
+    assert len(solution_5gw.squad) == 15
+    assert len(solution_1gw.squad) == 15
+
+
+def test_build_initial_squad_regression_single_gw_config_matches_pre_feature_a_shape(
+    temp_session,
+):
+    """Regression guard (spec's explicit requirement): a caller pinning
+    cold_start_lookahead_gws=1 must get a projections frame shaped exactly
+    like the pre-Feature-A single-GW output -- one row per player, all at
+    target_gw=1."""
+    _seed_full_pool(temp_session)
+    s = temp_session()
+    try:
+        injected = pd.read_sql(
+            "SELECT id, code, web_name, position, now_cost, status, team_id FROM players", s.bind
+        )
+    finally:
+        s.close()
+
+    _, projections = cs.build_initial_squad(
+        "2026-27", players=injected, config=OptimiserConfig(cold_start_lookahead_gws=1),
+    )
+    assert (projections["gameweek"] == 1).all()
+    assert projections["player_id"].nunique() == len(projections)  # exactly one row per player
