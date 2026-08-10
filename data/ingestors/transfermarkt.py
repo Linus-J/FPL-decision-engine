@@ -191,3 +191,68 @@ def scrape_confirmed_transfers(
                 "as_of": _today_str(),
             })
     return candidates
+
+
+def scrape_rumours(
+    html: str, name_map: dict[str, int], min_assessment_pct: int = 40,
+) -> list[dict]:
+    """(code, p_leave, reason, as_of) candidates for
+    config/transfer_overrides_candidates.yaml's `rumoured` shape -- see
+    this module's docstring for the page structure this depends
+    on. Pure: no I/O. Only rumours where the player's CURRENT club (not
+    the rumoured destination) is a Premier League club are in scope --
+    this is specifically the departure-risk tier (existing squad risk),
+    not a scouting/incoming-signing feature. Assessment maps directly to
+    p_leave (Transfermarkt's own credibility score for the rumour is a
+    reasonable proxy for likelihood); an unrated ("-") row is dropped
+    entirely -- too noisy to act on, not a 0.0 p_leave (which would be a
+    false, misleadingly precise signal)."""
+    if not html:
+        return []
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.select_one("table.items")
+    if table is None:
+        return []
+    candidates: list[dict] = []
+    for row in table.select("tbody > tr"):
+        cells = row.find_all("td", recursive=False)
+        if len(cells) != 7:
+            continue
+        player_link = cells[0].select_one("table.inline-table a[title]")
+        club_link = cells[3].select_one("table.inline-table a[title]")
+        interested_link = cells[4].select_one("table.inline-table a[title]")
+        assessment_text = cells[6].get_text(strip=True)
+        if player_link is None or club_link is None:
+            continue
+
+        club_name = club_link["title"].strip()
+        if club_name not in _TM_CLUB_NAME_TO_SHORT_NAME:
+            continue
+
+        if "%" not in assessment_text:
+            continue
+        try:
+            pct = int(assessment_text.replace("%", "").strip())
+        except ValueError:
+            continue
+        if pct < min_assessment_pct:
+            continue
+
+        player_name = player_link["title"].strip().lower()
+        code = name_map.get(player_name)
+        if code is None:
+            logger.warning(
+                "transfermarkt: rumour row player %r has no matching current "
+                "player, skipping",
+                player_link["title"],
+            )
+            continue
+
+        interested_name = interested_link["title"].strip() if interested_link else "?"
+        candidates.append({
+            "code": code,
+            "p_leave": pct / 100.0,
+            "reason": f"Transfermarkt rumour: {club_name} -> {interested_name}",
+            "as_of": _today_str(),
+        })
+    return sorted(candidates, key=lambda c: c["p_leave"], reverse=True)

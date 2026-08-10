@@ -227,3 +227,132 @@ def test_scrape_confirmed_transfers_ignores_out_table():
 
 def test_scrape_confirmed_transfers_empty_html_returns_empty_list():
     assert tm.scrape_confirmed_transfers("", {}, {}) == []
+
+
+_RUMOURS_FIXTURE_HTML = """
+<html><body>
+<table class="items">
+<thead><tr><th>Player</th><th>Nation</th><th>Age</th><th>Club</th>
+<th>Interested club</th><th>Most recent source from</th><th>Assessment</th></tr></thead>
+<tbody>
+<tr>
+  <td><table class="inline-table"><tr><td rowspan="2">
+    <img alt="Bradley Barcola"/></td><td class="hauptlink">
+    <a href="/bradley-barcola/profil/spieler/708265" title="Bradley Barcola">Bradley Barcola</a>
+  </td></tr><tr><td>Left Winger</td></tr></table></td>
+  <td></td>
+  <td>23</td>
+  <td><table class="inline-table"><tr><td rowspan="2"><a
+    href="/fc-liverpool/startseite/verein/31" title="Liverpool FC"><img alt="Liverpool"/></a></td>
+    <td class="hauptlink"><a href="/fc-liverpool/startseite/verein/31"
+    title="Liverpool FC">Liverpool</a></td></tr></table></td>
+  <td><table class="inline-table"><tr><td rowspan="2"><a
+    href="/psg/startseite/verein/583" title="Paris Saint-Germain"><img alt="PSG"/></a></td>
+    <td class="hauptlink"><a href="/psg/startseite/verein/583"
+    title="Paris Saint-Germain">Paris Saint-Germain</a></td></tr></table></td>
+  <td>10/08/2026</td>
+  <td class="rechts hauptlink">71 %</td>
+</tr>
+<tr>
+  <td><table class="inline-table"><tr><td rowspan="2">
+    <img alt="No Assessment Player"/></td><td class="hauptlink">
+    <a href="/no-assessment-player/profil/spieler/999"
+    title="No Assessment Player">No Assessment Player</a>
+  </td></tr><tr><td>Striker</td></tr></table></td>
+  <td></td>
+  <td>25</td>
+  <td><table class="inline-table"><tr><td rowspan="2"><a
+    href="/chelsea/startseite/verein/631" title="Chelsea FC"><img alt="Chelsea"/></a></td>
+    <td class="hauptlink"><a href="/chelsea/startseite/verein/631"
+    title="Chelsea FC">Chelsea</a></td></tr></table></td>
+  <td></td>
+  <td>09/08/2026</td>
+  <td class="rechts hauptlink">-</td>
+</tr>
+<tr>
+  <td><table class="inline-table"><tr><td rowspan="2">
+    <img alt="Below Threshold Player"/></td><td class="hauptlink">
+    <a href="/below-threshold/profil/spieler/998"
+    title="Below Threshold Player">Below Threshold Player</a>
+  </td></tr><tr><td>Defender</td></tr></table></td>
+  <td></td>
+  <td>27</td>
+  <td><table class="inline-table"><tr><td rowspan="2"><a
+    href="/everton/startseite/verein/29" title="Everton FC"><img alt="Everton"/></a></td>
+    <td class="hauptlink"><a href="/everton/startseite/verein/29"
+    title="Everton FC">Everton</a></td></tr></table></td>
+  <td></td>
+  <td>08/08/2026</td>
+  <td class="rechts hauptlink">25 %</td>
+</tr>
+<tr>
+  <td><table class="inline-table"><tr><td rowspan="2">
+    <img alt="Non PL Player"/></td><td class="hauptlink">
+    <a href="/non-pl-player/profil/spieler/997" title="Non PL Player">Non PL Player</a>
+  </td></tr><tr><td>Midfielder</td></tr></table></td>
+  <td></td>
+  <td>24</td>
+  <td><table class="inline-table"><tr><td rowspan="2"><a
+    href="/bayern/startseite/verein/27" title="Bayern Munich"><img alt="Bayern"/></a></td>
+    <td class="hauptlink"><a href="/bayern/startseite/verein/27"
+    title="Bayern Munich">Bayern Munich</a></td></tr></table></td>
+  <td></td>
+  <td>07/08/2026</td>
+  <td class="rechts hauptlink">90 %</td>
+</tr>
+</tbody>
+</table>
+</body></html>
+"""
+
+
+def test_scrape_rumours_matches_and_maps_assessment_to_p_leave():
+    name_map = {"bradley barcola": 200}
+    result = tm.scrape_rumours(_RUMOURS_FIXTURE_HTML, name_map)
+    assert result == [
+        {
+            "code": 200,
+            "p_leave": 0.71,
+            "reason": "Transfermarkt rumour: Liverpool FC -> Paris Saint-Germain",
+            "as_of": tm._today_str(),
+        }
+    ]
+
+
+def test_scrape_rumours_skips_unrated_row():
+    name_map = {"bradley barcola": 200, "no assessment player": 201}
+    result = tm.scrape_rumours(_RUMOURS_FIXTURE_HTML, name_map)
+    codes = {r["code"] for r in result}
+    assert 201 not in codes  # "-" assessment, no credibility score at all
+
+
+def test_scrape_rumours_drops_below_threshold():
+    name_map = {"bradley barcola": 200, "below threshold player": 202}
+    result = tm.scrape_rumours(_RUMOURS_FIXTURE_HTML, name_map, min_assessment_pct=40)
+    codes = {r["code"] for r in result}
+    assert 202 not in codes  # 25% < 40% floor
+
+
+def test_scrape_rumours_drops_non_pl_current_club():
+    # "Non PL Player" plays for Bayern Munich, not a Premier League club --
+    # not a departure risk to an existing FPL squad, out of scope entirely.
+    name_map = {"bradley barcola": 200, "non pl player": 203}
+    result = tm.scrape_rumours(_RUMOURS_FIXTURE_HTML, name_map)
+    codes = {r["code"] for r in result}
+    assert 203 not in codes
+
+
+def test_scrape_rumours_sorted_by_p_leave_descending():
+    name_map = {"bradley barcola": 200, "below threshold player": 202}
+    result = tm.scrape_rumours(_RUMOURS_FIXTURE_HTML, name_map, min_assessment_pct=0)
+    p_leaves = [r["p_leave"] for r in result]
+    assert p_leaves == sorted(p_leaves, reverse=True)
+
+
+def test_scrape_rumours_unmatched_player_name_skipped():
+    result = tm.scrape_rumours(_RUMOURS_FIXTURE_HTML, {})
+    assert result == []
+
+
+def test_scrape_rumours_empty_html_returns_empty_list():
+    assert tm.scrape_rumours("", {}) == []
