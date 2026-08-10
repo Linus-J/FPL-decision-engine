@@ -14,6 +14,8 @@ projection source, and no confirmed leaver enters the pool.
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
@@ -24,6 +26,8 @@ from data.overrides import apply_team_overrides
 from projection.assists import expected_assist_points
 from projection.fixture_adjust import fixture_multiplier
 from projection.goals import expected_goal_points
+
+logger = logging.getLogger(__name__)
 
 # A player needs at least this many prior-season appearances to use their
 # own history rather than the position/price prior.
@@ -351,6 +355,15 @@ def load_horizon_fixtures(
     )
     if fixtures_by_team.empty:
         return empty
+
+    resolved_team_ids = set(fixtures_by_team["team_id"].unique())
+    for tid in sorted(team_id_set - resolved_team_ids):
+        logger.warning(
+            "load_horizon_fixtures: team_id %s has no fixtures in GWs %s-%s (season %s) -- "
+            "its players will get zero horizon rows and may drop out of the candidate pool "
+            "(check team_id is correct, e.g. a transfer_overrides.yaml typo)",
+            tid, target_gw, target_gw + horizon - 1, season,
+        )
 
     merged = players[["id", "team_id"]].merge(fixtures_by_team, on="team_id", how="inner")
     return merged.rename(columns={"id": "player_id"})[

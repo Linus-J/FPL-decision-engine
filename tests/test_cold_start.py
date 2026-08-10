@@ -7,6 +7,8 @@ silent 0.0), and confirmed leavers (status 'u') are dropped.
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine
@@ -493,6 +495,23 @@ def test_load_horizon_fixtures_resolves_opponent_and_home_away(temp_session):
     assert away_row["opp_defence_strength"] == pytest.approx(1000.0)
 
 
+def test_load_horizon_fixtures_warns_when_a_real_team_has_zero_fixtures(temp_session, caplog):
+    _seed_two_team_fixture(temp_session)  # teams 1 and 2, fixture at GW1
+    s = temp_session()
+    try:
+        s.add(Team(id=3, name="Orphan", short_name="ORP"))
+        s.add(Player(fpl_id=3, code=3, first_name="C", second_name="C", web_name="NoFixture",
+                     team_id=3, position="MID", now_cost=8.0, status="a"))
+        s.commit()
+    finally:
+        s.close()
+
+    players = cs.load_current_players()
+    with caplog.at_level(logging.WARNING):
+        cs.load_horizon_fixtures(players, "2026-27", target_gw=1, horizon=1)
+    assert "team_id 3 has no fixtures" in caplog.text
+
+
 def test_load_horizon_fixtures_prior_season_fallback_when_current_is_zero(temp_session):
     # Current season (2026-27): both teams' defence strength unpublished (0,
     # the real pre-season state as of 2026-08-10). Prior season (2025-26)
@@ -714,8 +733,11 @@ def test_build_initial_squad_regression_single_gw_config_matches_pre_feature_a_s
 ):
     """Regression guard (spec's explicit requirement): a caller pinning
     cold_start_lookahead_gws=1 must get a projections frame shaped exactly
-    like the pre-Feature-A single-GW output -- one row per player, all at
-    target_gw=1."""
+    like the pre-Feature-A single-GW shape -- one row per player, all at
+    target_gw=1. Only the SHAPE is guaranteed here, not byte-identical
+    values: with real fixture data present, xpts/xpts_var are fixture-
+    scaled even at horizon=1 (that's correct, intended behaviour) -- the
+    byte-identical-values path is season=None, not horizon=1."""
     _seed_full_pool(temp_session)
     s = temp_session()
     try:

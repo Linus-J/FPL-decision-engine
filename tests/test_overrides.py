@@ -104,6 +104,44 @@ def test_load_rumoured_overrides_missing_file_is_empty(overrides_file):
     assert ov.load_rumoured_overrides() == {}
 
 
+def test_load_yaml_malformed_syntax_returns_empty_and_logs_error(overrides_file, caplog):
+    overrides_file.write_text("confirmed:\n  - code: 1\n  bad indent here: [\n")
+    with caplog.at_level(logging.ERROR):
+        result = ov.load_team_overrides()
+    assert result == {}
+    assert "failed to parse" in caplog.text
+
+
+def test_load_team_overrides_skips_entry_missing_required_key(overrides_file, caplog):
+    _write(overrides_file, {"confirmed": [
+        {"code": 111},  # missing team_id
+        {"code": 222, "team_id": 5},
+    ]})
+    with caplog.at_level(logging.WARNING):
+        result = ov.load_team_overrides()
+    assert result == {222: 5}
+    assert "malformed confirmed entry" in caplog.text
+
+
+def test_load_rumoured_overrides_skips_entry_missing_required_key(
+    temp_session, overrides_file, caplog
+):
+    s = temp_session()
+    try:
+        s.add(Player(id=42, fpl_id=42, code=999, first_name="A", second_name="B",
+                     web_name="Rumoured", team_id=1, position="MID", now_cost=8.0))
+        s.commit()
+    finally:
+        s.close()
+    _write(overrides_file, {"rumoured": [
+        {"code": 999},  # missing p_leave
+    ]})
+    with caplog.at_level(logging.WARNING):
+        result = ov.load_rumoured_overrides()
+    assert result == {}
+    assert "malformed rumoured entry" in caplog.text
+
+
 def test_log_rumoured_squad_members_logs_matched_squad_member(
     temp_session, overrides_file, caplog
 ):

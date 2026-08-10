@@ -8,8 +8,9 @@ version-controlled file the user updates when they know something FPL's
 API hasn't caught up on yet -- a confirmed summer signing not yet
 reflected in team_id, or a rumoured departure worth discounting. Every
 loader here degrades safely to empty/no-op on a missing file, an empty
-file, or an unmatched code -- a wrong automatic correction is a worse
-failure mode than a missed one, so nothing here ever crashes the pipeline.
+file, a malformed/unparseable file, a malformed entry, or an unmatched
+code -- a wrong automatic correction is a worse failure mode than a
+missed one, so nothing here ever crashes the pipeline.
 """
 
 from __future__ import annotations
@@ -32,25 +33,50 @@ def _load_yaml() -> dict:
     if not OVERRIDES_PATH.exists():
         return {}
     with OVERRIDES_PATH.open() as f:
-        data = yaml.safe_load(f)
+        try:
+            data = yaml.safe_load(f)
+        except yaml.YAMLError as exc:
+            logger.error(
+                "transfer_overrides.yaml: failed to parse, ignoring all overrides: %s", exc
+            )
+            return {}
     return data or {}
 
 
 def load_team_overrides() -> dict[int, int]:
-    """code -> corrected team_id, from the `confirmed` list."""
+    """code -> corrected team_id, from the `confirmed` list. A malformed
+    entry (missing/non-numeric `code`/`team_id`) is skipped and logged at
+    warning rather than crashing the pipeline -- see module docstring."""
     entries = _load_yaml().get("confirmed") or []
-    return {int(e["code"]): int(e["team_id"]) for e in entries}
+    result: dict[int, int] = {}
+    for e in entries:
+        try:
+            result[int(e["code"])] = int(e["team_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning(
+                "transfer_overrides.yaml: malformed confirmed entry %r, skipping: %s", e, exc
+            )
+    return result
 
 
 def apply_team_overrides(players: pd.DataFrame) -> pd.DataFrame:
     """Returns a copy of ``players`` with ``team_id`` replaced wherever
-    ``players.code`` matches a `confirmed` override entry. A no-op (plain
-    copy) when the file is missing/empty or ``players`` has no `code`
-    column."""
+    ``players.code`` matches a `confirmed` override entry. Logs a warning
+    for an override `code` with no matching player in ``players`` (a
+    likely stale/typo'd entry -- the override itself is still harmless,
+    since nothing in ``players`` gets touched, but a silent no-op here is
+    easy to mistake for "the override worked"). A no-op (plain copy) when
+    the file is missing/empty or ``players`` has no `code` column."""
     out = players.copy()
     overrides = load_team_overrides()
     if not overrides or "code" not in out.columns:
         return out
+    present_codes = set(out["code"].dropna().astype(int))
+    for code in sorted(set(overrides.keys()) - present_codes):
+        logger.warning(
+            "transfer_overrides.yaml: confirmed code %s has no matching current player",
+            code,
+        )
     mask = out["code"].isin(overrides.keys())
     out.loc[mask, "team_id"] = out.loc[mask, "code"].map(overrides)
     return out
@@ -68,15 +94,22 @@ def _code_to_player_id() -> dict[int, int]:
 def load_rumoured_overrides() -> dict[int, dict]:
     """player_id -> {p_leave, reason, as_of}, from the `rumoured` list,
     resolved via the current players table's `code`. A `code` with no
-    matching current player is skipped (logged at warning, never crashes --
-    e.g. a rumoured entry left in the file after the player actually left)."""
+    matching current player, or a malformed entry (missing/non-numeric
+    `code`/`p_leave`), is skipped (logged at warning, never crashes)."""
     entries = _load_yaml().get("rumoured") or []
     if not entries:
         return {}
     code_to_pid = _code_to_player_id()
     result: dict[int, dict] = {}
     for entry in entries:
-        code = int(entry["code"])
+        try:
+            code = int(entry["code"])
+            p_leave = float(entry["p_leave"])
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning(
+                "transfer_overrides.yaml: malformed rumoured entry %r, skipping: %s", entry, exc
+            )
+            continue
         pid = code_to_pid.get(code)
         if pid is None:
             logger.warning(
@@ -86,7 +119,7 @@ def load_rumoured_overrides() -> dict[int, dict]:
             )
             continue
         result[pid] = {
-            "p_leave": float(entry["p_leave"]),
+            "p_leave": p_leave,
             "reason": entry.get("reason", ""),
             "as_of": entry.get("as_of", ""),
         }
