@@ -22,6 +22,7 @@ from config.strategy import PRIOR_LEAGUE, SCORING
 from data.db import get_session
 from data.overrides import apply_team_overrides
 from projection.assists import expected_assist_points
+from projection.fixture_adjust import fixture_multiplier
 from projection.goals import expected_goal_points
 
 # A player needs at least this many prior-season appearances to use their
@@ -419,6 +420,8 @@ def project_cold_start(
     target_gw: int = 1,
     raw_appearances: pd.DataFrame | None = None,
     prior_league_lookup: dict[int, dict] | None = None,
+    horizon: int = 1,
+    season: str | None = None,
 ) -> pd.DataFrame:
     """GW1 xPts + xpts_var + start probability per player, tagged with its
     source.
@@ -440,6 +443,18 @@ def project_cold_start(
     code -> translated prior-league row (P11). ``None`` (or a code with no
     entry) falls through to the existing peer_bucket_prior /
     position_price_prior cascade, unchanged.
+
+    ``horizon``/``season`` (default 1/None, preserving today's exact
+    single-row-per-player, unscaled-by-fixture behaviour for every existing
+    caller, since those never pass ``season``): with ``season`` given, emits
+    one row per ``(player, gw)`` for ``gw`` in
+    ``[target_gw, target_gw + horizon)`` -- one row when ``horizon == 1`` --
+    with xpts/xpts_var scaled by that GW's fixture_multiplier (plan
+    2026-08-10, cold-start fixture lookahead). ``season`` is required to
+    resolve fixtures/team strengths -- if it is None, degrades to the
+    single-GW unscaled base row (regardless of ``horizon``) rather than
+    crashing (mirrors ``load_horizon_fixtures`` returning empty when it
+    has nothing to resolve).
     """
     if raw_appearances is None:
         raw_appearances = pd.DataFrame(columns=["player_id", "total_points"])
@@ -518,7 +533,39 @@ def project_cold_start(
             "start_probability": start_prob,
             "proj_source": source,
         })
-    return pd.DataFrame(rows)
+    base_df = pd.DataFrame(rows)
+    if horizon < 1 or season is None:
+        return base_df
+
+    fixtures = load_horizon_fixtures(players, season, target_gw, horizon)
+    if fixtures.empty:
+        # No resolvable fixture data (e.g. a synthetic/test season with no
+        # fixtures rows at all) -- degrade to repeating the base projection
+        # at every horizon GW with an implicit neutral multiplier, rather
+        # than silently dropping the extra GWs the caller asked for.
+        repeated = []
+        for gw in range(target_gw, target_gw + horizon):
+            gw_df = base_df.copy()
+            gw_df["gameweek"] = gw
+            repeated.append(gw_df)
+        return pd.concat(repeated, ignore_index=True)
+
+    base_by_player = base_df.set_index("player_id")
+    horizon_rows: list[dict] = []
+    for f in fixtures.itertuples():
+        if f.player_id not in base_by_player.index:
+            continue
+        base = base_by_player.loc[f.player_id]
+        mult = fixture_multiplier(f.opp_defence_strength, f.was_home)
+        horizon_rows.append({
+            "player_id": f.player_id,
+            "gameweek": f.gameweek,
+            "xpts": base["xpts"] * mult,
+            "xpts_var": base["xpts_var"] * mult ** 2,
+            "start_probability": base["start_probability"],
+            "proj_source": base["proj_source"],
+        })
+    return pd.DataFrame(horizon_rows)
 
 
 def build_initial_squad(

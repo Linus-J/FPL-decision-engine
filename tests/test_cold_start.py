@@ -581,3 +581,95 @@ def test_load_horizon_fixtures_empty_players_or_gws_returns_empty(temp_session):
     out = cs.load_horizon_fixtures(empty, "2026-27", target_gw=1, horizon=1)
     assert out.empty
     assert list(out.columns) == ["player_id", "gameweek", "opp_defence_strength", "was_home"]
+
+
+def test_project_cold_start_horizon_1_is_byte_identical_to_default(temp_session):
+    _seed(temp_session)
+    players = cs.apply_departure_gate(cs.load_current_players())
+    prior = cs.load_prior_season_features("2025-26")
+
+    default_proj = cs.project_cold_start(players, prior)
+    explicit_proj = cs.project_cold_start(players, prior, horizon=1, season="2026-27")
+    pd.testing.assert_frame_equal(
+        default_proj.sort_values("player_id").reset_index(drop=True),
+        explicit_proj.sort_values("player_id").reset_index(drop=True),
+    )
+
+
+def test_project_cold_start_horizon_emits_one_row_per_gw_with_distinct_xpts(temp_session):
+    _seed_two_team_fixture(temp_session, gw=1)
+    s = temp_session()
+    try:
+        s.add(Fixture(fpl_id=2, season="2026-27", gameweek=2, team_h_id=2, team_a_id=1))
+        s.commit()
+    finally:
+        s.close()
+
+    players = cs.load_current_players()
+    prior = cs.load_prior_season_features("2025-26")
+    home_id = players.loc[players["web_name"] == "Home", "id"].iloc[0]
+
+    proj = cs.project_cold_start(players, prior, target_gw=1, horizon=2, season="2026-27")
+    home_rows = proj[proj["player_id"] == home_id].sort_values("gameweek")
+
+    assert list(home_rows["gameweek"]) == [1, 2]
+    gw1_xpts, gw2_xpts = home_rows["xpts"].tolist()
+    # GW1: home vs weak Team 2... wait -- Home is Team 1, opponent Team 2 is
+    # the STRONG defence in _seed_two_team_fixture (1400) at GW1 (home), and
+    # Team 2 (still strong, now at home) hosts Team 1 (away) at GW2 -- both
+    # legs are against the same strong opponent, but home/away differs, so
+    # the multipliers (and therefore xpts) must differ between the two rows.
+    assert gw1_xpts != gw2_xpts
+    from projection.fixture_adjust import fixture_multiplier
+    base_xpts = home_rows["xpts"].iloc[0] / fixture_multiplier(1400.0, True)
+    assert gw2_xpts == pytest.approx(base_xpts * fixture_multiplier(1400.0, False))
+
+
+def test_project_cold_start_horizon_var_scales_with_multiplier_squared(temp_session):
+    _seed_variance_pool(temp_session)
+    s = temp_session()
+    try:
+        s.add_all([
+            Team(id=1, name="T1", short_name="T1_"), Team(id=2, name="T2", short_name="T2_"),
+        ])
+        s.add(TeamSeasonStrength(season="2026-27", team_id=1, code=1001,
+                                  strength_defence_home=1000, strength_defence_away=1000))
+        s.add(TeamSeasonStrength(season="2026-27", team_id=2, code=1002,
+                                  strength_defence_home=1000, strength_defence_away=1000))
+        s.add(Fixture(fpl_id=1, season="2026-27", gameweek=1, team_h_id=1, team_a_id=2))
+        s.commit()
+    finally:
+        s.close()
+
+    players = cs.load_current_players()
+    prior = cs.load_prior_season_features("2025-26")
+    raw = cs.load_prior_season_appearances("2025-26")
+    base_proj = cs.project_cold_start(players, prior, raw_appearances=raw)
+    horizon_proj = cs.project_cold_start(
+        players, prior, raw_appearances=raw, target_gw=1, horizon=1, season="2026-27"
+    )
+
+    from projection.fixture_adjust import fixture_multiplier
+    varied_id = players.loc[players["web_name"] == "Varied", "id"].iloc[0]
+    base_row = base_proj[base_proj["player_id"] == varied_id].iloc[0]
+    horizon_row = horizon_proj[horizon_proj["player_id"] == varied_id].iloc[0]
+    mult = fixture_multiplier(1000.0, True)  # Varied is on team_id=1, home
+    assert horizon_row["xpts_var"] == pytest.approx(base_row["xpts_var"] * mult ** 2)
+
+
+def test_project_cold_start_horizon_with_no_fixture_data_repeats_base_row_neutrally(temp_session):
+    _seed(temp_session)  # no Fixture/TeamSeasonStrength rows seeded at all
+    players = cs.apply_departure_gate(cs.load_current_players())
+    prior = cs.load_prior_season_features("2025-26")
+
+    proj = cs.project_cold_start(players, prior, target_gw=1, horizon=3, season="2026-27")
+    estab_id = players.loc[players["web_name"] == "Estab", "id"].iloc[0]
+    rows = proj[proj["player_id"] == estab_id].sort_values("gameweek")
+    assert list(rows["gameweek"]) == [1, 2, 3]
+    # same base value every GW, no crash -- plain equality (not
+    # pytest.approx) since this is a pandas Series comparison, and
+    # pytest.approx's __eq__ does not broadcast correctly against a Series
+    # (it silently returns all-False rather than raising, a known
+    # pandas/pytest interaction quirk); exact equality is safe here since
+    # the degrade path is a literal copy of the base row with no arithmetic.
+    assert rows["xpts"].tolist() == [6.0, 6.0, 6.0]
