@@ -542,7 +542,7 @@ git commit -m "feat: scrape_confirmed_transfers parser"
 - Consumes: `_build_player_name_map` (Task 1). Does NOT need `pl_team_ids` from `resolve_pl_team_ids` — the rumours page's "Club" cell gives a full display name directly via an `<a title=...>`, matched against `_TM_CLUB_NAME_TO_SHORT_NAME`'s KEYS (not `resolve_pl_team_ids`'s season-scoped team_ids, since a rumour candidate never writes a `team_id` at all — only `code`/`p_leave`/`reason`/`as_of`, matching Feature B's `rumoured` entry shape). "Is this club currently in the PL" only needs the name-to-short_name dict's key membership, not a team_id resolution.
 - Produces: `scrape_rumours(html: str, name_map: dict[str, int], min_assessment_pct: int = 40) -> list[dict]` — each dict shaped `{"code": int, "p_leave": float, "reason": str, "as_of": str}`, sorted by `p_leave` descending. Pure function.
 
-**Rumours page structure** (verified live, 2026-08-10): a `<table class="items">` with a 7-column header row `["Player", "Nation", "Age", "Club", "Interested club", "Most recent source from", "Assessment"]`. Each data row has exactly 7 DIRECT-CHILD `<td>`s (must use `row.find_all("td", recursive=False)` — the Player and Club cells each nest their OWN inner `<table class="inline-table">`, and a plain `row.select("td")` recurses into those, desyncing the column count entirely, unlike the transfers page). `td[0]` (Player) contains `table.inline-table a[title]` for the clean name. `td[3]` (Club — the player's CURRENT club, confirmed against a real row: Bradley Barcola's `Club` cell resolved to "Paris Saint-Germain" while his `Interested club` cell at `td[4]` resolved to "Liverpool FC") contains the same `a[title]` pattern. `td[6]` (Assessment) is plain text: either `"71 %"`-style (strip `%`, parse as `int`/100.0 → `float`) or `"-"` (no credibility score — skip the row entirely).
+**Rumours page structure** (verified live, 2026-08-10): a `<table class="items">` with a 7-column header row `["Player", "Nation", "Age", "Club", "Interested club", "Most recent source from", "Assessment"]`. Each data row has exactly 7 DIRECT-CHILD `<td>`s (must use `row.find_all("td", recursive=False)` — the Player and Club cells each nest their OWN inner `<table class="inline-table">`, and a plain `row.select("td")` recurses into those, desyncing the column count entirely, unlike the transfers page). `td[0]` (Player) contains `table.inline-table a[title]` for the clean name. `td[3]` (Club — the player's CURRENT club) and `td[4]` (Interested club — the rumoured destination) contain the same `a[title]` pattern; column order matches header order exactly, confirmed against a real live row (Bradley Barcola's actual `Club` cell resolved to "Paris Saint-Germain", `Interested club` to "Liverpool FC" — i.e. `td[3]` is unambiguously the CURRENT club, not the destination). **Note for the fixture below:** since this scraper only accepts rumours where the CURRENT club is in the PL (see `scrape_rumours`'s docstring — this is the departure-risk tier, a player with no PL club has no `code` in our `players` table for a departure discount to apply to), the fixture's happy-path row uses a PL club as the CURRENT club (`td[3]`) and a foreign club as the interested one (`td[4]`) — the reverse of the real Barcola/PSG/Liverpool example cited above, which would otherwise get filtered out by this scraper entirely (correctly — Barcola isn't an FPL player while at PSG). `td[6]` (Assessment) is plain text: either `"71 %"`-style (strip `%`, parse as `int`/100.0 → `float`) or `"-"` (no credibility score — skip the row entirely).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -563,13 +563,13 @@ _RUMOURS_FIXTURE_HTML = """
   <td></td>
   <td>23</td>
   <td><table class="inline-table"><tr><td rowspan="2"><a
-    href="/psg/startseite/verein/583" title="Paris Saint-Germain"><img alt="PSG"/></a></td>
-    <td class="hauptlink"><a href="/psg/startseite/verein/583"
-    title="Paris Saint-Germain">Paris Saint-Germain</a></td></tr></table></td>
-  <td><table class="inline-table"><tr><td rowspan="2"><a
     href="/fc-liverpool/startseite/verein/31" title="Liverpool FC"><img alt="Liverpool"/></a></td>
     <td class="hauptlink"><a href="/fc-liverpool/startseite/verein/31"
     title="Liverpool FC">Liverpool</a></td></tr></table></td>
+  <td><table class="inline-table"><tr><td rowspan="2"><a
+    href="/psg/startseite/verein/583" title="Paris Saint-Germain"><img alt="PSG"/></a></td>
+    <td class="hauptlink"><a href="/psg/startseite/verein/583"
+    title="Paris Saint-Germain">Paris Saint-Germain</a></td></tr></table></td>
   <td>10/08/2026</td>
   <td class="rechts hauptlink">71 %</td>
 </tr>
@@ -631,7 +631,7 @@ def test_scrape_rumours_matches_and_maps_assessment_to_p_leave():
         {
             "code": 200,
             "p_leave": 0.71,
-            "reason": "Transfermarkt rumour: Paris Saint-Germain -> Liverpool FC",
+            "reason": "Transfermarkt rumour: Liverpool FC -> Paris Saint-Germain",
             "as_of": tm._today_str(),
         }
     ]
