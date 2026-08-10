@@ -320,6 +320,15 @@ class OptimiserConfig:
     # Number of GWs to project ahead for transfer decisions
     transfer_planning_horizon_gws: int = 3
 
+    # GWs to look ahead when building the GW1/pre-season initial squad
+    # (fixture-difficulty-weighted, not just single-GW xPts) -- a distinct
+    # knob from transfer_planning_horizon_gws since cold start is a one-shot
+    # squad build with no in-season transfer plan to horizon-limit
+    # (2026-08-10, plan/cold-start-lookahead-and-transfer-overrides -- the
+    # user's own example: "It is why so many managers still have Haaland
+    # despite the price since the fixtures are so good").
+    cold_start_lookahead_gws: int = 5
+
     # form_window_gws removed 2026-08-01 -- confirmed dead, no test coverage.
     # Rolling windows are hardcoded as [3, 5] directly in
     # projection/minutes_model.py, which never read this.
