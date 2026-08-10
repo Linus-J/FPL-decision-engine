@@ -81,3 +81,6 @@ fpl_gw_reminders.zip
 
 # Isolated implementation worktrees
 .worktrees/
+
+# Scraped/derived data (not version-controlled -- regenerate on demand)
+config/transfer_overrides_candidates.yaml

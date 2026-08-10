@@ -24,11 +24,13 @@ import logging
 from datetime import date
 
 import httpx
+import yaml
 from bs4 import BeautifulSoup
 from sqlalchemy import text
 
 from data.db import get_session
 from data.models import Player
+from data.overrides import OVERRIDES_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -256,3 +258,43 @@ def scrape_rumours(
             "as_of": _today_str(),
         })
     return sorted(candidates, key=lambda c: c["p_leave"], reverse=True)
+
+
+def _load_overrides_file() -> dict:
+    if not OVERRIDES_PATH.exists():
+        return {"confirmed": [], "rumoured": []}
+    with OVERRIDES_PATH.open() as f:
+        data = yaml.safe_load(f)
+    return data or {"confirmed": [], "rumoured": []}
+
+
+def sync_confirmed_overrides(candidates: list[dict], current_team_ids: dict[int, int]) -> None:
+    """Merges `candidates` (scrape_confirmed_transfers's output) into
+    config/transfer_overrides.yaml's `confirmed` list, tagged
+    `source: "transfermarkt"`. Idempotent: rerunning with identical
+    candidates produces a byte-identical file. Self-cleaning: an existing
+    `source: transfermarkt` entry whose `team_id` now matches
+    `current_team_ids` (FPL's own live data caught up) is removed as
+    redundant. NEVER modifies or removes an entry without
+    `source: "transfermarkt"` -- a hand-written entry is untouchable by
+    this function no matter how stale it looks."""
+    data = _load_overrides_file()
+    existing = data.get("confirmed") or []
+
+    hand_written = [e for e in existing if e.get("source") != "transfermarkt"]
+    scraper_written = {e["code"]: e for e in existing if e.get("source") == "transfermarkt"}
+
+    for candidate in candidates:
+        scraper_written[candidate["code"]] = {**candidate, "source": "transfermarkt"}
+
+    still_needed = {
+        code: entry
+        for code, entry in scraper_written.items()
+        if current_team_ids.get(code) != entry["team_id"]
+    }
+
+    data["confirmed"] = hand_written + list(still_needed.values())
+    data.setdefault("rumoured", [])
+
+    with OVERRIDES_PATH.open("w") as f:
+        yaml.safe_dump(data, f, sort_keys=False)

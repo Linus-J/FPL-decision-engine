@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
+import yaml
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -356,3 +357,91 @@ def test_scrape_rumours_unmatched_player_name_skipped():
 
 def test_scrape_rumours_empty_html_returns_empty_list():
     assert tm.scrape_rumours("", {}) == []
+
+
+@pytest.fixture
+def overrides_file(tmp_path, monkeypatch):
+    path = tmp_path / "transfer_overrides.yaml"
+    path.write_text("confirmed: []\nrumoured: []\n")
+    monkeypatch.setattr(tm, "OVERRIDES_PATH", path)
+    return path
+
+
+def test_sync_confirmed_overrides_writes_new_entry_with_source_tag(overrides_file):
+    candidates = [{"code": 100, "team_id": 1, "reason": "x", "as_of": "2026-08-10"}]
+    tm.sync_confirmed_overrides(candidates, current_team_ids={100: 5})  # DB not caught up yet
+    data = yaml.safe_load(overrides_file.read_text())
+    assert data["confirmed"] == [
+        {"code": 100, "team_id": 1, "reason": "x", "as_of": "2026-08-10", "source": "transfermarkt"}
+    ]
+
+
+def test_sync_confirmed_overrides_is_idempotent(overrides_file):
+    candidates = [{"code": 100, "team_id": 1, "reason": "x", "as_of": "2026-08-10"}]
+    tm.sync_confirmed_overrides(candidates, current_team_ids={100: 5})
+    first = overrides_file.read_text()
+    tm.sync_confirmed_overrides(candidates, current_team_ids={100: 5})
+    second = overrides_file.read_text()
+    assert first == second
+
+
+def test_sync_confirmed_overrides_updates_existing_source_entry(overrides_file):
+    tm.sync_confirmed_overrides(
+        [{"code": 100, "team_id": 1, "reason": "old", "as_of": "2026-08-01"}],
+        current_team_ids={100: 5},
+    )
+    tm.sync_confirmed_overrides(
+        [{"code": 100, "team_id": 2, "reason": "new", "as_of": "2026-08-10"}],
+        current_team_ids={100: 5},
+    )
+    data = yaml.safe_load(overrides_file.read_text())
+    assert len(data["confirmed"]) == 1
+    assert data["confirmed"][0]["team_id"] == 2
+    assert data["confirmed"][0]["reason"] == "new"
+
+
+def test_sync_confirmed_overrides_removes_entry_once_fpl_catches_up(overrides_file):
+    tm.sync_confirmed_overrides(
+        [{"code": 100, "team_id": 1, "reason": "x", "as_of": "2026-08-10"}],
+        current_team_ids={100: 5},  # FPL not caught up -- entry needed
+    )
+    data = yaml.safe_load(overrides_file.read_text())
+    assert len(data["confirmed"]) == 1
+
+    # Rerun with NO new candidates, but FPL's own team_id now agrees (5 -> 1
+    # matches what the override already corrected it to).
+    tm.sync_confirmed_overrides([], current_team_ids={100: 1})
+    data = yaml.safe_load(overrides_file.read_text())
+    assert data["confirmed"] == []
+
+
+def test_sync_confirmed_overrides_never_touches_hand_written_entry(overrides_file):
+    overrides_file.write_text(yaml.safe_dump({
+        "confirmed": [
+            {"code": 999, "team_id": 7, "reason": "manually added", "as_of": "2026-07-01"},
+        ],
+        "rumoured": [],
+    }))
+    # Even though code=999's team_id (7) doesn't match "live" data (10),
+    # a hand-written entry (no `source` field) must never be removed or
+    # modified by the self-cleanup logic.
+    tm.sync_confirmed_overrides([], current_team_ids={999: 10})
+    data = yaml.safe_load(overrides_file.read_text())
+    assert data["confirmed"] == [
+        {"code": 999, "team_id": 7, "reason": "manually added", "as_of": "2026-07-01"}
+    ]
+
+
+def test_sync_confirmed_overrides_preserves_rumoured_list_untouched(overrides_file):
+    overrides_file.write_text(yaml.safe_dump({
+        "confirmed": [],
+        "rumoured": [{"code": 555, "p_leave": 0.3, "reason": "r", "as_of": "2026-08-01"}],
+    }))
+    tm.sync_confirmed_overrides(
+        [{"code": 100, "team_id": 1, "reason": "x", "as_of": "2026-08-10"}],
+        current_team_ids={100: 5},
+    )
+    data = yaml.safe_load(overrides_file.read_text())
+    assert data["rumoured"] == [
+        {"code": 555, "p_leave": 0.3, "reason": "r", "as_of": "2026-08-01"}
+    ]
