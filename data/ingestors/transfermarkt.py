@@ -21,8 +21,10 @@ it)."""
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 import httpx
+from bs4 import BeautifulSoup
 from sqlalchemy import text
 
 from data.db import get_session
@@ -132,3 +134,60 @@ def _build_player_name_map() -> dict[str, int]:
         return {name: codes.pop() for name, codes in candidates.items() if len(codes) == 1}
     finally:
         db.close()
+
+
+def _today_str() -> str:
+    return date.today().isoformat()
+
+
+def scrape_confirmed_transfers(
+    html: str, name_map: dict[str, int], pl_team_ids: dict[str, int],
+) -> list[dict]:
+    """(code, team_id, reason, as_of) candidates for config/transfer_overrides.yaml's
+    `confirmed` list -- see this module's docstring for the page
+    structure this depends on. Pure: no I/O. Processes only each club's
+    "In" (arrivals) table -- every real transfer already appears in the
+    destination club's In table, so the Out tables are redundant and
+    skipped entirely to avoid double-processing the same transfer."""
+    if not html:
+        return []
+    soup = BeautifulSoup(html, "lxml")
+    candidates: list[dict] = []
+    for headline in soup.select('h2.content-box-headline[id^="to-"]'):
+        club_name = headline.get_text(strip=True)
+        short_name = _TM_CLUB_NAME_TO_SHORT_NAME.get(club_name)
+        if short_name is None:
+            continue
+        team_id = pl_team_ids.get(short_name)
+        if team_id is None:
+            continue
+        box = headline.find_parent("div", class_="box")
+        if box is None:
+            continue
+        tables = box.select("div.responsive-table")
+        if not tables:
+            continue
+        in_table = tables[0]
+        for row in in_table.select("tbody > tr"):
+            cells = row.find_all("td", recursive=False)
+            if not cells:
+                continue
+            name_link = cells[0].select_one("span.hide-for-small a[title]")
+            if name_link is None:
+                continue
+            player_name = name_link["title"].strip().lower()
+            code = name_map.get(player_name)
+            if code is None:
+                logger.warning(
+                    "transfermarkt: transfer row player %r has no matching "
+                    "current player, skipping",
+                    name_link["title"],
+                )
+                continue
+            candidates.append({
+                "code": code,
+                "team_id": team_id,
+                "reason": f"Transfermarkt: transferred to {club_name}",
+                "as_of": _today_str(),
+            })
+    return candidates
