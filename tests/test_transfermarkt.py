@@ -63,22 +63,22 @@ def test_fetch_returns_empty_string_on_network_failure(monkeypatch, caplog):
     assert "boom" in caplog.text or "failed" in caplog.text.lower()
 
 
-def test_tm_club_name_to_short_name_covers_all_current_clubs(temp_session):
-    """Every club name this module maps must resolve to a short_name that
-    actually exists in the live teams table -- catches a typo in either
-    the hand-curated dict or a club rename before it silently drops
-    matches at runtime."""
-    s = temp_session()
-    try:
-        for short_name in set(tm._TM_CLUB_NAME_TO_SHORT_NAME.values()):
-            s.add(Team(name=short_name, short_name=short_name))
-        s.commit()
-        db_short_names = {row[0] for row in s.execute(
-            __import__("sqlalchemy").text("SELECT short_name FROM teams")
-        )}
-    finally:
-        s.close()
-    assert set(tm._TM_CLUB_NAME_TO_SHORT_NAME.values()) <= db_short_names
+def test_tm_club_name_to_short_name_covers_all_current_clubs():
+    """Independent check (NOT derived from the dict under test -- a prior
+    version of this test seeded its fixture DB from
+    _TM_CLUB_NAME_TO_SHORT_NAME.values() itself, making it tautological
+    and unable to catch a wrong entry). This hardcodes the 20 real
+    short_names this project's own live DB actually uses for the current
+    season (verified directly against team_season_strength, 2026-08-10),
+    independent of anything in transfermarkt.py."""
+    expected_short_names = {
+        "ARS", "AVL", "BOU", "BRE", "BHA", "CHE", "COV", "CRY", "EVE", "FUL",
+        "HUL", "IPS", "LEE", "LIV", "MCI", "MUN", "NEW", "NFO", "SUN", "TOT",
+    }
+    assert set(tm._TM_CLUB_NAME_TO_SHORT_NAME.values()) == expected_short_names
+    # every TM display name maps to a DISTINCT short_name -- no two club
+    # names collapsing onto the same team by mistake
+    assert len(tm._TM_CLUB_NAME_TO_SHORT_NAME) == len(expected_short_names)
 
 
 def test_resolve_pl_team_ids_scopes_to_season(temp_session):
