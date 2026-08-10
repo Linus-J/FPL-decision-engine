@@ -575,3 +575,65 @@ def test_run_wires_fetch_parse_sync_together(monkeypatch, overrides_file, candid
     ]
     rumoured = yaml.safe_load(candidates_file.read_text())["rumoured"]
     assert rumoured == [{"code": 42, "p_leave": 0.5, "reason": "y", "as_of": "2026-08-10"}]
+
+
+_TRANSFERS_REORDERED_FIXTURE_HTML = """
+<html><body>
+<div class="box">
+  <h2 class="content-box-headline" id="to-11">Arsenal FC</h2>
+  <div class="responsive-table">
+    <table>
+      <thead><tr><th>Out</th><th>Age</th><th>Nat.</th><th>Position</th><th>Pos</th>
+      <th>Market value</th><th>Joined</th><th>Fee</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><div class="di nowrap"><span class="hide-for-small">
+            <a href="/should-not-appear/profil/spieler/3"
+               title="Should Not Appear">Should Not Appear</a>
+          </span></div></td>
+          <td>27</td><td></td><td>Winger</td><td>RW</td>
+          <td>&euro;10.00m</td><td>Chelsea FC</td><td>&euro;8.00m</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</body></html>
+"""
+
+
+def test_scrape_confirmed_transfers_skips_club_when_first_table_is_not_in(caplog):
+    import logging
+
+    name_map = {"should not appear": 500}
+    pl_team_ids = {"ARS": 1}
+    with caplog.at_level(logging.WARNING):
+        result = tm.scrape_confirmed_transfers(
+            _TRANSFERS_REORDERED_FIXTURE_HTML, name_map, pl_team_ids
+        )
+    assert result == []
+    assert "expected the first responsive-table" in caplog.text
+
+
+def test_sync_confirmed_overrides_skips_candidate_colliding_with_hand_written_entry(
+    overrides_file, caplog
+):
+    import logging
+
+    overrides_file.write_text(yaml.safe_dump({
+        "confirmed": [
+            {"code": 100, "team_id": 7, "reason": "manually corrected", "as_of": "2026-07-01"},
+        ],
+        "rumoured": [],
+    }))
+    candidate = {
+        "code": 100, "team_id": 3,
+        "reason": "Transfermarkt: transferred to X", "as_of": "2026-08-10",
+    }
+    with caplog.at_level(logging.WARNING):
+        tm.sync_confirmed_overrides([candidate], current_team_ids={100: 7})
+    data = yaml.safe_load(overrides_file.read_text())
+    assert data["confirmed"] == [
+        {"code": 100, "team_id": 7, "reason": "manually corrected", "as_of": "2026-07-01"}
+    ]
+    assert "100" in caplog.text

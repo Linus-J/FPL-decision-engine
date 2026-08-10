@@ -171,6 +171,17 @@ def scrape_confirmed_transfers(
         if not tables:
             continue
         in_table = tables[0]
+        header_cell = in_table.select_one("th")
+        header_text = header_cell.get_text(strip=True) if header_cell else None
+        if header_text != "In":
+            logger.warning(
+                "transfermarkt: expected the first responsive-table block for "
+                "%r to be the 'In' (arrivals) table, got header %r instead -- "
+                "skipping this club's transfers entirely rather than risk "
+                "reading departures as arrivals",
+                club_name, header_text,
+            )
+            continue
         for row in in_table.select("tbody > tr"):
             cells = row.find_all("td", recursive=False)
             if not cells:
@@ -287,9 +298,18 @@ def sync_confirmed_overrides(candidates: list[dict], current_team_ids: dict[int,
     existing = data.get("confirmed") or []
 
     hand_written = [e for e in existing if e.get("source") != "transfermarkt"]
+    hand_written_codes = {e["code"] for e in hand_written}
     scraper_written = {e["code"]: e for e in existing if e.get("source") == "transfermarkt"}
 
     for candidate in candidates:
+        if candidate["code"] in hand_written_codes:
+            logger.warning(
+                "transfermarkt: code %s already has a hand-written confirmed "
+                "override -- skipping the scraped candidate so it never "
+                "silently overrides a manual correction",
+                candidate["code"],
+            )
+            continue
         scraper_written[candidate["code"]] = {**candidate, "source": "transfermarkt"}
 
     still_needed = {
