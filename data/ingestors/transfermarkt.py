@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from pathlib import Path
 
 import httpx
 import yaml
@@ -220,9 +221,13 @@ def scrape_rumours(
         cells = row.find_all("td", recursive=False)
         if len(cells) != 7:
             continue
-        player_link = cells[0].select_one("table.inline-table a[title]")
-        club_link = cells[3].select_one("table.inline-table a[title]")
-        interested_link = cells[4].select_one("table.inline-table a[title]")
+        # Plain `a[title]` (not scoped to `table.inline-table`) -- the live
+        # page wraps Player/Interested club in that inner table but NOT the
+        # current Club cell, an inconsistency confirmed directly against the
+        # live site 2026-08-10. A bare descendant search matches either way.
+        player_link = cells[0].select_one("a[title]")
+        club_link = cells[3].select_one("a[title]")
+        interested_link = cells[4].select_one("a[title]")
         assessment_text = cells[6].get_text(strip=True)
         if player_link is None or club_link is None:
             continue
@@ -298,3 +303,60 @@ def sync_confirmed_overrides(candidates: list[dict], current_team_ids: dict[int,
 
     with OVERRIDES_PATH.open("w") as f:
         yaml.safe_dump(data, f, sort_keys=False)
+
+
+CANDIDATES_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "config" / "transfer_overrides_candidates.yaml"
+)
+
+_CANDIDATES_HEADER = (
+    "# Transfermarkt rumour candidates -- auto-generated, NOT applied automatically.\n"
+    "# Review these and copy any you trust into transfer_overrides.yaml's `rumoured`\n"
+    "# list yourself. Fully regenerated on every run -- do not hand-edit.\n"
+)
+
+
+def write_rumour_candidates(candidates: list[dict]) -> None:
+    """Fully overwrites config/transfer_overrides_candidates.yaml (gitignored)
+    with `candidates` -- no merge/idempotency logic, since nothing here is
+    auto-applied; each run is a fresh review-queue snapshot."""
+    with CANDIDATES_PATH.open("w") as f:
+        f.write(_CANDIDATES_HEADER)
+        yaml.safe_dump({"rumoured": candidates}, f, sort_keys=False)
+
+
+def _current_team_ids() -> dict[int, int]:
+    """code -> team_id from the LIVE players table -- used by
+    sync_confirmed_overrides to detect a now-redundant auto-written entry."""
+    db = get_session()
+    try:
+        rows = db.execute(
+            text("SELECT code, team_id FROM players WHERE code IS NOT NULL")
+        ).fetchall()
+        return {int(code): int(team_id) for code, team_id in rows}
+    finally:
+        db.close()
+
+
+def run(season: str = "2026-27") -> None:
+    """Manual, on-demand entrypoint (not wired into scripts/run_weekly.py
+    -- matches this codebase's existing convention for press_conference.py/
+    injury_parser.py). Fetches both pages, matches players once (shared
+    across both parsers), and syncs both output files."""
+    name_map = _build_player_name_map()
+    pl_team_ids = resolve_pl_team_ids(season)
+
+    transfers_html = _fetch(TRANSFERS_URL.format(year=season.split("-")[0]))
+    confirmed_candidates = scrape_confirmed_transfers(transfers_html, name_map, pl_team_ids)
+    sync_confirmed_overrides(confirmed_candidates, _current_team_ids())
+    logger.info("Transfermarkt: %d confirmed transfer(s) synced", len(confirmed_candidates))
+
+    rumours_html = _fetch(RUMOURS_URL)
+    rumour_candidates = scrape_rumours(rumours_html, name_map)
+    write_rumour_candidates(rumour_candidates)
+    logger.info("Transfermarkt: %d rumour candidate(s) written for review", len(rumour_candidates))
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    run()

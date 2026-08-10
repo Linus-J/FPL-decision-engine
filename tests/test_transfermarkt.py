@@ -445,3 +445,85 @@ def test_sync_confirmed_overrides_preserves_rumoured_list_untouched(overrides_fi
     assert data["rumoured"] == [
         {"code": 555, "p_leave": 0.3, "reason": "r", "as_of": "2026-08-01"}
     ]
+
+
+@pytest.fixture
+def candidates_file(tmp_path, monkeypatch):
+    path = tmp_path / "transfer_overrides_candidates.yaml"
+    monkeypatch.setattr(tm, "CANDIDATES_PATH", path)
+    return path
+
+
+def test_write_rumour_candidates_creates_file(candidates_file):
+    candidates = [{"code": 200, "p_leave": 0.71, "reason": "x", "as_of": "2026-08-10"}]
+    tm.write_rumour_candidates(candidates)
+    data = yaml.safe_load(candidates_file.read_text())
+    assert data["rumoured"] == candidates
+
+
+def test_write_rumour_candidates_fully_overwrites_on_rerun(candidates_file):
+    tm.write_rumour_candidates(
+        [{"code": 200, "p_leave": 0.71, "reason": "x", "as_of": "2026-08-10"}]
+    )
+    tm.write_rumour_candidates(
+        [{"code": 300, "p_leave": 0.55, "reason": "y", "as_of": "2026-08-10"}]
+    )
+    data = yaml.safe_load(candidates_file.read_text())
+    codes = {c["code"] for c in data["rumoured"]}
+    assert codes == {300}  # code=200 from the first run is gone, not merged
+
+
+def test_write_rumour_candidates_empty_list_writes_empty_file(candidates_file):
+    tm.write_rumour_candidates([])
+    data = yaml.safe_load(candidates_file.read_text())
+    assert data["rumoured"] == []
+
+
+def test_run_wires_fetch_parse_sync_together(monkeypatch, overrides_file, candidates_file):
+    """End-to-end: run() must call the real fetch/parse/sync functions in
+    order, with the transfers result reaching sync_confirmed_overrides and
+    the rumours result reaching write_rumour_candidates. Network calls are
+    stubbed (no live HTTP in tests); DB-backed helpers are stubbed too, so
+    this proves WIRING, not re-testing each already-covered function."""
+    calls = {}
+
+    monkeypatch.setattr(
+        tm, "_fetch",
+        lambda url: "TRANSFERS_HTML" if "transfers" in url else "RUMOURS_HTML",
+    )
+    monkeypatch.setattr(tm, "resolve_pl_team_ids", lambda season: {"ARS": 1})
+    monkeypatch.setattr(tm, "_build_player_name_map", lambda: {"someone": 42})
+    monkeypatch.setattr(
+        tm, "scrape_confirmed_transfers",
+        # NOTE: dict.update() (not .setdefault()) so this returns None and the
+        # `or [...]` fallthrough actually fires -- .setdefault() would return
+        # the truthy tuple itself on first insert, short-circuiting the `or`
+        # and making this mock return a 3-tuple instead of the intended list.
+        lambda html, name_map, pl_team_ids: calls.update(
+            transfers_args=(html, name_map, pl_team_ids)
+        ) or [
+            {"code": 42, "team_id": 1, "reason": "x", "as_of": "2026-08-10"}
+        ],
+    )
+    monkeypatch.setattr(
+        tm, "scrape_rumours",
+        lambda html, name_map: calls.update(rumours_args=(html, name_map)) or [
+            {"code": 42, "p_leave": 0.5, "reason": "y", "as_of": "2026-08-10"}
+        ],
+    )
+    # current_team_ids for sync_confirmed_overrides comes from a live DB
+    # query inside run() -- stub the whole helper rather than the session,
+    # so this test never touches a real DB.
+    monkeypatch.setattr(tm, "_current_team_ids", lambda: {42: 5})
+
+    tm.run(season="2026-27")
+
+    assert calls["transfers_args"] == ("TRANSFERS_HTML", {"someone": 42}, {"ARS": 1})
+    assert calls["rumours_args"] == ("RUMOURS_HTML", {"someone": 42})
+
+    confirmed = yaml.safe_load(overrides_file.read_text())["confirmed"]
+    assert confirmed == [
+        {"code": 42, "team_id": 1, "reason": "x", "as_of": "2026-08-10", "source": "transfermarkt"}
+    ]
+    rumoured = yaml.safe_load(candidates_file.read_text())["rumoured"]
+    assert rumoured == [{"code": 42, "p_leave": 0.5, "reason": "y", "as_of": "2026-08-10"}]
