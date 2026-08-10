@@ -384,7 +384,11 @@ def train(save: bool = True, df_override: pd.DataFrame | None = None, fast: bool
 
 def load() -> Pipeline:
     if not MODEL_PATH.exists():
-        raise FileNotFoundError(f"Minutes model not found at {MODEL_PATH}. Run scripts/train_models.py first.")
+        raise FileNotFoundError(
+            f"Minutes model not found at {MODEL_PATH}. The live/backtest paths train it "
+            f"inline via projection.minutes_model.train() and don't rely on a saved file -- "
+            f"call train(..., save=True) once yourself if you need a persisted model."
+        )
     with open(MODEL_PATH, "rb") as f:
         return pickle.load(f)
 

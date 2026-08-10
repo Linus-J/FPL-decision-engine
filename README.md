@@ -20,6 +20,10 @@ data/
   models.py         — SQLAlchemy ORM: 22 tables (players/fixtures/projections/
                        decision_log + sim_managers/sim_decision_log for the simulation engine)
   db.py             — SQLite engine (WAL mode), session factory, init_db()
+  overrides.py      — reads config/transfer_overrides.yaml: applies confirmed team_id
+                       corrections to the live candidate pool, feeds rumoured-departure
+                       p_leave into the optimiser's discount gate — see "Transfer Overrides"
+                       below
   ingestors/
     fpl_api.py           — async FPL bootstrap + fixtures + per-player GW history
     understat_xg.py      — real per-match xG/xA/shots/key passes (soccerdata's Understat reader)
@@ -32,6 +36,9 @@ data/
     injury_parser.py     — regex parser on players.news → injury_severity (0–3)
     midweek.py           — derives midweek fixture flags (2 games in 7d with ≥3d gap)
     press_conference.py  — Guardian API sentiment scraper → PlayerPressSignal table
+    transfermarkt.py     — Transfermarkt scraper: auto-fills confirmed transfers, writes
+                            reviewable rumour candidates — manual/on-demand, see
+                            "Transfer Overrides" below
 
 projection/
   assemble.py       — P10 Monte-Carlo assembly: the live projection pipeline (per-fixture
@@ -45,12 +52,11 @@ projection/
   cold_start.py     — GW1 projections with no current-season data: established players get
                        their own real per-GW variance from prior-season history; new
                        signings/promoted players get mean AND variance pooled from real
-                       peers at the same position + price (not a synthetic formula)
+                       peers at the same position + price (not a synthetic formula);
+                       fixture-difficulty-weighted lookahead across the next N GWs
+                       (cold_start_lookahead_gws, default 5), not just single-GW xPts
   fixture_adjust.py — per-horizon-GW opponent scaling
   rescore.py        — 26/27 BPS re-scoring of historical actuals for backtesting
-  points_model.py / cs_model.py — legacy monolithic GBT models, training-only now
-                       (scripts/train_models.py) — superseded live by assemble.py's
-                       distributional components
   pipeline.py       — orchestrates assemble.py, persists to player_projections
 
 optimiser/
@@ -86,7 +92,6 @@ scripts/
                                     in order, regardless of the first's exit code
   backfill_decision_outcomes.py  — fills in actual (vs projected) points once a GW finishes,
                                     for both the real decision_log and every persona
-  train_models.py                — trains the legacy points/CS/minutes models
   backtest.py                    — walk-forward backtester (pinned to zero-variance scoring
                                     so the exit-gate number stays comparable across changes)
   scrape_understat_xg.py / scrape_whoscored.py / scrape_fbref.py / scrape_prior_league.py
@@ -105,7 +110,7 @@ deploy/
 
 All free tier. The free-tier defensive-action gap (clearances/blocks/recoveries missing from
 FBref) turned out to be the single biggest lever on projection accuracy this project found —
-see `plan/phase-2-xpts-engine.md` for the investigation.
+see `docs/superpowers/plans/phase-2-xpts-engine.md` for the investigation.
 
 | Source | What it provides | Key |
 |---|---|---|
@@ -116,6 +121,7 @@ see `plan/phase-2-xpts-engine.md` for the investigation.
 | FBref (via `soccerdata`) | Match events for BPS re-scoring; Championship/top-5 prior-league bridge | Free, browser required |
 | The Odds API | h2h + O/U2.5 odds → team-goal Poisson λ, CS probability | Free tier (500 req/month) |
 | Guardian API | Press conference text → injury/availability signals | Free (`api-key=test`) |
+| Transfermarkt (scraped) | Confirmed transfers (auto-fills team_id corrections), transfer rumours (credibility-scored candidates for manual review) | Free, no key — manual/on-demand only, see "Transfer Overrides" below |
 
 ---
 
@@ -155,17 +161,7 @@ uv run python scripts/backfill_history.py
 
 This loads vaastav historical CSVs (2021–25) matched by FPL player ID — no fuzzy name matching required.
 
-### 4. Train the legacy models (optional)
-
-```bash
-uv run python scripts/train_models.py
-```
-
-Only needed if you want the legacy `points_model.py`/`cs_model.py` available — the live
-decision path uses `projection/assemble.py`'s distributional pipeline instead (see
-Architecture above). Saved to `models/` (gitignored — retrain after a fresh clone if used).
-
-### 5. Seed your current squad
+### 4. Seed your current squad
 
 Before the first live run, seed your last-known squad into the decision log so the transfer
 planner has a starting point (skip this for a true GW1 cold start — `cold_start.py` builds
@@ -197,13 +193,13 @@ db.commit()
 
 Internal player IDs can be looked up via `SELECT id, fpl_id, web_name FROM players WHERE fpl_id IN (...)`.
 
-### 6. Run a dry-run decision
+### 5. Run a dry-run decision
 
 ```bash
 uv run python scripts/run_agent.py --dry-run
 ```
 
-### 7. Scheduler (optional — disabled by default)
+### 6. Scheduler (optional — disabled by default)
 
 ```bash
 bash deploy/install.sh
@@ -270,6 +266,60 @@ uv run python scripts/plot_analysis.py
 
 ---
 
+## Transfer Overrides
+
+FPL's own bootstrap data can lag reality — a confirmed transfer takes a few days to update
+`team_id`, and there's no signal at all for a rumoured-but-not-yet-confirmed departure.
+`config/transfer_overrides.yaml` (hand-edited, version-controlled) fixes both, keyed by each
+player's stable `code` (not `id`/`fpl_id` — those get reassigned across seasons/transfers,
+`code` doesn't):
+
+```yaml
+confirmed:
+  - code: 123456        # corrects team_id ahead of FPL's own update
+    team_id: 1
+    reason: "Signed from Newcastle, not yet reflected in FPL team_id"
+    as_of: "2026-08-10"
+
+rumoured:
+  - code: 234567         # discounts (never excludes) projected points by (1 - p_leave)
+    p_leave: 0.35
+    reason: "Strongly linked to a January move per <source>"
+    as_of: "2026-08-10"
+```
+
+**`confirmed`** is read by every candidate-pool load (cold-start and in-season) — a corrected
+`team_id` is visible to the max-3-per-club constraint and the fixture-difficulty lookahead
+immediately. **`rumoured`** feeds the optimiser's existing departure-risk discount
+(`optimiser/departure_risk.py`) — the bot still considers the player, just at a
+`p_leave`-scaled discount, and logs a warning if a rumoured player still makes the final squad.
+
+### Editing it by hand
+
+Just add an entry under `confirmed`/`rumoured` with the player's `code` (look it up via
+`SELECT code, web_name FROM players WHERE web_name LIKE '%...%'`) and commit the file — no
+code changes, no restart needed, the next decision cycle picks it up.
+
+### Auto-filling it from Transfermarkt
+
+`data/ingestors/transfermarkt.py` scrapes Transfermarkt's Premier League transfers + rumours
+pages. Manual/on-demand only (not wired into `run_weekly.py`):
+
+```bash
+uv run python -c "from data.ingestors import transfermarkt as tm; tm.run(season='2026-27')"
+```
+
+- **Confirmed transfers are auto-applied** directly into `transfer_overrides.yaml`'s
+  `confirmed` list, tagged `source: transfermarkt` so a hand-written entry is never touched —
+  idempotent (safe to re-run) and self-cleaning (removes its own entries once FPL's own
+  `team_id` catches up).
+- **Rumours are never auto-applied.** They're written to a separate, gitignored
+  `config/transfer_overrides_candidates.yaml` (regenerated fresh each run, sorted by
+  Transfermarkt's own credibility "Assessment" score, floor 40%) for you to review and
+  hand-copy any you trust into `transfer_overrides.yaml`'s `rumoured` list yourself.
+
+---
+
 ## Key Design Decisions
 
 - **`DRY_RUN=true` by default** — the bot never submits live without `--live` or `DRY_RUN=false` in `.env`
@@ -294,8 +344,6 @@ uv run python scripts/plot_analysis.py
 - **Run Understat/WhoScored ingest once live GW1 data appears** — both are season-long scrapes; re-run after each real gameweek so DefCon/bonus accuracy keeps improving through the season.
 
 - **Verify FPL API submission format before the first real `--live` run** — the FPL API occasionally changes its transfer/lineup payload format between seasons, and this codebase's live submission path has never been exercised outside dry-run. Run `--dry-run`, inspect the payload logged, and cross-check against the current API (browser devtools on the FPL site).
-
-- **Retrain legacy models after first few GWs, if still using them** — `points_model.py`/`cs_model.py` are trained on prior-season data; the live path doesn't depend on them, but `scripts/backtest.py`'s older comparison runs do.
 
 ### Important
 
