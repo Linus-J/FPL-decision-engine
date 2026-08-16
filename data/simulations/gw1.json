@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 1,
   "label": "GW1 \u2014 21 Aug 2026",
-  "generated_at": "2026-08-16T22:34:13.235262+00:00",
+  "generated_at": "2026-08-16T23:01:26.731409+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -39,6 +39,23 @@
       }
     },
     {
+      "player_id": 122,
+      "web_name": "Dubravka",
+      "position": "GKP",
+      "team_short": "TOT",
+      "now_cost": 4.0,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 1,
+      "xpts": {
+        "p10": 0.0,
+        "median": 2.3219,
+        "mean": 2.3219,
+        "p90": 5.1967
+      }
+    },
+    {
       "player_id": 136,
       "web_name": "Senesi",
       "position": "DEF",
@@ -56,23 +73,6 @@
       }
     },
     {
-      "player_id": 177,
-      "web_name": "Kelleher",
-      "position": "GKP",
-      "team_short": "BRE",
-      "now_cost": 5.0,
-      "is_starting": false,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": 1,
-      "xpts": {
-        "p10": 0.0,
-        "median": 4.0364,
-        "mean": 4.0364,
-        "p90": 8.65
-      }
-    },
-    {
       "player_id": 210,
       "web_name": "Thiago",
       "position": "FWD",
@@ -87,23 +87,6 @@
         "median": 5.109,
         "mean": 5.109,
         "p90": 10.9711
-      }
-    },
-    {
-      "player_id": 213,
-      "web_name": "Furo",
-      "position": "FWD",
-      "team_short": "BRE",
-      "now_cost": 4.5,
-      "is_starting": false,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": 3,
-      "xpts": {
-        "p10": 0.0,
-        "median": 2.3325,
-        "mean": 2.3325,
-        "p90": 6.5907
       }
     },
     {
@@ -226,23 +209,6 @@
       }
     },
     {
-      "player_id": 744,
-      "web_name": "Scarlett",
-      "position": "FWD",
-      "team_short": "TOT",
-      "now_cost": 4.5,
-      "is_starting": false,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": 4,
-      "xpts": {
-        "p10": 0.0,
-        "median": 2.0574,
-        "mean": 2.0574,
-        "p90": 5.8134
-      }
-    },
-    {
       "player_id": 795,
       "web_name": "Disasi",
       "position": "DEF",
@@ -251,12 +217,46 @@
       "is_starting": false,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": 2,
+      "bench_order": 4,
       "xpts": {
         "p10": 0.0,
         "median": 3.3603,
         "mean": 3.3603,
         "p90": 7.0596
+      }
+    },
+    {
+      "player_id": 875,
+      "web_name": "Simms",
+      "position": "FWD",
+      "team_short": "COV",
+      "now_cost": 5.0,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 3,
+      "xpts": {
+        "p10": 0.4549,
+        "median": 3.4687,
+        "mean": 3.4687,
+        "p90": 6.4825
+      }
+    },
+    {
+      "player_id": 923,
+      "web_name": "Hirst",
+      "position": "FWD",
+      "team_short": "IPS",
+      "now_cost": 5.0,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 2,
+      "xpts": {
+        "p10": 0.0,
+        "median": 3.5007,
+        "mean": 3.5007,
+        "p90": 7.0906
       }
     }
   ],
@@ -394,6 +394,18 @@
       }
     },
     {
+      "player_id": 919,
+      "web_name": "Clarke",
+      "position": "MID",
+      "team_short": "IPS",
+      "xpts": {
+        "p10": 4.454607808,
+        "median": 4.454607808,
+        "mean": 4.454607808,
+        "p90": 4.454607808
+      }
+    },
+    {
       "player_id": 368,
       "web_name": "Garner",
       "position": "MID",
@@ -428,34 +440,7 @@
         "mean": 4.35533428165007,
         "p90": 4.35533428165007
       }
-    },
-    {
-      "player_id": 401,
-      "web_name": "Wilson",
-      "position": "MID",
-      "team_short": "LEE",
-      "xpts": {
-        "p10": 4.299473684210527,
-        "median": 4.299473684210527,
-        "mean": 4.299473684210527,
-        "p90": 4.299473684210527
-      }
     }
   ],
-  "history": [
-    {
-      "gameweek": 1,
-      "type": "chip",
-      "chip": "3xc",
-      "reason": "TC captain xPts 5.9"
-    },
-    {
-      "gameweek": 1,
-      "type": "transfers",
-      "transfers_in": [],
-      "transfers_out": [],
-      "hits_taken": 0,
-      "net_xpts_gain": 0.0
-    }
-  ]
+  "history": []
 }
