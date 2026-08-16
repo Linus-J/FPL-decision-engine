@@ -4,7 +4,14 @@ A Fantasy Premier League system with three parts:
 
 1. **The autonomous agent** — each run ingests live data, projects player points via a distributional Monte-Carlo pipeline, optimises squad and transfers via integer linear programming, decides chip usage, submits decisions to the FPL API, and sends a Telegram summary — all without human input (submission is dry-run by default).
 2. **A read-only dashboard** (Streamlit) — one place to check your live squad + projected points, fixtures/DGW exposure, injury news, past-decision history (projected vs actual), and the bot's next planned chip/transfer.
-3. **A live simulation engine** — ~100 "shadow" managers, each with a different risk posture, stepped forward through the exact same decision logic as the real bot every scheduled run. Never submitted to the real FPL app — purely to compare strategies and improve next season's model.
+3. **A live simulation engine** — 90 "shadow" managers, each varying one parameter of the decision engine, stepped forward through the exact same decision logic as the real bot every scheduled run. Never submitted to the real FPL app — it is the project's validation instrument, and the design is a one-factor-at-a-time experiment so a single season's results are interpretable.
+
+> **📖 [How the decision engine works](docs/decision-engine.md)** — high-level
+> explanation of the approach and the ideas behind it, then a call-by-call
+> reference. Start there.
+>
+> Note: submission to the FPL API is **not** in scope — the bot decides, you
+> enter the team. See the doc for what else is deliberately excluded.
 
 ---
 
