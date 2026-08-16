@@ -614,21 +614,42 @@ def assemble_gw_projections(
                 rng, home_players, away_players, lam_home, lam_away,
                 n_scenarios, defcon_field_shares,
             )
+            # P(clean sheet) per side, in CLOSED FORM (2026-08-16).
+            # sample_team_goals draws Poisson(λ), so P(concede 0) is exactly
+            # exp(-λ_opponent) — no need to reduce the scenarios, and no
+            # change to sample_fixture's return contract. Multiplied by
+            # P(60+ minutes), since FPL only awards a clean sheet to a player
+            # who reaches 60.
+            #
+            # Fills a column that had been 0.0 on every row ever written:
+            # assemble.py has each player's per-scenario clean sheet
+            # internally (it feeds the BPS simulator) but never surfaced it,
+            # so scripts/plot_analysis.py's clean-sheet-by-team chart was
+            # permanently blank -- not a pre-season artefact.
+            cs_home = float(np.exp(-max(0.0, lam_away)))
+            cs_away = float(np.exp(-max(0.0, lam_home)))
+            home_id_set = {int(p["player_id"]) for p in home_players}
+
             for pid, arr in samples.items():
                 mean = float(arr.mean())
                 var = float(arr.var(ddof=1)) if n_scenarios > 1 else 0.0
                 p2 = float(bands.get(pid, (0.5, 0.0, 0.5))[2])
+                cs_p = (cs_home if pid in home_id_set else cs_away) * p2
                 if pid in gw_row_by_pid:
                     prev = gw_row_by_pid[pid]
                     prev["xpts"] += mean
                     prev["xpts_mean"] += mean
                     prev["xpts_var"] += var
                     prev["start_probability"] = 1.0 - (1.0 - prev["start_probability"]) * (1.0 - p2)
+                    # A double gameweek gives two chances at a clean sheet;
+                    # combined as P(at least one), matching how
+                    # start_probability is merged just above.
+                    prev["cs_probability"] = 1.0 - (1.0 - prev["cs_probability"]) * (1.0 - cs_p)
                 else:
                     gw_row_by_pid[pid] = {
                         "player_id": pid, "gameweek": gw,
                         "xpts": mean, "xpts_mean": mean, "xpts_var": var,
-                        "start_probability": p2,
+                        "start_probability": p2, "cs_probability": cs_p,
                     }
                 if persist_samples:
                     sample_rows.extend(

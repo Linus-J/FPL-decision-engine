@@ -166,13 +166,5 @@ Not blocking, but worth a call at some point:
   the cold start produces no Monte Carlo draws. It does carry `xpts_var`, so
   a normal approximation would give a real spread. Display only — no decision
   reads it.
-- **`cs_probability` is never populated**, so `plot_analysis.py`'s
-  clean-sheet-by-team chart is blank — and would be mid-season too, not just
-  now. `assemble.py` has each player's per-scenario clean sheet internally
-  (it feeds the BPS simulator) but never reduces it to a probability, and
-  `_estimate_cs_probability` in `projection/pipeline.py` is dead code.
-  Surfacing it means changing `sample_fixture`'s return contract, which is
-  the highest-risk file in the project — worth doing, but not days before a
-  deadline. The quality gate reports it as a warning carrying this reason.
 - **`swept_axis` is an unversioned string.** The season analysis groups on
   it, so renaming an axis mid-season would silently split the grouping.

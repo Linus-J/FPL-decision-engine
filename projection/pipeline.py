@@ -330,12 +330,14 @@ def _estimate_cs_probability(team_id: int, position: str, gw: int) -> float:
 
 
 def persist_projections(df: pd.DataFrame) -> None:
-    """Persists the P10 MC assembly's output. ``cs_probability`` is left at
-    its column default (0.0) — assemble.py computes each player's
-    clean-sheet component internally (P5) but doesn't currently surface it
-    as a standalone output column; the only consumer is a reporting script
-    (scripts/plot_analysis.py), not core decision logic, so this is a
-    documented gap rather than a silent one, not a P3-0 blocker."""
+    """Persists the P10 MC assembly's output.
+
+    ``cs_probability`` used to be left at its column default (0.0) on every
+    row ever written, because assemble.py had each player's clean-sheet
+    outcome internally (for the BPS simulator) but never surfaced it. Fixed
+    2026-08-16: it is exp(-λ_opponent) x P(60+ minutes), closed-form from the
+    Poisson the sampler already draws from. The cold-start frame has no λ, so
+    it legitimately omits the column and falls back to the default."""
     # Stamped here rather than required of the caller: the cold-start frame
     # has no created_at column, and the read side keys "latest run" on it.
     created_at = datetime.utcnow()
@@ -351,6 +353,7 @@ def persist_projections(df: pd.DataFrame) -> None:
                     xpts_mean=float(row.get("xpts_mean", row["xpts"])),
                     xpts_var=float(row.get("xpts_var", 0.0)),
                     start_probability=float(row["start_probability"]),
+                    cs_probability=float(row.get("cs_probability", 0.0) or 0.0),
                     created_at=row.get("created_at") or created_at,
                 )
                 .on_conflict_do_nothing()

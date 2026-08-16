@@ -163,3 +163,74 @@ def test_single_gameweek_player_unaffected(monkeypatch):
     p2 = out[out["player_id"] == 2].iloc[0]
     assert p2["xpts"] == pytest.approx(VALUE_BY_PID[2])
     assert p2["start_probability"] == pytest.approx(1.0)
+
+
+# --- clean-sheet probability (2026-08-16) --------------------------------
+#
+# player_projections.cs_probability was 0.0 on every row ever written.
+# assemble.py had each player's per-scenario clean sheet internally (it feeds
+# the BPS simulator) but never surfaced it, so scripts/plot_analysis.py's
+# clean-sheet-by-team chart was permanently blank — not a pre-season
+# artefact, as it appeared. sample_team_goals draws Poisson(lambda), so
+# P(concede 0) is exactly exp(-lambda_opponent) and needs no reduction over
+# scenarios. These call the real assembler rather than restating the formula.
+
+
+def _run(monkeypatch, bands=None):
+    monkeypatch.setattr(
+        assemble, "predict_minutes_bands",
+        lambda history, model: bands or dict.fromkeys(range(1, 4), (0.0, 0.0, 1.0)),
+    )
+    monkeypatch.setattr(assemble, "sample_fixture", _fake_sample_fixture)
+    return assemble.assemble_gw_projections(
+        history=_history(), all_stats=_all_stats_dgw(), minutes_model=None,
+        target_gw=2, horizon=1, match_odds=_match_odds_dgw(),
+        defcon_events=pd.DataFrame(), defcon_field_shares={"DEF": {}, "MID_FWD": {}},
+        n_scenarios=4, seed=1,
+    )
+
+
+def test_cs_probability_is_populated_at_all(monkeypatch):
+    """The regression itself: this column was 0.0 for every row, always."""
+    out = _run(monkeypatch)
+    assert "cs_probability" in out.columns
+    assert (out["cs_probability"] > 0).all()
+    assert (out["cs_probability"] <= 1).all()
+
+
+def test_cs_probability_matches_the_poisson_closed_form(monkeypatch):
+    """Player 2 is on team 20, away to team 10 in a single fixture, so their
+    clean-sheet chance is exp(-lambda of team 10) — read from the same
+    odds-derived lambda the sampler draws goals with, not re-derived here."""
+    import math
+
+    from projection.team_goals import team_goals_from_odds
+
+    lam_home, _ = team_goals_from_odds(0.5, 0.25, 0.25, 0.5)  # team 10 vs 20
+    out = _run(monkeypatch)
+    p2 = out[out["player_id"] == 2].iloc[0]
+    assert p2["cs_probability"] == pytest.approx(math.exp(-lam_home))
+
+
+def test_cs_probability_is_scaled_by_the_sixty_minute_chance(monkeypatch):
+    """FPL awards a clean sheet only to a player who reaches 60 minutes, so a
+    rotation risk on a watertight defence is not a certain clean sheet."""
+    nailed = _run(monkeypatch)
+    rotated = _run(monkeypatch, bands={1: (0.0, 0.0, 1.0), 2: (0.5, 0.0, 0.5), 3: (0.0, 0.0, 1.0)})
+
+    nailed_p2 = nailed[nailed["player_id"] == 2].iloc[0]["cs_probability"]
+    rotated_p2 = rotated[rotated["player_id"] == 2].iloc[0]["cs_probability"]
+    assert rotated_p2 == pytest.approx(nailed_p2 * 0.5)
+
+
+def test_cs_probability_combines_across_a_double_gameweek(monkeypatch):
+    """Player 1 plays TWICE in gameweek 2, so they get two chances at a clean
+    sheet — combined as P(at least one), matching how start_probability is
+    merged for the same player."""
+    out = _run(monkeypatch)
+    p1 = out[out["player_id"] == 1].iloc[0]
+    single_fixture_max = out[out["player_id"] != 1]["cs_probability"].max()
+    assert p1["cs_probability"] > single_fixture_max, (
+        "two fixtures must beat any single-fixture chance"
+    )
+    assert p1["cs_probability"] < 1.0

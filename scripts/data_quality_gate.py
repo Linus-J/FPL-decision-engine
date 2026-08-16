@@ -152,23 +152,7 @@ def run_dead_column_checks(season: str = "2026-27") -> list:
     from sqlalchemy import text
 
     from data.db import get_session
-    from data.quality_checks import QualityIssue, check_stat_column_not_dead
-
-    # cs_probability is a KNOWN unimplemented surface, not a regression:
-    # assemble.py computes each player's clean-sheet outcome per scenario
-    # (it feeds the BPS simulator) but never reduces it to a probability, so
-    # persist_projections leaves the column at its 0.0 default. The only
-    # consumer is scripts/plot_analysis.py's clean-sheet-by-team chart, which
-    # is consequently always blank. Reported as a warning with the reason
-    # rather than an error: failing the gate every week for a known display
-    # gap is how a gate gets ignored.
-    known_gaps = {
-        "cs_probability": (
-            "assemble.py never surfaces it (it has the per-scenario clean sheet "
-            "internally, for BPS) — plot_analysis.py's clean-sheet-by-team chart "
-            "is blank as a result. Display only; no decision reads it."
-        ),
-    }
+    from data.quality_checks import check_stat_column_not_dead
 
     issues = []
     db = get_session()
@@ -182,18 +166,9 @@ def run_dead_column_checks(season: str = "2026-27") -> list:
                     f"SELECT COUNT(*) FROM player_projections WHERE {column} != 0"
                 )
             ).scalar() or 0
-            found = check_stat_column_not_dead(
+            issues += check_stat_column_not_dead(
                 f"player_projections.{column}", int(nonzero), int(total)
             )
-            if found and column in known_gaps:
-                found = [
-                    QualityIssue(
-                        check=i.check, severity="warning",
-                        message=f"{i.message} KNOWN GAP: {known_gaps[column]}",
-                    )
-                    for i in found
-                ]
-            issues += found
     finally:
         db.close()
     return issues
