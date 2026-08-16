@@ -1,5 +1,17 @@
-"""Simulation leaderboard queries for the dashboard
-(plan/simulation-engine-v1.md)."""
+"""Simulation read-outs for the dashboard.
+
+Delegates to ``simulation/analysis.py`` (P2.5) rather than querying
+``sim_decision_log`` directly. That module is the season's read-out and
+already handles two things this page previously got wrong:
+
+- **Re-decided gameweeks.** A gameweek can be decided more than once (a
+  rerun, refining the squad as news lands), which appends another lineup
+  row. Summing them double-counted that week.
+- **The paired comparison.** Personas share a season, so the difference
+  against the baseline control carries far less variance than any absolute
+  total. Ranking on ``total_actual`` alone reads a season of shared luck as
+  if it were signal.
+"""
 
 from __future__ import annotations
 
@@ -7,33 +19,45 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from simulation.analysis import axis_effect, calibration, persona_season_summary
+
 
 def get_leaderboard(db: Session, season: str) -> pd.DataFrame:
-    """One row per persona: config params, cumulative actual_outcome
-    (summed across its 'lineup' rows), ranked highest-first."""
-    query = text("""
-        SELECT sm.id, sm.label, sm.risk_level,
-               sm.max_ownership_differential, sm.chip_aggressiveness,
-               COALESCE(SUM(sdl.actual_outcome), 0) AS cumulative_actual,
-               COUNT(sdl.actual_outcome) AS gws_scored
-        FROM sim_managers sm
-        LEFT JOIN sim_decision_log sdl
-            ON sdl.sim_manager_id = sm.id AND sdl.decision_type = 'lineup'
-        WHERE sm.season = :season
-        GROUP BY sm.id
-        ORDER BY cumulative_actual DESC
-    """)
-    df = pd.read_sql(query, db.bind, params={"season": season})
-    if not df.empty:
-        df["rank"] = df["cumulative_actual"].rank(ascending=False, method="min").astype(int)
-    return df
+    """One row per persona that has scored a gameweek, best first.
+
+    Reuses the caller's session so the whole page runs on one connection.
+    """
+    summary = persona_season_summary(season, db)
+    if summary.empty:
+        return summary
+    return summary.rename(columns={"sim_manager_id": "id"})
+
+
+def get_axis_effects(season: str, db: Session | None = None) -> pd.DataFrame:
+    """Per swept parameter, the value tried against what it scored."""
+    return axis_effect(season, db)
+
+
+def get_calibration(season: str, db: Session | None = None) -> pd.DataFrame:
+    """Per-gameweek predicted vs actual across the cohort."""
+    return calibration(season, db)
 
 
 def get_real_squad_cumulative_actual(db: Session) -> float:
-    row = db.execute(
+    """The real bot's own cumulative scored points.
+
+    Deduplicated per gameweek for the same reason as above -- the real
+    squad's log is re-written whenever a gameweek's decision is re-run, and
+    pre-season it was re-run several times.
+    """
+    rows = db.execute(
         text(
-            "SELECT COALESCE(SUM(actual_outcome), 0) FROM decision_log "
-            "WHERE decision_type = 'lineup'"
+            "SELECT gameweek, actual_outcome, created_at FROM decision_log "
+            "WHERE decision_type = 'lineup' AND actual_outcome IS NOT NULL "
+            "ORDER BY gameweek, created_at"
         )
-    ).fetchone()
-    return float(row[0]) if row else 0.0
+    ).fetchall()
+    if not rows:
+        return 0.0
+    latest_per_gw = {int(gw): float(outcome) for gw, outcome, _ in rows}
+    return float(sum(latest_per_gw.values()))

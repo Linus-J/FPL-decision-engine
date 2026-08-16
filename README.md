@@ -2,7 +2,7 @@
 
 A Fantasy Premier League system with three parts:
 
-1. **The autonomous agent** — each run ingests live data, projects player points via a distributional Monte-Carlo pipeline, optimises squad and transfers via integer linear programming, decides chip usage, submits decisions to the FPL API, and sends a Telegram summary — all without human input (submission is dry-run by default).
+1. **The decision engine** — each run ingests live data, projects player points via a distributional Monte-Carlo pipeline, optimises squad and transfers via integer linear programming, decides chip usage, records the decision, and sends a Telegram summary. Submission to FPL is **out of scope**: the bot decides, you enter the team.
 2. **A read-only dashboard** (Streamlit) — one place to check your live squad + projected points, fixtures/DGW exposure, injury news, past-decision history (projected vs actual), and the bot's next planned chip/transfer.
 3. **A live simulation engine** — 90 "shadow" managers, each varying one parameter of the decision engine, stepped forward through the exact same decision logic as the real bot every scheduled run. Never submitted to the real FPL app — it is the project's validation instrument, and the design is a one-factor-at-a-time experiment so a single season's results are interpretable.
 
@@ -82,8 +82,10 @@ agent/
   notifier.py        — Telegram notification: starting XI, bench in priority order, transfers
 
 simulation/
-  personas.py       — generates ~100 personas (risk_level, max_ownership_differential,
-                       chip_aggressiveness), seeded + persisted once per season
+  personas.py       — generates the 90-persona one-factor-at-a-time cohort
+                      (baseline control + 7 swept axes; see docs/decision-engine.md)
+  analysis.py       — season read-out: axis effects, paired deltas, calibration
+                      persisted once per season and never regenerated mid-season
   engine.py         — steps every persona forward one GW via decision_engine.run_for_persona,
                        each isolated by try/except so one failure can't affect another
 
