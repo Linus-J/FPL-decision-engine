@@ -153,11 +153,23 @@ def run_dead_column_checks(season: str = "2026-27") -> list:
 
     from data.db import get_session
     from data.quality_checks import check_stat_column_not_dead
+    from projection.pipeline import season_has_played_history
+
+    # Cold-start projections legitimately carry defaults for anything that
+    # needs a fixture lambda: projection/cold_start.py works from prior-season
+    # points per appearance and never computes one, so cs_probability is
+    # genuinely absent pre-season rather than broken. Checking it then would
+    # fail the gate every week of pre-season for a correct state — the same
+    # cry-wolf failure as running the gate before the ingest.
+    lambda_derived = {"cs_probability"}
+    in_season = season_has_played_history(season)
 
     issues = []
     db = get_session()
     try:
         for column in ("xpts", "xpts_var", "start_probability", "cs_probability"):
+            if column in lambda_derived and not in_season:
+                continue
             total = db.execute(
                 text("SELECT COUNT(*) FROM player_projections WHERE gameweek IS NOT NULL")
             ).scalar() or 0
