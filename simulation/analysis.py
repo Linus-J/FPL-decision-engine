@@ -31,12 +31,15 @@ weekly run already writes. Nothing feeds back into decisions.
 from __future__ import annotations
 
 import json
+import logging
 
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from data.db import get_session
+
+logger = logging.getLogger(__name__)
 
 _SUMMARY_COLUMNS = (
     "rank", "sim_manager_id", "label", "swept_axis", "gws_scored",
@@ -158,6 +161,17 @@ def axis_effect(season: str, db: Session | None = None) -> pd.DataFrame:
     for r in summary.itertuples():
         axis = r.swept_axis
         if axis == "baseline":
+            continue
+        if axis not in params.columns:
+            # A persona whose axis is not a column here — e.g. an axis renamed
+            # mid-season, or one added without extending _LINEUP_QUERY. Skip it
+            # loudly rather than raising: the rest of the cohort is still
+            # readable, and losing one axis beats losing the whole read-out.
+            logger.warning(
+                "persona %s sweeps %r, which is not a column in the lineup "
+                "history — excluded from the axis read-out",
+                r.label, axis,
+            )
             continue
         rows.append({
             "swept_axis": axis,

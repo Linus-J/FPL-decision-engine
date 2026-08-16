@@ -92,6 +92,19 @@ SWEPT_AXES: dict[str, list[float]] = {
 # design -- the cohort size follows from the experiment, not the reverse.
 SIM_COUNT = 1 + sum(len(values) for values in SWEPT_AXES.values())
 
+# Every swept axis must be a real SimManager field, because that is how the
+# season read-out finds a persona's setting: simulation/analysis.py indexes
+# the joined frame BY THE AXIS NAME. An axis that is not a column would raise
+# there — after a season of runs, when the data is finally being read. Assert
+# it at import instead, where it is free.
+_SIM_MANAGER_FIELDS = {c.name for c in SimManager.__table__.columns}
+_unknown = set(SWEPT_AXES) - _SIM_MANAGER_FIELDS
+if _unknown:
+    raise ValueError(
+        f"SWEPT_AXES names that are not SimManager columns: {sorted(_unknown)} — "
+        f"simulation/analysis.py could not read them back"
+    )
+
 
 def _defaults() -> dict:
     return {

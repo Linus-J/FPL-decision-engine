@@ -137,3 +137,28 @@ def test_load_or_create_personas_scoped_per_season(session):
     load_or_create_personas(session, "2027-28")
     assert session.query(SimManager).filter_by(season="2026-27").count() == SIM_COUNT
     assert session.query(SimManager).filter_by(season="2027-28").count() == SIM_COUNT
+
+
+def test_every_swept_axis_is_readable_by_the_season_analysis():
+    """The cross-module invariant that would only bite at the END of a season.
+
+    simulation/analysis.py finds a persona's setting by indexing the joined
+    lineup frame BY THE AXIS NAME, and that frame comes from _LINEUP_QUERY.
+    An axis that is a SimManager column but is NOT selected by that query
+    would raise months later, when the data is finally read — so tie the two
+    together here.
+    """
+    from simulation.analysis import _LINEUP_QUERY
+
+    for axis in SWEPT_AXES:
+        assert f"m.{axis}" in _LINEUP_QUERY, (
+            f"{axis} is swept but not selected by the analysis query"
+        )
+
+
+def test_swept_axes_are_real_simmanager_columns():
+    """Asserted at import too; pinned here so the reason survives."""
+    from data.models import SimManager
+
+    columns = {c.name for c in SimManager.__table__.columns}
+    assert set(SWEPT_AXES) <= columns
