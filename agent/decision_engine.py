@@ -384,7 +384,15 @@ def _run_decision_cycle(
         # came back None for all 15, and the dashboard squad page likewise.
         # Same shape and same table as the in-season path, so nothing
         # downstream needs to know which built them.
-        persist_projections(cs_projections)
+        # Only the REAL bot writes to player_projections. It is a shared
+        # table with no persona scoping, and get_latest_projections takes
+        # MAX(created_at) per (player, gameweek) — so a persona persisting its
+        # own cold-start frame decides what the real bot, the site export and
+        # the dashboard all read. Measured before this guard: 90 personas had
+        # written 235,720 rows across 83 batches, and whichever ran last owned
+        # the read.
+        if sim_manager_id is None:
+            persist_projections(cs_projections)
         xi_solution = optimise_starting_xi(
             solution.squad, cs_projections, next_gw, season=season, config=config
         )

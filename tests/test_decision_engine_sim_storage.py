@@ -290,3 +290,61 @@ def test_cold_start_branches_on_the_season_not_on_persisted_projections(monkeypa
 
     assert called.get("cold_start"), "pre-season must cold start regardless of persisted rows"
     assert not chip_calls, "a chip must never be evaluated before the season starts"
+
+
+def test_only_the_real_bot_persists_cold_start_projections(monkeypatch):
+    """player_projections is a SHARED table with no persona scoping, and
+    get_latest_projections takes MAX(created_at) per (player, gameweek) — so a
+    persona persisting its own cold-start frame decides what the real bot, the
+    site export and the dashboard all read. Measured before the guard: 90
+    personas had written 235,720 rows across 83 batches."""
+    import types
+
+    import pandas as pd
+
+    from agent import decision_engine as de
+
+    persisted: list[int | None] = []
+
+    def _setup(sim_manager_id):
+        monkeypatch.setattr(de, "season_has_played_history", lambda season: False)
+        monkeypatch.setattr(de, "_get_current_and_next_gw", lambda: (1, 1))
+        monkeypatch.setattr(de, "run_projections", lambda **k: None)
+        monkeypatch.setattr(de, "get_latest_projections", lambda **_: pd.DataFrame())
+        monkeypatch.setattr(de, "apply_departure_discount", lambda proj, ov: proj)
+        monkeypatch.setattr(de, "load_latest_ownership", lambda: pd.DataFrame())
+        monkeypatch.setattr(de, "load_p_leave_overrides", lambda: {})
+        monkeypatch.setattr(de, "_load_players", lambda: pd.DataFrame())
+        monkeypatch.setattr(de, "_load_squad_state",
+                            lambda *a, **k: de.SquadState([], 100.0, 1, 0.0, {}))
+        monkeypatch.setattr(
+            de, "persist_projections",
+            lambda df: persisted.append(sim_manager_id),
+        )
+        # build_initial_squad must SUCCEED — persist_projections runs after
+        # it — so the stop point is the next call instead.
+        monkeypatch.setattr(
+            de.cold_start, "build_initial_squad",
+            lambda season, players=None, config=None: (
+                types.SimpleNamespace(squad=pd.DataFrame({"id": [1]}), total_cost=100.0),
+                pd.DataFrame([{"player_id": 1, "gameweek": 1, "xpts": 5.0,
+                               "xpts_var": 1.0, "start_probability": 0.9}]),
+            ),
+        )
+        monkeypatch.setattr(
+            de, "optimise_starting_xi",
+            lambda *a, **k: (_ for _ in ()).throw(
+                RuntimeError("stop after the persist decision")
+            ),
+        )
+
+    for sim_id in (None, 42):
+        _setup(sim_id)
+        with pytest.raises(RuntimeError):
+            de._run_decision_cycle(
+                season="2026-27", dry_run=True, force_chip=None,
+                config=OPTIMISER, chip_timing=CHIP_TIMING, team_id=None,
+                sim_manager_id=sim_id, refresh_projections=False,
+            )
+
+    assert persisted == [None], "only the real bot may write the shared table"
