@@ -88,61 +88,177 @@ def load_prior_season_appearances(prior_season: str) -> pd.DataFrame:
         db.close()
 
 
+# ---------------------------------------------------------------------------
+# AVAILABILITY WEIGHTING (2026-08-16, plan/decision-engine-recovery-plan.md P0.1)
+#
+# Every prior-based tier below produces a PER-APPEARANCE value: ``ppg_played``
+# is ``points_when_played / appearances``, the peer buckets pool the same
+# per-appearance numbers, and the prior-league tier builds a per-MATCH figure
+# out of per-90 rates. ``projection/assemble.py`` — the in-season engine these
+# projections are supposed to be interchangeable with — instead produces a
+# scenario mean over minutes bands, which already includes the scenarios where
+# the player does not feature at all. The two were therefore on different
+# scales, and ``start_probability`` was only ever used as a hard >= 0.4 filter,
+# never as a multiplier: a rotation risk scoring 6/appearance was valued
+# exactly like a nailed player scoring 6/appearance.
+#
+# Fix: convert each tier's conditional (mean, variance) to the unconditional
+# pair via the standard mixture decomposition, so cold-start xpts means the
+# same thing as in-season xpts.
+# ---------------------------------------------------------------------------
+
+# Assumed appearance probability when a player has no usable availability
+# history anywhere (no PL record, no prior-league match, and their peer bucket
+# is too sparse to pool one). Matches NEW_PLAYER_START_PROB's spirit — a new
+# signing is assumed a probable but not certain regular — while staying a
+# distinct quantity: P(features at all) sits at or above P(starts).
+NEW_PLAYER_APPEARANCE_PROB = 0.7
+
+
+def appearance_probability(
+    gws_appeared: int, first_gw: int | None, season_last_gw: int
+) -> float:
+    """P(features in a given gameweek), measured over the window from the
+    player's FIRST appearance to the end of the prior season rather than the
+    whole season.
+
+    The window matters: a January arrival who then played every week is a
+    nailed player, not a 50%-availability one, and a whole-season denominator
+    would halve their projection. A player who instead played the first half
+    and was then injured out keeps a full-season window (their first
+    appearance is GW1), so genuine availability risk is still priced — which
+    is the asymmetry we want.
+
+    Known limitation: a player whose only appearances are a handful of late
+    gameweeks gets a short window and so a high probability off a small
+    sample. ``MIN_PRIOR_APPEARANCES`` is the existing guard — anyone below it
+    never reaches this tier at all.
+    """
+    if season_last_gw <= 0 or first_gw is None or gws_appeared <= 0:
+        return 0.0
+    window = season_last_gw - int(first_gw) + 1
+    if window <= 0:
+        return 0.0
+    return min(1.0, gws_appeared / window)
+
+
+def unconditional_moments(
+    p_appear: float, mean_played: float, var_played: float
+) -> tuple[float, float]:
+    """(E[X], Var(X)) for the unconditional per-gameweek points X, given the
+    per-APPEARANCE mean/variance and P(appears).
+
+    X is 0 when the player doesn't feature, so with A = 1{appears}:
+        E[X]   = p * mean_played
+        Var(X) = E[Var(X|A)] + Var(E[X|A])
+               = p * var_played + p*(1-p) * mean_played^2
+    The second term is what makes a rotation risk genuinely higher-variance
+    than a nailed player with the same per-appearance return — previously
+    invisible to the optimiser, which saw only the conditional variance.
+    """
+    p = min(1.0, max(0.0, float(p_appear)))
+    mean = p * mean_played
+    var = p * var_played + p * (1.0 - p) * mean_played ** 2
+    return mean, var
+
+
 def _price_bucket(position: str, now_cost: float) -> tuple[str, float]:
     return position, round(now_cost / _PRICE_BUCKET_ROUND) * _PRICE_BUCKET_ROUND
 
 
 def _build_peer_buckets(
     players: pd.DataFrame, prior_features: pd.DataFrame, raw_appearances: pd.DataFrame
-) -> dict[tuple[str, float], np.ndarray]:
+) -> tuple[dict[tuple[str, float], np.ndarray], dict[tuple[str, float], list[float]]]:
     """Pools real per-appearance points from ESTABLISHED players (>=
     MIN_PRIOR_APPEARANCES) into (position, price-bucket) groups -- the
     empirical distribution a new signing/promoted player with no top-
     flight history is assigned from, replacing the old synthetic linear
-    formula with actually-observed outcomes."""
+    formula with actually-observed outcomes.
+
+    Returns ``(points_buckets, appearance_buckets)``: the second pools the
+    same peers' own ``p_appear`` (P0.1). A new signing has no availability
+    history of their own, so "how often do players like this actually
+    feature" is the honest prior -- and it must come from the same peer
+    group as the points, or the two halves of ``unconditional_moments``
+    would describe different populations."""
     if raw_appearances.empty:
-        return {}
+        return {}, {}
     merged = players.merge(prior_features, left_on="id", right_on="player_id", how="left")
     merged["appearances"] = merged["appearances"].fillna(0).astype(int)
     established = merged[merged["appearances"] >= MIN_PRIOR_APPEARANCES]
-    pos_price = established.set_index("id")[["position", "now_cost"]]
+    cols = ["position", "now_cost"]
+    if "p_appear" in established.columns:
+        cols = cols + ["p_appear"]
+    pos_price = established.set_index("id")[cols]
 
     grouped = raw_appearances[raw_appearances["player_id"].isin(pos_price.index)]
     buckets: dict[tuple[str, float], list[float]] = {}
+    appear_buckets: dict[tuple[str, float], list[float]] = {}
     for pid, points in grouped.groupby("player_id")["total_points"]:
         position = pos_price.at[pid, "position"]
         now_cost = float(pos_price.at[pid, "now_cost"])
         key = _price_bucket(position, now_cost)
         buckets.setdefault(key, []).extend(points.tolist())
-    return {key: np.array(values) for key, values in buckets.items()}
+        if "p_appear" in pos_price.columns:
+            p_appear = pos_price.at[pid, "p_appear"]
+            if not pd.isna(p_appear):
+                appear_buckets.setdefault(key, []).append(float(p_appear))
+    return {key: np.array(values) for key, values in buckets.items()}, appear_buckets
 
 
 def _peer_bucket_stats(
-    position: str, now_cost: float, buckets: dict[tuple[str, float], np.ndarray]
-) -> tuple[float, float] | None:
-    """(mean, sample variance) pooled from real peers in the same
-    (position, price-bucket), widening to a position-only pool if the
-    exact price bucket is too sparse. ``None`` if even the position-only
+    position: str,
+    now_cost: float,
+    buckets: dict[tuple[str, float], np.ndarray],
+    appear_buckets: dict[tuple[str, float], list[float]] | None = None,
+) -> tuple[float, float, float] | None:
+    """(mean, sample variance, mean peer p_appear) pooled from real peers in
+    the same (position, price-bucket), widening to a position-only pool if
+    the exact price bucket is too sparse. ``None`` if even the position-only
     pool is too sparse -- caller falls back to the synthetic linear prior
-    (should be rare; every position has many established players)."""
-    pool = buckets.get(_price_bucket(position, now_cost), np.array([]))
+    (should be rare; every position has many established players).
+
+    The mean/variance are still PER-APPEARANCE; the third element is the
+    availability the caller pairs with them via ``unconditional_moments``.
+    Falls back to ``NEW_PLAYER_APPEARANCE_PROB`` when no peer availability
+    was poolable (e.g. a ``prior_features`` frame predating P0.1)."""
+    key = _price_bucket(position, now_cost)
+    pool = buckets.get(key, np.array([]))
+    appear_pool = list((appear_buckets or {}).get(key, []))
     if len(pool) < _MIN_BUCKET_SAMPLES:
         position_pools = [v for k, v in buckets.items() if k[0] == position]
         pool = np.concatenate(position_pools) if position_pools else np.array([])
+        appear_pool = [
+            p for k, v in (appear_buckets or {}).items() if k[0] == position for p in v
+        ]
     if len(pool) < _MIN_BUCKET_SAMPLES:
         return None
-    return float(pool.mean()), float(pool.var(ddof=1))
+    p_appear = (
+        float(np.mean(appear_pool)) if appear_pool else NEW_PLAYER_APPEARANCE_PROB
+    )
+    return float(pool.mean()), float(pool.var(ddof=1)), p_appear
 
 
 def load_prior_season_features(prior_season: str) -> pd.DataFrame:
     """Per-player prior-season summary (appearances, points-per-appearance,
-    start rate) from player_gw_stats. Keyed by players.id."""
+    start rate, appearance probability) from player_gw_stats. Keyed by
+    players.id.
+
+    ``p_appear`` (P0.1) is the availability weight ``project_cold_start``
+    multiplies the per-appearance figures by -- see
+    ``appearance_probability`` for the windowing rule. ``gws_appeared`` is
+    DISTINCT gameweeks rather than a row count so a genuine double-gameweek
+    (two rows, same gameweek) counts once; ``appearances`` deliberately
+    keeps its existing row-count meaning, since ``ppg_played`` divides by
+    it and ``load_prior_season_appearances`` pools per-fixture rows."""
     db = get_session()
     try:
         query = text("""
             SELECT
                 player_id,
                 SUM(CASE WHEN minutes > 0 THEN 1 ELSE 0 END) AS appearances,
+                COUNT(DISTINCT CASE WHEN minutes > 0 THEN gameweek END) AS gws_appeared,
+                MIN(CASE WHEN minutes > 0 THEN gameweek END) AS first_gw,
                 SUM(total_points) AS total_points,
                 AVG(CASE WHEN minutes >= 60 THEN 1.0 ELSE 0.0 END) AS starts_rate,
                 SUM(CASE WHEN minutes > 0 THEN total_points ELSE 0 END) AS points_when_played
@@ -153,13 +269,31 @@ def load_prior_season_features(prior_season: str) -> pd.DataFrame:
         df = pd.read_sql(query, db.bind, params={"season": prior_season})
         if df.empty:
             return pd.DataFrame(
-                columns=["player_id", "appearances", "ppg_played", "starts_rate"]
+                columns=[
+                    "player_id", "appearances", "ppg_played", "starts_rate", "p_appear",
+                ]
             )
+        season_last_gw = int(
+            db.execute(
+                text("SELECT MAX(gameweek) FROM player_gw_stats WHERE season = :season"),
+                {"season": prior_season},
+            ).scalar()
+            or 0
+        )
         df["appearances"] = df["appearances"].fillna(0).astype(int)
+        df["gws_appeared"] = df["gws_appeared"].fillna(0).astype(int)
         df["ppg_played"] = (
             df["points_when_played"] / df["appearances"].clip(lower=1)
         ).where(df["appearances"] > 0, 0.0)
-        return df[["player_id", "appearances", "ppg_played", "starts_rate"]]
+        df["p_appear"] = [
+            appearance_probability(
+                int(gws), None if pd.isna(first) else int(first), season_last_gw
+            )
+            for gws, first in zip(df["gws_appeared"], df["first_gw"], strict=True)
+        ]
+        return df[
+            ["player_id", "appearances", "ppg_played", "starts_rate", "p_appear"]
+        ]
     finally:
         db.close()
 
@@ -410,15 +544,24 @@ def _prior_league_projection(position: str, pl_row: dict) -> tuple[float, float,
     factor = PRIOR_LEAGUE.translation_factor(pl_row["league"])
     translated_npxg90 = pl_row["npxg90"] * factor
     translated_xa90 = pl_row["xa90"] * factor
-    xpts = max(
+    # Per-MATCH (conditional on featuring): per-90 rates plus the appearance
+    # points a player only collects by playing.
+    xpts_played = max(
         _MIN_XPTS,
         expected_goal_points(translated_npxg90, position)
         + expected_assist_points(translated_xa90)
         + SCORING.points_full_appearance,
     )
-    xpts_var = PRIOR_LEAGUE.translation_variance(pl_row["league"])
+    var_played = PRIOR_LEAGUE.translation_variance(pl_row["league"])
+    season_matches = _season_length(pl_row["league"])
+    # P0.1: matches played out of their league's own season length -- the
+    # prior-league analogue of ``p_appear``. Unlike the PL tier there is no
+    # per-gameweek record to window by first appearance, so a mid-season
+    # arrival abroad is under-credited here; flagged, not solved.
+    p_appear = min(1.0, float(pl_row.get("matches") or 0) / max(1, season_matches))
+    xpts, xpts_var = unconditional_moments(p_appear, xpts_played, var_played)
     prior_minutes_share = min(
-        1.0, pl_row["minutes"] / max(1, _season_length(pl_row["league"]) * 90)
+        1.0, pl_row["minutes"] / max(1, season_matches * 90)
     )
     start_prob = (
         (1 - _PRIOR_LEAGUE_START_PROB_WEIGHT) * NEW_PLAYER_START_PROB
@@ -479,30 +622,50 @@ def project_cold_start(
     )
     merged["appearances"] = merged["appearances"].fillna(0).astype(int)
 
-    peer_buckets = _build_peer_buckets(players, prior_features, raw_appearances)
+    peer_buckets, peer_appear_buckets = _build_peer_buckets(
+        players, prior_features, raw_appearances
+    )
     own_appearances = raw_appearances.groupby("player_id")["total_points"]
+    # A prior_features frame predating P0.1 has no p_appear column; treat that
+    # as "no availability information" (weight 1.0), which reproduces the old
+    # per-appearance behaviour exactly rather than silently deflating.
+    has_p_appear = "p_appear" in merged.columns
 
     rows: list[dict] = []
     for r in merged.itertuples():
         has_prior = r.appearances >= MIN_PRIOR_APPEARANCES
         if has_prior:
-            xpts = max(_MIN_XPTS, float(r.ppg_played))
+            mean_played = max(_MIN_XPTS, float(r.ppg_played))
             if r.id in own_appearances.groups:
                 own_points = own_appearances.get_group(r.id)
-                xpts_var = float(own_points.var(ddof=1)) if len(own_points) > 1 else 0.0
+                var_played = float(own_points.var(ddof=1)) if len(own_points) > 1 else 0.0
             else:
-                xpts_var = 0.0
+                var_played = 0.0
+            p_appear = 1.0
+            if has_p_appear and not pd.isna(r.p_appear):
+                p_appear = float(r.p_appear)
+            # P0.1: the floor applies to the per-APPEARANCE mean ("when he
+            # plays he is worth at least this"), before availability scales
+            # it -- flooring the unconditional value instead would erase the
+            # very distinction this change exists to make.
+            xpts, xpts_var = unconditional_moments(p_appear, mean_played, var_played)
             start_prob = float(r.starts_rate)
             source = "prior_season"
         else:
-            peer_stats = _peer_bucket_stats(r.position, float(r.now_cost), peer_buckets)
+            peer_stats = _peer_bucket_stats(
+                r.position, float(r.now_cost), peer_buckets, peer_appear_buckets
+            )
             if peer_stats is not None:
-                fallback_xpts = max(_MIN_XPTS, peer_stats[0])
-                fallback_xpts_var = peer_stats[1]
+                fallback_xpts, fallback_xpts_var = unconditional_moments(
+                    peer_stats[2], max(_MIN_XPTS, peer_stats[0]), peer_stats[1]
+                )
                 fallback_source = "peer_bucket_prior"
             else:
-                fallback_xpts = _price_prior(r.position, float(r.now_cost))
-                fallback_xpts_var = _FALLBACK_VAR
+                fallback_xpts, fallback_xpts_var = unconditional_moments(
+                    NEW_PLAYER_APPEARANCE_PROB,
+                    _price_prior(r.position, float(r.now_cost)),
+                    _FALLBACK_VAR,
+                )
                 fallback_source = "position_price_prior"
 
             code = getattr(r, "code", None)

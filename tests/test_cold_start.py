@@ -215,8 +215,14 @@ def test_sparse_position_falls_back_to_synthetic_prior(temp_session):
     row = proj[proj["name"] == "NewGK"].iloc[0]
 
     assert row["proj_source"] == "position_price_prior"
-    assert row["xpts"] == pytest.approx(cs._price_prior("GKP", 4.5))
-    assert row["xpts_var"] == pytest.approx(cs._FALLBACK_VAR)
+    # P0.1: the synthetic prior is a per-APPEARANCE figure, so it is weighted
+    # by the assumed availability of a player we know nothing about before it
+    # becomes a per-gameweek expectation.
+    expected_xpts, expected_var = cs.unconditional_moments(
+        cs.NEW_PLAYER_APPEARANCE_PROB, cs._price_prior("GKP", 4.5), cs._FALLBACK_VAR
+    )
+    assert row["xpts"] == pytest.approx(expected_xpts)
+    assert row["xpts_var"] == pytest.approx(expected_var)
 
 
 def test_new_signing_with_matched_prior_league_row_gets_prior_league_prior(temp_session):
@@ -234,10 +240,20 @@ def test_new_signing_with_matched_prior_league_row_gets_prior_league_prior(temp_
     row = proj[proj["name"] == "NewSign"].iloc[0]
 
     assert row["proj_source"] == "prior_league_prior"
-    assert row["xpts"] > cs._price_prior("FWD", 6.5)
-    assert row["xpts_var"] == pytest.approx(
-        cs.PRIOR_LEAGUE.translation_variance("ENG-Championship")
+    # P0.1: both sides of this comparison are now per-gameweek expectations,
+    # not per-appearance figures -- the prior-league tier is weighted by
+    # matches/season-length (34/46 for the Championship), the synthetic
+    # fallback by the unknown-player default.
+    fallback_xpts, _ = cs.unconditional_moments(
+        cs.NEW_PLAYER_APPEARANCE_PROB, cs._price_prior("FWD", 6.5), cs._FALLBACK_VAR
     )
+    assert row["xpts"] > fallback_xpts
+    expected_xpts, expected_var = cs.unconditional_moments(
+        34 / 46,
+        row["xpts"] / (34 / 46),  # back out the per-match mean this tier built
+        cs.PRIOR_LEAGUE.translation_variance("ENG-Championship"),
+    )
+    assert row["xpts_var"] == pytest.approx(expected_var)
     # nailed-on Championship starter (3000/34/90 ~= 0.98 share) blended 50/50
     # with the flat 0.6 default -> higher than the flat default alone.
     assert row["start_probability"] > cs.NEW_PLAYER_START_PROB
@@ -752,3 +768,119 @@ def test_build_initial_squad_regression_single_gw_config_matches_pre_feature_a_s
     )
     assert (projections["gameweek"] == 1).all()
     assert projections["player_id"].nunique() == len(projections)  # exactly one row per player
+
+
+# --- P0.1 availability weighting (2026-08-16,
+# plan/decision-engine-recovery-plan.md) -----------------------------------
+#
+# Cold-start xpts used to be points-per-APPEARANCE while the in-season
+# engine (projection/assemble.py) produces an unconditional scenario mean,
+# so a rotation risk scoring 6/appearance was valued identically to a nailed
+# player scoring 6/appearance. These pin the corrected semantics.
+
+
+def test_appearance_probability_windows_from_first_appearance():
+    """A January arrival who then played every week is a NAILED player, not
+    a 50%-availability one -- the denominator is the window from their first
+    appearance to the end of the season, not the whole season."""
+    # played GW20-38 inclusive (19 GWs) having arrived in January
+    assert cs.appearance_probability(19, 20, 38) == pytest.approx(1.0)
+    # played GW1-19 then injured out for the rest -- genuine availability risk
+    assert cs.appearance_probability(19, 1, 38) == pytest.approx(19 / 38)
+    # ever-present
+    assert cs.appearance_probability(38, 1, 38) == pytest.approx(1.0)
+
+
+def test_appearance_probability_degrades_safely():
+    assert cs.appearance_probability(0, None, 38) == 0.0
+    assert cs.appearance_probability(5, 1, 0) == 0.0
+    # more appearance-gameweeks than the window can hold: clamped, never > 1
+    assert cs.appearance_probability(10, 35, 38) == pytest.approx(1.0)
+
+
+def test_unconditional_moments_matches_the_mixture_decomposition():
+    # E[X] = p*m ; Var(X) = p*v + p(1-p)*m^2
+    mean, var = cs.unconditional_moments(0.5, 6.0, 4.0)
+    assert mean == pytest.approx(3.0)
+    assert var == pytest.approx(0.5 * 4.0 + 0.5 * 0.5 * 36.0)
+
+
+def test_unconditional_moments_is_identity_for_an_ever_present_player():
+    """p=1 must leave both moments untouched -- the whole point is that a
+    nailed player is unaffected and only availability risk is priced."""
+    mean, var = cs.unconditional_moments(1.0, 6.0, 4.0)
+    assert mean == pytest.approx(6.0)
+    assert var == pytest.approx(4.0)
+
+
+def test_unconditional_moments_adds_variance_for_a_rotation_risk():
+    """Same per-appearance return, different availability: the rotation risk
+    must come out with a LOWER mean and a HIGHER variance. Previously the
+    optimiser could see neither difference."""
+    nailed_mean, nailed_var = cs.unconditional_moments(1.0, 6.0, 4.0)
+    rotated_mean, rotated_var = cs.unconditional_moments(0.5, 6.0, 4.0)
+    assert rotated_mean < nailed_mean
+    assert rotated_var > nailed_var
+
+
+def test_load_prior_season_features_emits_p_appear(temp_session):
+    ids = _seed(temp_session)
+    feats = cs.load_prior_season_features("2025-26")
+    row = feats[feats["player_id"] == ids["p1"]].iloc[0]
+    # _seed gives p1 GW1-10 of a 10-gameweek season: ever-present
+    assert row["p_appear"] == pytest.approx(1.0)
+
+
+def test_rotation_risk_is_discounted_against_an_equal_per_appearance_peer(temp_session):
+    """The headline behaviour change: two players with IDENTICAL points per
+    appearance, one ever-present and one playing half the time, must no
+    longer project the same."""
+    s = temp_session()
+    try:
+        s.add(Player(fpl_id=1, code=1, first_name="A", second_name="A", web_name="Nailed",
+                     team_id=1, position="MID", now_cost=8.0, status="a"))
+        s.add(Player(fpl_id=2, code=2, first_name="B", second_name="B", web_name="Rotated",
+                     team_id=1, position="MID", now_cost=8.0, status="a"))
+        s.commit()
+        nailed = s.query(Player.id).filter_by(fpl_id=1).scalar()
+        rotated = s.query(Player.id).filter_by(fpl_id=2).scalar()
+        for gw in range(1, 21):
+            s.add(PlayerGameweekStats(player_id=nailed, gameweek=gw, season="2025-26",
+                                      minutes=90, total_points=6))
+            # same 6 pts when he plays, but only every other gameweek.
+            # Starts at GW1 so his window is the full 20 -- starting at GW2
+            # would (correctly) give a 19-gameweek window instead.
+            s.add(PlayerGameweekStats(
+                player_id=rotated, gameweek=gw, season="2025-26",
+                minutes=90 if gw % 2 == 1 else 0, total_points=6 if gw % 2 == 1 else 0,
+            ))
+        s.commit()
+    finally:
+        s.close()
+
+    players = cs.load_current_players()
+    prior = cs.load_prior_season_features("2025-26")
+    raw = cs.load_prior_season_appearances("2025-26")
+    proj = cs.project_cold_start(players, prior, raw_appearances=raw)
+
+    by_name = players.set_index("id")["web_name"].to_dict()
+    proj["name"] = proj["player_id"].map(by_name)
+    nailed_row = proj[proj["name"] == "Nailed"].iloc[0]
+    rotated_row = proj[proj["name"] == "Rotated"].iloc[0]
+
+    assert nailed_row["proj_source"] == rotated_row["proj_source"] == "prior_season"
+    assert nailed_row["xpts"] == pytest.approx(6.0)          # ever-present: unchanged
+    assert rotated_row["xpts"] == pytest.approx(3.0)         # 10 of 20 gameweeks
+    assert rotated_row["xpts_var"] > nailed_row["xpts_var"]  # and genuinely riskier
+
+
+def test_project_cold_start_without_p_appear_column_is_unweighted(temp_session):
+    """Backwards compatibility: a prior_features frame predating P0.1 must
+    reproduce the old per-appearance behaviour exactly, not silently deflate
+    every projection by a default weight."""
+    ids = _seed(temp_session)
+    players = cs.load_current_players()
+    prior = cs.load_prior_season_features("2025-26").drop(columns=["p_appear"])
+    proj = cs.project_cold_start(players, prior)
+    row = proj[proj["player_id"] == ids["p1"]].iloc[0]
+    assert row["xpts"] == pytest.approx(6.0)

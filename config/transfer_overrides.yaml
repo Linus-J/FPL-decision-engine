@@ -1,25 +1,117 @@
-# Manual transfer/rumour overrides (hand-edited, version-controlled).
-# See docs/superpowers/specs/2026-08-10-cold-start-lookahead-and-transfer-overrides-design.md
-#
-# `code` is the player's/team's stable FPL `code` (NOT `id` -- `id` is
-# reassigned per season and doesn't survive a transfer; `code` does).
-#
-# confirmed: a signing/move you know about that FPL's own team_id hasn't
-# caught up to yet. Corrects team_id for squad-building (max-3-per-club,
-# fixture lookahead) until FPL's bootstrap data itself updates.
-#   - code: 123456
-#     team_id: 1
-#     reason: "Signed from Newcastle, not yet reflected in FPL team_id"
-#     as_of: "2026-08-10"
-#
-# rumoured: a not-yet-confirmed departure. Discounts (does not exclude) the
-# player's projected points by (1 - p_leave), and logs a warning if the
-# optimiser still picks them into a squad.
-#   - code: 234567
-#     p_leave: 0.35
-#     reason: "Strongly linked to a January move per <source>"
-#     as_of: "2026-08-10"
-
-confirmed: []
-
+confirmed:
+- code: 606775
+  team_id: 3
+  reason: 'Transfermarkt: transferred to AFC Bournemouth'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 495145
+  team_id: 3
+  reason: 'Transfermarkt: transferred to AFC Bournemouth'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 612534
+  team_id: 4
+  reason: 'Transfermarkt: transferred to Brentford FC'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 622536
+  team_id: 4
+  reason: 'Transfermarkt: transferred to Brentford FC'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 606689
+  team_id: 4
+  reason: 'Transfermarkt: transferred to Brentford FC'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 503300
+  team_id: 4
+  reason: 'Transfermarkt: transferred to Brentford FC'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 492368
+  team_id: 13
+  reason: 'Transfermarkt: transferred to Leeds United'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 433952
+  team_id: 13
+  reason: 'Transfermarkt: transferred to Leeds United'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 211975
+  team_id: 15
+  reason: 'Transfermarkt: transferred to Manchester City'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 461537
+  team_id: 16
+  reason: 'Transfermarkt: transferred to Manchester United'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 209243
+  team_id: 16
+  reason: 'Transfermarkt: transferred to Manchester United'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 497894
+  team_id: 16
+  reason: 'Transfermarkt: transferred to Manchester United'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 553746
+  team_id: 17
+  reason: 'Transfermarkt: transferred to Newcastle United'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 441024
+  team_id: 17
+  reason: 'Transfermarkt: transferred to Newcastle United'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 461484
+  team_id: 17
+  reason: 'Transfermarkt: transferred to Newcastle United'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 451432
+  team_id: 18
+  reason: 'Transfermarkt: transferred to Nottingham Forest'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 220684
+  team_id: 20
+  reason: 'Transfermarkt: transferred to Sunderland AFC'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 223336
+  team_id: 20
+  reason: 'Transfermarkt: transferred to Sunderland AFC'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 465702
+  team_id: 20
+  reason: 'Transfermarkt: transferred to Sunderland AFC'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 492066
+  team_id: 20
+  reason: 'Transfermarkt: transferred to Sunderland AFC'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 171422
+  team_id: 20
+  reason: 'Transfermarkt: transferred to Sunderland AFC'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 552427
+  team_id: 19
+  reason: 'Transfermarkt: transferred to Tottenham Hotspur'
+  as_of: '2026-08-10'
+  source: transfermarkt
+- code: 235674
+  team_id: 19
+  reason: 'Transfermarkt: transferred to Tottenham Hotspur'
+  as_of: '2026-08-10'
+  source: transfermarkt
 rumoured: []
