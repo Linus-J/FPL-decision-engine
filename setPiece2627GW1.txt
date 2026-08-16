@@ -1,0 +1,21 @@
+Team | Penalties | Free Kicks | Corners
+Arsenal | Saka, Gyokeres, Odegaard | Rice, Saka | Rice, Saka
+Aston Villa | Buendia, Watkins | Buendia, Gomes | Cash, McGinn, Gomes
+Bournemouth | Kluivert, Tavernier, Kroupi*, Evanilson | Tavernier, Kluivert, Scott | Tavernier, Scott, Kluivert
+Brentford | Thiago | Lewis-Potter, Jensen, Damsgaard  | Jensen, Damsgaard, Janelt, Ouattara
+Brighton | Groß | De Cuyper, Ayari, Groß | Groß, Kadioglu, Minteh, De Cuyper
+Chelsea | Palmer, Pedro, Enzo | James, Enzo, Palmer, Neto  | James, Neto, Enzo
+Coventry City | Haji Wright  | Torp, Grimes, Rudoni  | Torp, Rudoni, Grimes
+Crystal Palace | Mateta, Sarr | Pino, Wharton, Devenney  | Wharton, Pino, Kamada, Hughes
+Everton | Ndiaye, Barry, Beto | Dewsbury Hall, Garner | Dewsbury Hall, Garner
+Fulham | Iwobi, Garcia, Robinson  | Iwobi | Iwobi, Bobb
+Hull City | McBurnie  | Giles, Belloumi, Slater  | Giles, Belloumi, Slater
+Ipswich Town | Clarke, Philogene, Hirst  | Nunez, Davis, Lukic  | Nunez, Clarke, Davis
+Leeds United | Dominic Calvert-Lewin, Nmecha  | Stach, Wilson, Longstaff | Wilson, Stach, Longstaff
+Liverpool | Isak, Szoboszlai, Gakpo | Szoboszlai, Wirtz | Szoboszlai, Wirtz, Mac Allister
+Man City | Haaland, Semenyo, Marmoush | Cherki, Reijnders, Foden, Marmoush | Cherki, Foden, Reijnders, Marmoush
+Man United | Fernandes, Mbeumo | Fernandes, Mbeumo | Fernandes, Mbeumo, Shaw
+Newcastle United | Woltemate, Osula, Wissa | Hall, Schär | Hall, Barnes, Schar
+Nottingham Forest | Gibbs-White, Wood | Gibbs-White, Murillo | Williams, Hutchinson, Ndoye
+Sunderland | Diarra, Le Fee | Xhaka, Le Fee | Xhaka, Hume, Le Fee
+Spurs | Solanke, Kudus, Richarlison  | Porro, Simons*, Kudus, Tonali | Porro, Kudus 

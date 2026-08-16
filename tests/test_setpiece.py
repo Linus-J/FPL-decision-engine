@@ -181,3 +181,94 @@ def test_write_scopes_roles_per_season(session):
     write_setpiece_roles("2025-26", [{"player_id": 1, "is_penalty_taker": True}])
     write_setpiece_roles("2026-27", [{"player_id": 1, "is_penalty_taker": False}])
     assert session.query(PlayerSetPieceRole).count() == 2
+
+
+# --- depth-chart parsing (2026-08-16) ------------------------------------
+
+
+def test_parse_reads_order_from_position_in_the_cell():
+    """Order is the whole point: the first-choice penalty taker is worth
+    several times the third-choice one, and a boolean cannot say so."""
+    from data.ingestors.setpiece import parse_setpiece_table
+
+    rows = parse_setpiece_table(
+        "Team | Penalties | Free Kicks | Corners\n"
+        "Arsenal | Saka, Gyokeres, Odegaard | Rice, Saka | Rice, Saka\n"
+    )
+    by_name = {r["player"]: r for r in rows}
+    assert by_name["Saka"]["penalty_order"] == 1
+    assert by_name["Gyokeres"]["penalty_order"] == 2
+    assert by_name["Odegaard"]["penalty_order"] == 3
+    # a player can hold several duties at different depths
+    assert by_name["Saka"]["freekick_order"] == 2
+    assert by_name["Rice"]["corner_order"] == 1
+    assert by_name["Rice"]["penalty_order"] is None
+
+
+def test_parse_maps_published_team_names_onto_fpl_names():
+    from data.ingestors.setpiece import parse_setpiece_table
+
+    rows = parse_setpiece_table("Man United | Fernandes | Fernandes | Fernandes")
+    assert rows[0]["team"] == "Man Utd"
+
+
+def test_parse_flags_uncertain_names_without_dropping_them():
+    """An asterisk marks a doubt in the source. Silently trusting it is how a
+    phantom taker reaches projections; silently dropping it loses a real
+    taker. Record and report."""
+    from data.ingestors.setpiece import parse_setpiece_table
+
+    rows = parse_setpiece_table("Bournemouth | Kluivert, Kroupi* | | ")
+    by_name = {r["player"]: r for r in rows}
+    assert by_name["Kroupi"]["uncertain"] is True
+    assert by_name["Kroupi"]["penalty_order"] == 2
+    assert by_name["Kluivert"]["uncertain"] is False
+
+
+def test_parse_ignores_the_header_and_blank_cells():
+    from data.ingestors.setpiece import parse_setpiece_table
+
+    rows = parse_setpiece_table(
+        "Team | Penalties | Free Kicks | Corners\n"
+        "\n"
+        "Fulham | Iwobi |  | Iwobi, Bobb\n"
+    )
+    assert {r["player"] for r in rows} == {"Iwobi", "Bobb"}
+
+
+def test_penalty_value_decays_with_depth_chart_position():
+    from data.ingestors.setpiece import penalty_xg_for_order
+
+    assert penalty_xg_for_order(1) > penalty_xg_for_order(2) > penalty_xg_for_order(3)
+    assert penalty_xg_for_order(None) == 0.0
+    assert penalty_xg_for_order(9) == 0.0
+
+
+def test_depth_chart_roles_do_not_claim_key_passes():
+    """A published taker list has no opinion on key passes. Emitting 0.0
+    would clobber a real value from the Understat/FBref path, because the
+    write is a partial update keyed on what the source actually knows."""
+    from data.ingestors.setpiece import roles_from_depth_chart
+
+    roles = roles_from_depth_chart([
+        {"player": "A", "team": "Arsenal", "uncertain": False,
+         "penalty_order": 1, "freekick_order": None, "corner_order": None},
+    ])
+    assert "key_passes_per_game" not in roles[0]
+    assert roles[0]["is_penalty_taker"] is True
+    assert roles[0]["is_set_piece_taker"] is False
+
+
+def test_partial_write_preserves_fields_the_source_did_not_set(session):
+    """Two sources feed this table with different knowledge. A blanket write
+    would have each silently erase the other's contribution."""
+    write_setpiece_roles("2026-27", [
+        {"player_id": 1, "key_passes_per_game": 2.5, "is_set_piece_taker": True},
+    ])
+    write_setpiece_roles("2026-27", [
+        {"player_id": 1, "penalty_order": 1, "is_penalty_taker": True},
+    ])
+
+    row = session.query(PlayerSetPieceRole).one()
+    assert row.penalty_order == 1
+    assert row.key_passes_per_game == pytest.approx(2.5), "must not be clobbered"

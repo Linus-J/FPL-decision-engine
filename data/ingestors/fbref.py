@@ -268,6 +268,11 @@ _KNOWN_ALIASES: dict[str, str] = {
     "max kilman": "maximilian kilman",
     "dan ballard": "daniel ballard",
     "fernando lopez": "fer lopez gonzalez",
+    # 2026-08-16, from the allaboutfpl set-piece depth chart: both are
+    # single-letter misspellings in the source, each verified against
+    # the stored record before being added here.
+    "woltemate": "woltemade",
+    "devenney": "devenny",
 }
 
 

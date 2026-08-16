@@ -388,7 +388,32 @@ def load_defcon_events(season: str) -> pd.DataFrame:
 _ROLLING_WINDOW = 5
 
 
-def _build_rolling_features(history: pd.DataFrame, defcon_events: pd.DataFrame) -> pd.DataFrame:
+def load_penalty_duty(season: str) -> dict[int, float]:
+    """player_id -> expected penalty GOAL value per game, for a season whose
+    taker duty is known (2026-08-16).
+
+    Empty dict when no depth chart has been loaded, which is the signal
+    ``_build_rolling_features`` uses to keep its previous behaviour.
+    """
+    db = get_session()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT player_id, penalty_xg_per_game FROM player_setpiece_roles "
+                "WHERE season = :season AND penalty_order IS NOT NULL"
+            ),
+            {"season": season},
+        ).fetchall()
+    finally:
+        db.close()
+    return {int(pid): float(xg or 0.0) for pid, xg in rows}
+
+
+def _build_rolling_features(
+    history: pd.DataFrame,
+    defcon_events: pd.DataFrame,
+    penalty_duty: dict[int, float] | None = None,
+) -> pd.DataFrame:
     """Per player, as-of ``history`` (rows with ``gameweek < target_gw``):
     leakage-free (``shift(1)`` rolling) rates feeding the components — same
     pattern as ``points_model._build_features``, over the raw columns the MC
@@ -410,7 +435,8 @@ def _build_rolling_features(history: pd.DataFrame, defcon_events: pd.DataFrame) 
 
     grp = df.groupby("player_id")
     rate_cols = {
-        "xg": "goal_weight", "xa": "assist_weight", "key_passes": "key_pass_rate",
+        "xg": "goal_weight", "npxg": "npxg_rate",
+        "xa": "assist_weight", "key_passes": "key_pass_rate",
         "yellow_cards": "yellow_rate", "red_cards": "red_rate",
         "cbit": "cbit_rate", "cbirt": "cbirt_rate", "dribbles": "dribble_rate",
     }
@@ -422,6 +448,25 @@ def _build_rolling_features(history: pd.DataFrame, defcon_events: pd.DataFrame) 
         )
 
     last = df.groupby("player_id").last()
+
+    # Penalty duty (2026-08-16). `goal_weight` is the share by which a team's
+    # drawn goals get attributed to each player, in expected-goals-per-game
+    # units. Deriving it from rolling `xg` bakes in whatever penalties a
+    # player happened to take in the PAST, which is wrong in both directions
+    # across a transfer window: Isak's Newcastle penalties followed him to
+    # Liverpool in the data, and Woltemade inherited Newcastle's duty with no
+    # history to show for it.
+    #
+    # When the season's duty is known, decompose instead:
+    #     goal_weight = rolling non-penalty xG  +  this season's penalty duty
+    # which is exact rather than a correction -- npxg and xg differ by
+    # precisely the penalty component. With no depth chart loaded the frame
+    # keeps its previous `xg` basis, so historical backtests are unaffected.
+    if penalty_duty:
+        last["goal_weight"] = last["npxg_rate"].fillna(0.0) + [
+            penalty_duty.get(int(pid), 0.0) for pid in last.index
+        ]
+
     last["defcon_rate"] = np.where(
         last["position"] == "DEF", last["cbit_rate"], last["cbirt_rate"]
     )
@@ -497,7 +542,9 @@ def assemble_gw_projections(
     if persist_samples and not season:
         raise ValueError("persist_samples=True needs season (for the ProjectionSample rows)")
 
-    feat = _build_rolling_features(history, defcon_events)
+    feat = _build_rolling_features(
+        history, defcon_events, penalty_duty=load_penalty_duty(season) if season else None
+    )
     bands = predict_minutes_bands(history, minutes_model)
 
     rng = np.random.default_rng(seed)

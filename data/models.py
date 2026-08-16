@@ -536,6 +536,17 @@ class PlayerSetPieceRole(Base):
     penalty_xg_per_game: Mapped[float] = mapped_column(Float, default=0.0)
     is_set_piece_taker: Mapped[bool] = mapped_column(Boolean, default=False)
     key_passes_per_game: Mapped[float] = mapped_column(Float, default=0.0)
+    # Depth-chart position within the team, 1 = primary (2026-08-16). A
+    # published taker list carries ORDER, which is the part that actually
+    # matters -- the first-choice penalty taker is worth several times the
+    # third-choice one, and a boolean cannot express that. NULL means "not on
+    # this duty". Inferring order from prior-season attempt share was the
+    # original plan; a published list is both more accurate and survives the
+    # summer transfer window, which attempt share does not.
+    penalty_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    freekick_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    corner_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(String, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
