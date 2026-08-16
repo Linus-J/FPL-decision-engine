@@ -57,6 +57,25 @@ def roll_forward_free_transfers(
     return min(trules.max_banked_free_transfers, max(trules.free_transfers_per_gw, carried))
 
 
+def selling_price(purchase_price: float, now_cost: float) -> float:
+    """What FPL actually pays you for a player (P1.6, 2026-08-16).
+
+    You keep only HALF of any price RISE since you bought them, rounded DOWN
+    to the nearest £0.1m; a price FALL is taken in full. Nothing in this
+    project modelled that -- ``agent/fpl_client.py`` read ``selling_price``
+    off the API purely to build a submission payload, and the optimiser's
+    affordability constraint used ``now_cost`` for everything, so it believed
+    an appreciated squad was worth more than it could actually be sold for.
+
+    Works in integer tenths because prices are quoted in £0.1m and float
+    arithmetic on 0.1s does not round the way FPL's does."""
+    purchase_tenths = round(purchase_price * 10)
+    now_tenths = round(now_cost * 10)
+    if now_tenths <= purchase_tenths:
+        return now_tenths / 10
+    return (purchase_tenths + (now_tenths - purchase_tenths) // 2) / 10
+
+
 def _squad_xpts(squad_ids: list[int], projections: pd.DataFrame, horizon: int) -> float:
     gws = sorted(projections["gameweek"].unique())[:horizon]
     subset = projections[
@@ -82,6 +101,8 @@ def evaluate_transfers(
     ownership: pd.DataFrame | None = None,
     config: OptimiserConfig | None = None,
     transfer_rules: TransferRules | None = None,
+    bank: float | None = None,
+    purchase_prices: dict[int, float] | None = None,
 ) -> TransferPlan:
     """``ownership`` (P3-3, optional, default None): see ``optimise_squad``'s
     docstring — ``None`` (the current live reality — EO sampling can't
@@ -90,7 +111,17 @@ def evaluate_transfers(
 
     ``config``/``transfer_rules`` (optional): see ``optimise_squad``'s
     docstring — overrides the global ``OPTIMISER``/``TRANSFERS`` for this
-    call only; ``None`` is byte-for-byte identical to today's behaviour."""
+    call only; ``None`` is byte-for-byte identical to today's behaviour.
+
+    ``bank``/``purchase_prices`` (P1.6, optional): real FPL affordability.
+    Money is tracked as a per-gameweek bank balance — selling credits the
+    player's SELLING price (``selling_price``: half the rise, all of the
+    fall), buying debits their current price, and the balance may never go
+    negative. Omitting both is exactly equivalent to the previous
+    ``Σ now_cost ≤ budget`` constraint: with no purchase prices every
+    player's selling price is their current price, and the bank balance is
+    then ``budget − Σ now_cost`` by construction, so ``bank ≥ 0`` is the same
+    inequality. It is a generalisation, not a second code path."""
     cfg = config or OPTIMISER
     trules = transfer_rules or TRANSFERS
     horizon = cfg.transfer_planning_horizon_gws
@@ -108,7 +139,12 @@ def evaluate_transfers(
         )
         free_transfers = trules.free_transfers_per_gw
     current_squad = players[players["id"].isin(current_squad_ids)].copy()
-    budget = available_budget or float(current_squad["now_cost"].sum())
+    squad_now_cost = float(current_squad["now_cost"].sum())
+    budget = available_budget or squad_now_cost
+    # P1.6: cash not tied up in players. Derived from `budget` when the caller
+    # has no explicit bank, which reproduces the old constraint exactly.
+    initial_bank = float(bank) if bank is not None else max(0.0, budget - squad_now_cost)
+    purchase_prices = purchase_prices or {}
 
     gws = sorted(projections["gameweek"].unique())[:horizon]
     H = len(gws)
@@ -137,7 +173,6 @@ def evaluate_transfers(
     df = df.reset_index(drop=True)
 
     pid_list = df["id"].tolist()
-    N = len(pid_list)
 
     costs = df["now_cost"].tolist()
     positions = df["position"].tolist()
@@ -209,7 +244,23 @@ def evaluate_transfers(
         for w in range(H + 1)
     }
     hit = {w: pulp.LpVariable(f"hit_{w}", lowBound=0, upBound=15, cat="Integer") for w in range(H)}
-    n_trans = {w: pulp.LpVariable(f"nt_{w}", lowBound=0, upBound=15, cat="Integer") for w in range(H)}
+    n_trans = {
+        w: pulp.LpVariable(f"nt_{w}", lowBound=0, upBound=15, cat="Integer") for w in range(H)
+    }
+    # P1.6: cash in the bank at the START of each week. lowBound=0 IS the
+    # affordability constraint -- you cannot spend money you do not have.
+    bank_var = {w: pulp.LpVariable(f"bank_{w}", lowBound=0) for w in range(H + 1)}
+    prob += bank_var[0] == initial_bank
+
+    cost_by_pid = dict(zip(pid_list, costs, strict=True))
+    # A player already owned sells for their selling price; anyone else is
+    # bought at (and, absent price-change modelling, resells at) their current
+    # price. With no purchase prices supplied every player sells at now_cost,
+    # which collapses the cash flow back to the old squad-cost constraint.
+    sell_by_pid = {
+        pid: selling_price(purchase_prices[pid], cost) if pid in purchase_prices else cost
+        for pid, cost in cost_by_pid.items()
+    }
 
     if wildcard_active:
         prob += ft[0] == SQUAD.squad_size
@@ -245,7 +296,16 @@ def evaluate_transfers(
 
         prob += pulp.lpSum(squad[(pid, w)] for pid in pid_list) == SQUAD.squad_size
         prob += pulp.lpSum(starting[(pid, w)] for pid in pid_list) == 11
-        prob += pulp.lpSum(costs[i] * squad[(pid_list[i], w)] for i in range(N)) <= budget
+        # P1.6: affordability as a real cash flow -- selling credits the
+        # SELLING price, buying debits the current price, and the balance can
+        # never go negative. Replaces `Σ now_cost * squad <= budget`, which
+        # valued a kept player at their (possibly risen) current price and so
+        # believed an appreciated squad had spending power it does not have.
+        prob += bank_var[w + 1] == (
+            bank_var[w]
+            + pulp.lpSum(sell_by_pid[pid] * tout[(pid, w)] for pid in pid_list)
+            - pulp.lpSum(cost_by_pid[pid] * tin[(pid, w)] for pid in pid_list)
+        )
 
         for pos, count in SQUAD_COUNTS.items():
             pos_pids = [pid for pid, p in zip(pid_list, positions) if p == pos]
@@ -258,7 +318,9 @@ def evaluate_transfers(
             tid_pids = [pid for pid, t in zip(pid_list, teams) if t == tid]
             prob += pulp.lpSum(squad[(pid, w)] for pid in tid_pids) <= SQUAD.max_players_per_club
 
-        prob += pulp.lpSum(tin[(pid, w)] for pid in pid_list) == pulp.lpSum(tout[(pid, w)] for pid in pid_list)
+        prob += pulp.lpSum(tin[(pid, w)] for pid in pid_list) == pulp.lpSum(
+            tout[(pid, w)] for pid in pid_list
+        )
         prob += n_trans[w] == pulp.lpSum(tin[(pid, w)] for pid in pid_list)
         prob += pulp.lpSum(captain[(pid, w)] for pid in pid_list) == 1
 

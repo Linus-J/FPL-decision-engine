@@ -47,12 +47,12 @@ def test_load_squad_state_real_reads_decision_log(session):
         projected_gain=10.0, dry_run=True,
     ))
     session.commit()
-    squad_ids, budget, free_transfers = decision_engine._load_squad_state(
+    state = decision_engine._load_squad_state(
         None, team_id=12345, config=OPTIMISER
     )
-    assert squad_ids == [1, 2, 3]
-    assert budget == pytest.approx(99.5)
-    assert free_transfers == 2
+    assert state.squad_ids == [1, 2, 3]
+    assert state.budget == pytest.approx(99.5)
+    assert state.free_transfers == 2
 
 
 def test_load_squad_state_sim_reads_only_its_own_manager(session):
@@ -75,29 +75,29 @@ def test_load_squad_state_sim_reads_only_its_own_manager(session):
     ))
     session.commit()
 
-    squad_ids, budget, free_transfers = decision_engine._load_squad_state(
+    state = decision_engine._load_squad_state(
         1, team_id=0, config=OPTIMISER
     )
-    assert squad_ids == [10, 11]
-    assert budget == pytest.approx(90.0)
-    assert free_transfers == 1
+    assert state.squad_ids == [10, 11]
+    assert state.budget == pytest.approx(90.0)
+    assert state.free_transfers == 1
 
 
 def test_load_squad_state_defaults_when_nothing_logged(session):
-    squad_ids, budget, free_transfers = decision_engine._load_squad_state(
+    state = decision_engine._load_squad_state(
         None, team_id=1, config=OPTIMISER
     )
-    assert squad_ids == []
-    assert budget == 100.0
-    assert free_transfers == 1
+    assert state.squad_ids == []
+    assert state.budget == 100.0
+    assert state.free_transfers == 1
 
     _add_sim_manager(session, 7)
-    squad_ids, budget, free_transfers = decision_engine._load_squad_state(
+    state = decision_engine._load_squad_state(
         7, team_id=1, config=OPTIMISER
     )
-    assert squad_ids == []
-    assert budget == 100.0
-    assert free_transfers == 1
+    assert state.squad_ids == []
+    assert state.budget == 100.0
+    assert state.free_transfers == 1
 
 
 def test_record_decision_real_writes_decision_log_not_sim(session):

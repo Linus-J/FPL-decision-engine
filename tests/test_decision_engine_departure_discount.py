@@ -24,7 +24,10 @@ def test_run_decision_cycle_applies_p_leave_discount_to_projections(monkeypatch)
         {"player_id": 7, "gameweek": 1, "xpts": 5.0, "start_probability": 0.9},
     ]))
     monkeypatch.setattr(de, "_get_current_and_next_gw", lambda: (1, 1))
-    monkeypatch.setattr(de, "_load_squad_state", lambda *a, **k: ([], 100.0, 1))
+    monkeypatch.setattr(
+        de, "_load_squad_state",
+        lambda *a, **k: de.SquadState([], 100.0, 1, 0.0, {}),
+    )
 
     # Real squad-building is out of scope for this unit test -- short-circuit
     # once the discount call itself has been observed.

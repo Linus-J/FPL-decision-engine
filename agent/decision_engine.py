@@ -7,7 +7,13 @@ import pandas as pd
 from sqlalchemy import text
 
 from config.settings import settings
-from config.strategy import CHIP_TIMING, OPTIMISER, ChipTimingThresholds, OptimiserConfig
+from config.strategy import (
+    CHIP_TIMING,
+    OPTIMISER,
+    SQUAD,
+    ChipTimingThresholds,
+    OptimiserConfig,
+)
 from data.db import get_session
 from data.models import DecisionLog, SimDecisionLog, SimManager
 from data.overrides import apply_team_overrides, load_p_leave_overrides, log_rumoured_squad_members
@@ -19,6 +25,7 @@ from optimiser.transfers import (
     evaluate_transfers,
     get_dgw_coverage,
     roll_forward_free_transfers,
+    selling_price,
 )
 from projection import cold_start
 from projection.pipeline import (
@@ -48,19 +55,40 @@ def _load_players() -> pd.DataFrame:
     return apply_team_overrides(players)
 
 
+@dataclasses.dataclass
+class SquadState:
+    """What the bot believes it owns going into a gameweek.
+
+    ``bank``/``purchase_prices`` are P1.6. Before them the engine carried a
+    single ``budget`` float that was seeded at 100.0 by the cold start and
+    written back unchanged every week thereafter, so it never moved for price
+    changes or for money spent, and the optimiser's affordability constraint
+    was wrong in both directions -- under-spending as the squad appreciated,
+    and proposing transfers that could not actually be paid for if it
+    depreciated. ``purchase_prices`` is what makes selling prices knowable
+    (FPL pays back only half of a price rise)."""
+
+    squad_ids: list[int]
+    budget: float
+    free_transfers: int
+    bank: float
+    purchase_prices: dict[int, float]
+
+
 def _load_squad_state(
     sim_manager_id: int | None, team_id: int, config: OptimiserConfig
-) -> tuple[list[int], float, int]:
+) -> SquadState:
     """``sim_manager_id is None`` reads the real bot's own ``decision_log``
     (``team_id`` is informational only, not used in the query -- the real
     squad is one continuous decision history, not partitioned per team_id).
     A ``sim_manager_id`` reads that persona's own ``sim_decision_log`` rows
     instead, completely isolated from the real squad's history.
 
-    ``budget``'s fallback-when-missing value (``config.transfer_planning_horizon_gws``,
-    3.0) looks like a units mismatch inherited unchanged from the pre-
-    refactor ``_load_my_squad`` -- preserved exactly rather than "fixed" as
-    a side effect of this refactor; flagged, not silently changed."""
+    ``budget``'s fallback-when-missing value used to be
+    ``config.transfer_planning_horizon_gws`` (3.0) -- a units mismatch
+    inherited from the pre-refactor ``_load_my_squad``, flagged at the time
+    rather than changed. Fixed here (P1.6): a missing budget means "the
+    season's starting budget", not "three million pounds"."""
     db = get_session()
     try:
         if sim_manager_id is not None:
@@ -82,10 +110,23 @@ def _load_squad_state(
         if row:
             details = json.loads(row[0])
             squad_ids = details.get("squad_ids", [])
-            budget = details.get("budget", config.transfer_planning_horizon_gws)
+            budget = details.get("budget", SQUAD.budget_total)
             free_transfers = details.get("free_transfers", 1)
-            return squad_ids, float(budget), int(free_transfers)
-        return [], 100.0, 1
+            # JSON object keys are strings; the rest of the engine keys
+            # players by int.
+            purchase_prices = {
+                int(pid): float(price)
+                for pid, price in (details.get("purchase_prices") or {}).items()
+            }
+            bank = details.get("bank")
+            return SquadState(
+                squad_ids=squad_ids,
+                budget=float(budget),
+                free_transfers=int(free_transfers),
+                bank=float(bank) if bank is not None else 0.0,
+                purchase_prices=purchase_prices,
+            )
+        return SquadState([], SQUAD.budget_total, 1, 0.0, {})
     finally:
         db.close()
 
@@ -164,6 +205,34 @@ def _squad_age_gws(
     return max(0, next_gw - int(lineups["gameweek"].min()))
 
 
+def _settle_transfers(
+    state: SquadState, plan: TransferPlan, players: pd.DataFrame
+) -> tuple[float, dict[int, float]]:
+    """(new bank, new purchase prices) after ``plan`` is executed (P1.6).
+
+    Selling credits the SELLING price -- half of any rise since purchase, all
+    of any fall -- and buying debits the current price. A player whose
+    purchase price we never recorded (a squad carried over from before P1.6)
+    is treated as bought at their current price, i.e. no rise to share, which
+    is the same assumption the engine made implicitly before."""
+    now_cost = dict(zip(players["id"], players["now_cost"], strict=True))
+    prices = dict(state.purchase_prices)
+    bank = state.bank
+
+    for out in plan.transfers_out:
+        pid = out["player_id"]
+        current = float(now_cost.get(pid, out.get("cost", 0.0)))
+        bank += selling_price(prices.get(pid, current), current)
+        prices.pop(pid, None)
+    for incoming in plan.transfers_in:
+        pid = incoming["player_id"]
+        current = float(now_cost.get(pid, incoming.get("cost", 0.0)))
+        bank -= current
+        prices[pid] = current
+
+    return round(bank, 1), prices
+
+
 def _bench_xpts(squad_ids: list[int], projections: pd.DataFrame, gw: int) -> float:
     gw_proj = projections[
         (projections["gameweek"] == gw) & projections["player_id"].isin(squad_ids)
@@ -214,9 +283,10 @@ def _run_decision_cycle(
     # first time (previously always an empty dict).
     projections = apply_departure_discount(projections, load_p_leave_overrides())
 
-    squad_ids, available_budget, free_transfers = _load_squad_state(
-        sim_manager_id, team_id, config
-    )
+    state = _load_squad_state(sim_manager_id, team_id, config)
+    squad_ids = state.squad_ids
+    available_budget = state.budget
+    free_transfers = state.free_transfers
 
     if projections.empty:
         if squad_ids and season_has_played_history(season):
@@ -281,8 +351,16 @@ def _run_decision_cycle(
                 "starting_ids": xi_solution.starting_xi["id"].tolist(),
                 "captain_id": xi_solution.captain_id,
                 "vice_captain_id": xi_solution.vice_captain_id,
-                "budget": solution.total_cost,
+                "budget": SQUAD.budget_total,
                 "free_transfers": 1,
+                # P1.6: the season opens with every player bought at their
+                # current price and whatever the build didn't spend left in
+                # the bank. This is the ONLY point at which purchase prices
+                # are knowable for free -- from here they have to be carried.
+                "bank": round(SQUAD.budget_total - solution.total_cost, 1),
+                "purchase_prices": {
+                    int(r.id): float(r.now_cost) for r in solution.squad.itertuples()
+                },
             },
             projected_gain=xi_solution.total_xpts,
             dry_run=dry_run,
@@ -381,6 +459,11 @@ def _run_decision_cycle(
             wildcard_active=wildcard_active,
             dgw_gws=dgw_gws,
             config=config,
+            # P1.6: real affordability. Without these the optimiser priced
+            # every owned player at their current cost and spent from a
+            # budget frozen at 100.0 since the cold start.
+            bank=state.bank,
+            purchase_prices=state.purchase_prices,
         )
 
         new_squad_ids = (
@@ -400,6 +483,14 @@ def _run_decision_cycle(
     )
 
     log_rumoured_squad_members(squad_solution.squad["id"].tolist(), players)
+
+    # P1.6: a Free Hit squad is handed back at the end of the gameweek, so
+    # neither the bank nor the purchase-price ledger moves.
+    settled_bank, settled_prices = (
+        (state.bank, state.purchase_prices)
+        if free_hit_active
+        else _settle_transfers(state, transfer_plan, players)
+    )
 
     result = {
         "gameweek": next_gw,
@@ -451,6 +542,10 @@ def _run_decision_cycle(
                 wildcard_played=wildcard_active,
                 free_hit_played=free_hit_active,
             ),
+            # P1.6: a Free Hit's squad is reverted after the gameweek, so its
+            # transfers must not move the bank or the purchase-price ledger.
+            "bank": settled_bank,
+            "purchase_prices": {str(pid): price for pid, price in settled_prices.items()},
         },
         projected_gain=xi_solution.total_xpts,
         dry_run=dry_run,

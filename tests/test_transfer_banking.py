@@ -457,3 +457,140 @@ def test_squad_age_is_zero_with_no_history():
     from agent.decision_engine import _squad_age_gws
 
     assert _squad_age_gws(pd.DataFrame(), [], next_gw=1) == 0
+
+
+# --- P1.6 real budget: selling prices and a bank that actually moves ------
+
+
+def test_selling_price_returns_half_of_a_rise():
+    """FPL pays back only half of any price RISE, rounded DOWN to £0.1m."""
+    from optimiser.transfers import selling_price
+
+    assert selling_price(5.0, 5.2) == pytest.approx(5.1)   # +0.2 -> keep 0.1
+    assert selling_price(5.0, 5.4) == pytest.approx(5.2)   # +0.4 -> keep 0.2
+    # odd number of tenths rounds DOWN, not to the nearest
+    assert selling_price(5.0, 5.1) == pytest.approx(5.0)
+    assert selling_price(5.0, 5.3) == pytest.approx(5.1)
+
+
+def test_selling_price_takes_a_fall_in_full():
+    from optimiser.transfers import selling_price
+
+    assert selling_price(5.0, 4.7) == pytest.approx(4.7)
+    assert selling_price(5.0, 5.0) == pytest.approx(5.0)
+
+
+def test_selling_price_is_exact_at_awkward_tenths():
+    """Prices are quoted in £0.1m and float arithmetic on tenths does not
+    round the way FPL's does -- hence the integer-tenths implementation."""
+    from optimiser.transfers import selling_price
+
+    assert selling_price(4.3, 4.7) == pytest.approx(4.5)
+    assert selling_price(10.7, 11.2) == pytest.approx(10.9)
+
+
+def test_bank_flow_reproduces_the_old_budget_constraint_exactly():
+    """The cash-flow formulation is a generalisation, not a second code
+    path: with no purchase prices every player sells at their current cost,
+    which collapses it back to `sum(now_cost) <= budget`."""
+    players, squad = _pool()
+    proj = _flat_projections(players, squad)
+    proj.loc[~proj["player_id"].isin(squad), "xpts"] = 9.0
+
+    squad_cost = float(players[players["id"].isin(squad)]["now_cost"].sum())
+    explicit = evaluate_transfers(
+        squad, proj, players, free_transfers=5, bank=3.0,
+        transfer_rules=_NO_FRICTION,
+    )
+    derived = evaluate_transfers(
+        squad, proj, players, free_transfers=5, available_budget=squad_cost + 3.0,
+        transfer_rules=_NO_FRICTION,
+    )
+    assert {t["player_id"] for t in explicit.transfers_in} == {
+        t["player_id"] for t in derived.transfers_in
+    }
+
+
+def test_an_empty_bank_blocks_an_upgrade_it_cannot_afford():
+    players, squad = _pool()
+    proj = _flat_projections(players, squad)
+    # a brilliant but expensive target, and no money to fund the difference
+    target = int(players[~players["id"].isin(squad)]["id"].iloc[0])
+    players.loc[players["id"] == target, "now_cost"] = 14.0
+    proj.loc[proj["player_id"] == target, "xpts"] = 40.0
+
+    broke = evaluate_transfers(
+        squad, proj, players, free_transfers=1, bank=0.0, transfer_rules=_NO_FRICTION
+    )
+    funded = evaluate_transfers(
+        squad, proj, players, free_transfers=1, bank=20.0, transfer_rules=_NO_FRICTION
+    )
+    assert not any(t["player_id"] == target for t in broke.transfers_in)
+    assert any(t["player_id"] == target for t in funded.transfers_in)
+
+
+def test_purchase_prices_reduce_spending_power_after_a_price_rise():
+    """The core P1.6 defect: an appreciated squad was valued at now_cost, so
+    the optimiser believed it could spend money that selling would not
+    actually realise."""
+    players, squad = _pool()
+    proj = _flat_projections(players, squad)
+    target = int(players[~players["id"].isin(squad)]["id"].iloc[0])
+    players.loc[players["id"] == target, "now_cost"] = 9.0
+    proj.loc[proj["player_id"] == target, "xpts"] = 40.0
+    # every owned player has risen £1.0m since purchase -> only £0.5m each is
+    # realisable, so the squad is worth notably less than its sticker price
+    risen = {pid: float(players.loc[players["id"] == pid, "now_cost"].iloc[0]) - 1.0
+             for pid in squad}
+
+    kwargs = {"free_transfers": 1, "bank": 0.0, "transfer_rules": _NO_FRICTION}
+    naive = evaluate_transfers(squad, proj, players, **kwargs)
+    real = evaluate_transfers(squad, proj, players, purchase_prices=risen, **kwargs)
+
+    naive_spend = sum(t["cost"] for t in naive.transfers_in)
+    real_spend = sum(t["cost"] for t in real.transfers_in)
+    assert real_spend <= naive_spend, (
+        "knowing the real selling prices must never increase spending power"
+    )
+
+
+def test_settle_transfers_moves_the_bank_and_the_ledger():
+    from agent.decision_engine import SquadState, _settle_transfers
+    from optimiser.transfers import TransferPlan
+
+    players = pd.DataFrame([
+        {"id": 1, "now_cost": 6.0},   # bought at 5.0, so sells for 5.5
+        {"id": 2, "now_cost": 7.5},
+    ])
+    state = SquadState(
+        squad_ids=[1], budget=100.0, free_transfers=1,
+        bank=2.0, purchase_prices={1: 5.0},
+    )
+    plan = TransferPlan(
+        transfers_in=[{"player_id": 2, "web_name": "in", "cost": 7.5}],
+        transfers_out=[{"player_id": 1, "web_name": "out", "cost": 6.0}],
+        hits_taken=0, xpts_gain=0.0, net_xpts_gain=0.0,
+    )
+    bank, prices = _settle_transfers(state, plan, players)
+
+    assert bank == pytest.approx(2.0 + 5.5 - 7.5)
+    assert prices == {2: 7.5}, "the sold player leaves the ledger, the bought one joins at cost"
+
+
+def test_settle_transfers_treats_an_unknown_purchase_price_as_no_rise():
+    """A squad carried over from before P1.6 has no ledger; assuming the
+    purchase price equals the current price is exactly what the engine
+    implicitly assumed before, so nothing regresses."""
+    from agent.decision_engine import SquadState, _settle_transfers
+    from optimiser.transfers import TransferPlan
+
+    players = pd.DataFrame([{"id": 1, "now_cost": 6.0}, {"id": 2, "now_cost": 6.0}])
+    state = SquadState([1], 100.0, 1, bank=0.0, purchase_prices={})
+    plan = TransferPlan(
+        transfers_in=[{"player_id": 2, "web_name": "in", "cost": 6.0}],
+        transfers_out=[{"player_id": 1, "web_name": "out", "cost": 6.0}],
+        hits_taken=0, xpts_gain=0.0, net_xpts_gain=0.0,
+    )
+    bank, prices = _settle_transfers(state, plan, players)
+    assert bank == pytest.approx(0.0)
+    assert prices == {2: 6.0}
