@@ -4,8 +4,9 @@ gameweek that just finished, THEN runs the real agent decision, THEN the
 simulation batch -- in that order, so the decision is made against
 up-to-date DefCon/bonus/ownership data, not whatever was last scraped.
 
-FBref -> WhoScored -> set-pieces -> ownership -> data_quality_gate.py ->
-backfill_decision_outcomes.py -> run_agent.py -> run_simulations.py.
+FBref -> WhoScored -> set-pieces -> ownership ->
+backfill_decision_outcomes.py -> run_agent.py -> data_quality_gate.py ->
+run_simulations.py.
 
 The outcome backfill scores LAST gameweek's decisions (for the real bot and
 all 100 personas) before this gameweek's are made, so it always runs against
@@ -118,17 +119,6 @@ def main() -> None:
             [sys.executable, "scripts/ingest_ownership.py", str(gw)],
         )
 
-    # P3.9 (2026-08-16): data-integrity checks BEFORE anything decides on the
-    # data. This script existed from the 2026-07-28 audit and was never wired
-    # into any scheduled run, so the bug classes it catches (stale team_ids,
-    # collapsed name matching) could only ever be found by hand. Warn-only by
-    # design: a blocked week is worse than a week decided on slightly stale
-    # data, and its exit code is surfaced either way.
-    _run_or_warn(
-        "scripts/data_quality_gate.py",
-        [sys.executable, "scripts/data_quality_gate.py"],
-    )
-
     # P2.3 (2026-08-16): score the gameweek that just finished, for the real
     # bot and every persona, BEFORE new decisions are made. This step existed
     # but was never wired into any scheduled run, so `actual_outcome` was
@@ -156,6 +146,20 @@ def main() -> None:
             "Real agent run reported an error (exit %d) -- check the log above "
             "before assuming your GW decision went through", agent_code,
         )
+
+    # P3.9 (2026-08-16): data-integrity checks, AFTER run_agent rather than
+    # before it. The freshest ingest of players/teams/fixtures happens INSIDE
+    # run_agent.py (run_full_ingest is the first thing it does), so running
+    # the gate first checked last week's data and reported staleness that was
+    # about to be fixed seconds later -- confirmed on the first scheduled run,
+    # which flagged four team_ids that matched the live feed immediately
+    # afterwards. Run here it validates the data this week's decision was
+    # ACTUALLY made on, which is the question worth answering. Warn-only: a
+    # blocked week is worse than a week decided on slightly stale data.
+    _run_or_warn(
+        "scripts/data_quality_gate.py",
+        [sys.executable, "scripts/data_quality_gate.py"],
+    )
 
     sim_code = _run([sys.executable, "scripts/run_simulations.py", "--season", args.season])
     logger.info("run_simulations.py exited with code %d", sim_code)
