@@ -12,6 +12,9 @@ A Fantasy Premier League system with three parts:
 >
 > Note: submission to the FPL API is **not** in scope — the bot decides, you
 > enter the team. See the doc for what else is deliberately excluded.
+>
+> **[GW1 checklist](docs/gw1-checklist.md)** — the current squad to enter, and
+> what to run before/after the deadline.
 
 ---
 
