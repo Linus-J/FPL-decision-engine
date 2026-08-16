@@ -205,6 +205,40 @@ def _squad_age_gws(
     return max(0, next_gw - int(lineups["gameweek"].min()))
 
 
+def _lineup_shape(squad: pd.DataFrame) -> dict:
+    """The fields an outcome scorer needs to replay FPL's auto-substitutions
+    (P2.1, 2026-08-16).
+
+    ``scripts/backfill_decision_outcomes.py`` computes each decision's
+    ``actual_outcome`` via ``_score_squad``, which supports autosubs and the
+    vice-captain fallback -- but only when handed ``minutes``, ``positions``
+    AND ``bench_order`` together. It could pass none of them, because the
+    lineup ``details`` recorded here never carried positions or bench order.
+    So every recorded outcome, for the real bot and for all 100 simulated
+    personas, scored a blanking starter as 0 with no substitute.
+
+    That is not a cosmetic understatement: it biases the record hardest
+    exactly where the bench matters, which is the question the whole
+    simulation cohort exists to answer."""
+    if squad.empty or "id" not in squad.columns:
+        return {"positions": {}, "bench_order": {}}
+    positions = (
+        {int(pid): str(pos) for pid, pos in zip(squad["id"], squad["position"], strict=True)}
+        if "position" in squad.columns
+        else {}
+    )
+    if "bench_order" not in squad.columns:
+        return {"positions": positions, "bench_order": {}}
+    # bench_order is -1 for starters (see optimise_starting_xi); only bench
+    # slots carry a real priority, and only those are what autosubs consume.
+    bench_order = {
+        int(pid): int(order)
+        for pid, order in zip(squad["id"], squad["bench_order"], strict=True)
+        if pd.notna(order) and int(order) >= 0
+    }
+    return {"positions": positions, "bench_order": bench_order}
+
+
 def _settle_transfers(
     state: SquadState, plan: TransferPlan, players: pd.DataFrame
 ) -> tuple[float, dict[int, float]]:
@@ -351,6 +385,10 @@ def _run_decision_cycle(
                 "starting_ids": xi_solution.starting_xi["id"].tolist(),
                 "captain_id": xi_solution.captain_id,
                 "vice_captain_id": xi_solution.vice_captain_id,
+                # P2.1: without these the outcome scorer cannot apply
+                # auto-substitutions and every blanking starter is recorded
+                # as a plain 0.
+                **_lineup_shape(xi_solution.squad),
                 "budget": SQUAD.budget_total,
                 "free_transfers": 1,
                 # P1.6: the season opens with every player bought at their
@@ -531,6 +569,12 @@ def _run_decision_cycle(
             "starting_ids": xi_solution.starting_xi["id"].tolist(),
             "captain_id": xi_solution.captain_id,
             "vice_captain_id": xi_solution.vice_captain_id,
+            # P2.1: see _lineup_shape -- required for autosub-aware scoring.
+            **_lineup_shape(squad_solution.squad),
+            # P2.2: hits are booked on the separate `transfers` decision, so
+            # the outcome scorer had no way to net them off. Recorded here
+            # too, on the row whose actual_outcome they reduce.
+            "hits_taken": transfer_plan.hits_taken,
             "budget": available_budget,
             # P1.2: was `max(0, free_transfers - len(transfers_in))` — no weekly
             # +1, no cap, and it hit 0 after the first transfer, which made the

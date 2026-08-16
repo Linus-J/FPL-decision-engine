@@ -203,3 +203,132 @@ def test_backfill_covers_both_real_and_sim_logs_in_one_call(session):
     assert n == 2
     assert session.query(DecisionLog).filter_by(decision_type="lineup").one().actual_outcome == 8
     assert session.query(SimDecisionLog).one().actual_outcome == 8
+
+
+# --- P2.1 / P2.2 (2026-08-16): outcomes must be what a manager really scored
+
+
+def _stats_with_minutes(
+    session, player_id: int, gw: int, points: int, minutes: int, opponent: int = 1
+) -> None:
+    session.add(PlayerGameweekStats(
+        player_id=player_id, gameweek=gw, season="2026-27",
+        total_points=points, minutes=minutes, opponent_team_id=opponent,
+    ))
+    session.commit()
+
+
+def _full_squad_details(**overrides) -> dict:
+    """A legal 15 with a 1-4-4-2 XI: 1 GKP, 4 DEF, 4 MID, 2 FWD starting;
+    bench is a GK plus one of each outfield position, so an autosub is
+    always formation-legal."""
+    positions = {
+        1: "GKP", 2: "DEF", 3: "DEF", 4: "DEF", 5: "DEF",
+        6: "MID", 7: "MID", 8: "MID", 9: "MID", 10: "FWD", 11: "FWD",
+        12: "GKP", 13: "DEF", 14: "MID", 15: "FWD",
+    }
+    details = {
+        "squad_ids": list(range(1, 16)),
+        "starting_ids": list(range(1, 12)),
+        "captain_id": 10,
+        "vice_captain_id": 11,
+        "positions": {str(k): v for k, v in positions.items()},
+        "bench_order": {"12": 0, "13": 1, "14": 2, "15": 3},
+    }
+    details.update(overrides)
+    return details
+
+
+def test_autosub_replaces_a_blanking_starter(session):
+    """The defect: `_score_squad` supports autosubs but needs minutes,
+    positions AND bench_order together, and the lineup decision recorded
+    none of the latter two -- so a starter who didn't play scored 0 with no
+    substitute, understating every persona exactly where the bench matters."""
+    _gw(session, 5, finished=True)
+    for pid in range(1, 12):
+        # player 9 (a starting MID) blanks; everyone else plays and scores 2
+        _stats_with_minutes(session, pid, 5, points=0 if pid == 9 else 2,
+                            minutes=0 if pid == 9 else 90)
+    _stats_with_minutes(session, 12, 5, points=5, minutes=90)   # bench GK
+    _stats_with_minutes(session, 13, 5, points=7, minutes=90)   # bench DEF, first up
+    _stats_with_minutes(session, 14, 5, points=9, minutes=90)
+    _stats_with_minutes(session, 15, 5, points=9, minutes=90)
+
+    session.add(DecisionLog(
+        gameweek=5, decision_type="lineup",
+        details=json.dumps(_full_squad_details()), projected_gain=0.0, dry_run=True,
+    ))
+    session.commit()
+
+    assert backfill_module.backfill("2026-27") == 1
+    outcome = session.query(DecisionLog).one().actual_outcome
+    # 10 players scoring 2 = 20, captain (player 10) doubled = +2, and the
+    # blanking MID is replaced by the first bench player who played (13, 7pts)
+    assert outcome == 20 + 2 + 7
+
+
+def test_vice_captain_is_promoted_when_the_captain_blanks(session):
+    _gw(session, 5, finished=True)
+    for pid in range(1, 12):
+        _stats_with_minutes(session, pid, 5, points=0 if pid == 10 else 2,
+                            minutes=0 if pid == 10 else 90)
+    for pid in (12, 13, 14, 15):
+        _stats_with_minutes(session, pid, 5, points=1, minutes=90)
+
+    session.add(DecisionLog(
+        gameweek=5, decision_type="lineup",
+        details=json.dumps(_full_squad_details()), projected_gain=0.0, dry_run=True,
+    ))
+    session.commit()
+
+    backfill_module.backfill("2026-27")
+    outcome = session.query(DecisionLog).one().actual_outcome
+    # ten starters played and scored 2 each (20); the blanking captain (10,
+    # a FWD) is replaced by bench DEF 13 for 1 more; and the armband passes
+    # to the vice (11, 2pts), whose points are then doubled (+2).
+    assert outcome == 20 + 1 + 2
+
+
+def test_hits_are_deducted_from_the_recorded_outcome(session):
+    """Hits are booked on the separate `transfers` decision, so the lineup
+    row recorded GROSS points -- but actual_outcome is what the season
+    analysis compares personas on, so it has to be net."""
+    _gw(session, 5, finished=True)
+    for pid in range(1, 16):
+        _stats_with_minutes(session, pid, 5, points=2, minutes=90)
+
+    session.add(DecisionLog(
+        gameweek=5, decision_type="lineup",
+        details=json.dumps(_full_squad_details(hits_taken=2)),
+        projected_gain=0.0, dry_run=True,
+    ))
+    session.commit()
+
+    backfill_module.backfill("2026-27")
+    outcome = session.query(DecisionLog).one().actual_outcome
+    assert outcome == 22 + 2 - 8  # 11 starters@2 + captain bonus, minus two 4pt hits
+
+
+def test_decisions_recorded_before_p2_1_still_score_without_autosubs(session, caplog):
+    """Older rows carry no positions/bench_order. They must keep their
+    existing basis and say so, not be silently rescored."""
+    _gw(session, 5, finished=True)
+    for pid in range(1, 12):
+        _stats_with_minutes(session, pid, 5, points=0 if pid == 9 else 2,
+                            minutes=0 if pid == 9 else 90)
+    _stats_with_minutes(session, 13, 5, points=7, minutes=90)
+
+    legacy = _full_squad_details()
+    del legacy["positions"]
+    del legacy["bench_order"]
+    session.add(DecisionLog(
+        gameweek=5, decision_type="lineup",
+        details=json.dumps(legacy), projected_gain=0.0, dry_run=True,
+    ))
+    session.commit()
+
+    with caplog.at_level("WARNING"):
+        backfill_module.backfill("2026-27")
+    outcome = session.query(DecisionLog).one().actual_outcome
+    assert outcome == 20 + 2, "no substitute applied"
+    assert "WITHOUT auto-substitutions" in caplog.text

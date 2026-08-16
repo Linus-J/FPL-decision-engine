@@ -3,9 +3,16 @@
 gameweek has finished -- both the real bot's ``decision_log`` and every
 simulated persona's ``sim_decision_log`` (plan/simulation-engine-v1.md).
 Purely additive -- never touches ``dry_run`` or any decision-making logic.
-See plan/dashboard-v1.md for the design rationale and known simplification
-(no autosub modelling, since ``bench_order`` isn't persisted on lineup
-decisions today).
+
+``actual_outcome`` is the NET points a manager holding that squad would
+really have scored: auto-substitutions applied, vice-captain promoted if the
+captain blanked, and any hits deducted. The first two used to be impossible
+here (``bench_order`` and positions were not persisted on lineup decisions)
+and the third was simply missed, so every recorded outcome understated the
+decision -- and understated it hardest exactly where the bench mattered.
+Fixed 2026-08-16, P2.1/P2.2; decisions recorded before that lack the fields
+and are still scored the old way, with a warning, rather than being silently
+rescored onto a different basis.
 """
 import argparse
 import json
@@ -17,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import text
 
+from config.strategy import TRANSFERS
 from data.db import get_session
 from optimiser.chips import Chip
 from scripts.backtest import _score_squad
@@ -40,6 +48,24 @@ def _actual_points_by_player(db, season: str, gameweek: int) -> dict[int, int]:
         {"season": season, "gw": gameweek},
     ).fetchall()
     return {r[0]: r[1] for r in rows}
+
+
+def _minutes_by_player(db, season: str, gameweek: int) -> dict[int, int]:
+    """Minutes played per player in a finished gameweek (P2.1) -- summed
+    across a double gameweek's rows, same convention as the points above.
+
+    This is what makes auto-substitution modelling possible: ``_score_squad``
+    needs ``minutes`` to know which starters blanked, and it silently keeps
+    the old no-autosub behaviour when any of its three optional arguments is
+    missing."""
+    rows = db.execute(
+        text(
+            "SELECT player_id, SUM(minutes) FROM player_gw_stats "
+            "WHERE season = :season AND gameweek = :gw GROUP BY player_id"
+        ),
+        {"season": season, "gw": gameweek},
+    ).fetchall()
+    return {r[0]: int(r[1] or 0) for r in rows}
 
 
 def _gw_finished(db, season: str, gameweek: int) -> bool:
@@ -97,6 +123,29 @@ def _backfill_table(
 
         actual_points = _actual_points_by_player(db, season, gameweek)
         chip = chip_by_gw.get(gameweek)
+        # P2.1: positions/bench_order are recorded on the lineup decision as
+        # of 2026-08-16 (agent/decision_engine.py::_lineup_shape). Decisions
+        # written before that carry neither, and `_score_squad` requires all
+        # THREE of minutes/positions/bench_order together -- so those older
+        # rows keep their existing no-autosub scoring rather than being
+        # silently rescored on a different basis.
+        positions = {int(k): v for k, v in (details.get("positions") or {}).items()}
+        bench_order = {int(k): int(v) for k, v in (details.get("bench_order") or {}).items()}
+        autosub_kwargs: dict = {}
+        if positions and bench_order:
+            autosub_kwargs = {
+                "minutes": _minutes_by_player(db, season, gameweek),
+                "positions": positions,
+                "bench_order": bench_order,
+            }
+        else:
+            logger.warning(
+                "%s decision %d (GW%d): no positions/bench_order recorded — "
+                "scoring WITHOUT auto-substitutions, which understates a squad "
+                "whose starters blanked",
+                table, log_id, gameweek,
+            )
+
         actual = _score_squad(
             squad_ids=squad_ids,
             starting_ids=starting_ids,
@@ -105,7 +154,14 @@ def _backfill_table(
             bench_boost=(chip == Chip.BENCH_BOOST.value),
             triple_captain=(chip == Chip.TRIPLE_CAPTAIN.value),
             vice_captain_id=vice_captain_id,
+            **autosub_kwargs,
         )
+        # P2.2: hits are a real cost of the decision and were never netted
+        # off -- they are booked on the separate `transfers` row, so the
+        # lineup row recorded gross points. `actual_outcome` is what the
+        # season analysis compares personas on, so it has to be net.
+        hits = int(details.get("hits_taken") or 0)
+        actual -= hits * abs(TRANSFERS.hit_cost_points)
         db.execute(
             text(f"UPDATE {table} SET actual_outcome = :pts WHERE id = :id"),
             {"pts": actual, "id": log_id},
