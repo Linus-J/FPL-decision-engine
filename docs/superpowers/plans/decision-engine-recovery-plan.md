@@ -65,7 +65,28 @@ actually produces a weak bench.
 
 ---
 
-## P1 — Decision-engine correctness (before the GW2 deadline, 2026-08-28)
+## P1 — Decision-engine correctness — **COMPLETE 2026-08-16**
+
+Landed in `6aea96a` (P1.1–P1.4, P1.7), `4fe3050` (P1.5, P1.8, P1.9, P3.10)
+and `faabf31` (P1.6). Suite 564 → 603 passing;
+`tests/test_transfer_banking.py` is the regression gate for the whole
+surface, which previously had none.
+
+Two findings worth carrying forward, both discovered by writing the tests:
+
+- **Hits are rarer than expected, correctly.** Deferring a second move to
+  next week's banked transfer costs only ONE gameweek of that player's
+  advantage, so a hit is rational only when the per-gameweek gain exceeds
+  the 4-point cost. Verified: the threshold sits exactly between 3.5 and 4.5
+  per gameweek for a persistent gain, and exactly at 4.0 for a one-week
+  spike. The bot will now bank in preference to hitting far more often than
+  the old backtest's 0.5–0.9 hits/GW suggested — which is the correct
+  behaviour, and it compounds with P4.1a's finding that the transfer step is
+  where the selection bias enters.
+- **`_chip_uses_remaining` counted decision-log rows**, so re-running a
+  gameweek consumed chips. This, not the `dry_run` flag, was the real
+  corruption vector behind the original B8 finding — no history-splitting
+  filter was needed.
 
 Ordered by dependency. Nothing about transfer planning works until P1.1 lands.
 
