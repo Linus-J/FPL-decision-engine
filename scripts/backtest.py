@@ -20,7 +20,7 @@ from config.strategy import OPTIMISER, SQUAD, TRANSFERS
 from data.db import get_session
 from optimiser.chips import Chip, recommend_chip
 from optimiser.squad import STARTING_MAX, STARTING_MIN, optimise_squad, optimise_starting_xi
-from optimiser.transfers import evaluate_transfers
+from optimiser.transfers import evaluate_transfers, roll_forward_free_transfers
 from projection import assemble, cold_start
 from projection.minutes_model import train as train_minutes
 from projection.rescore import load_bonus_2627_map, rescore_actuals, rescore_coverage_relevant
@@ -716,16 +716,21 @@ def run_backtest(
         )
 
         current_squad_ids = new_squad_ids
+        # P1.2 (2026-08-16): this roll-forward used to be inline here and
+        # WRONG in agent/decision_engine.py, which is how the live agent
+        # silently stopped transferring after its first transfer. Both now
+        # call the same function. Behaviour change for the Free Hit branch,
+        # which used to `pass` (keeping the count flat): a Free Hit reverts
+        # the squad, so its transfers never spend the allowance, but the
+        # weekly allowance still accrues.
+        free_transfers = roll_forward_free_transfers(
+            free_transfers,
+            transfers_made,
+            wildcard_played=chip_played == Chip.WILDCARD,
+            free_hit_played=bool(free_hit_active),
+        )
         if chip_played == Chip.WILDCARD:
-            free_transfers = 1
             squad_age_gws = 0
-        elif free_hit_active:
-            pass
-        else:
-            free_transfers = min(
-                TRANSFERS.max_banked_free_transfers,
-                max(1, free_transfers - transfers_made + TRANSFERS.free_transfers_per_gw),
-            )
         if not free_hit_active:
             squad_age_gws += 1
 

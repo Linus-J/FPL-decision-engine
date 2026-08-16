@@ -154,7 +154,7 @@ def test_run_for_persona_never_refreshes_projections(session, monkeypatch):
     monkeypatch.setattr(decision_engine, "_get_current_and_next_gw", lambda: (1, 1))
     monkeypatch.setattr(
         decision_engine, "get_latest_projections",
-        lambda: pd.DataFrame(columns=["player_id", "gameweek", "xpts"]),
+        lambda **_: pd.DataFrame(columns=["player_id", "gameweek", "xpts"]),
     )
     # Mid-season signal, so the empty-projections branch takes the real
     # "abort" path rather than the cold-start path -- see
@@ -200,7 +200,7 @@ def test_run_decision_cycle_reruns_cold_start_when_still_preseason(session, monk
     monkeypatch.setattr(decision_engine, "_get_current_and_next_gw", lambda: (1, 1))
     monkeypatch.setattr(
         decision_engine, "get_latest_projections",
-        lambda: pd.DataFrame(columns=["player_id", "gameweek", "xpts"]),
+        lambda **_: pd.DataFrame(columns=["player_id", "gameweek", "xpts"]),
     )
     monkeypatch.setattr(decision_engine, "season_has_played_history", lambda season: False)
     monkeypatch.setattr(decision_engine, "_load_players", lambda: pd.DataFrame())

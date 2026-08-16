@@ -55,5 +55,8 @@ def get_squad_dgw_exposure(
     players = pd.read_sql(
         text("SELECT id, web_name, position, team_id, now_cost FROM players"), db.bind
     )
-    projections = get_latest_projections()
+    # P1.1: DGW coverage sums projected points in FUTURE double gameweeks, so
+    # it needs the same lookahead the DGW scan used -- a single-gameweek frame
+    # silently reported 0 xPts for every upcoming double.
+    projections = get_latest_projections(horizon=lookahead_gws)
     return get_dgw_coverage(squad_ids, players, dgw_gws, projections)

@@ -14,7 +14,12 @@ from data.overrides import apply_team_overrides, load_p_leave_overrides, log_rum
 from optimiser.chips import Chip, ChipRecommendation, chips_used_this_season, recommend_chip
 from optimiser.departure_risk import apply_departure_discount
 from optimiser.squad import optimise_squad, optimise_starting_xi
-from optimiser.transfers import TransferPlan, evaluate_transfers, get_dgw_coverage
+from optimiser.transfers import (
+    TransferPlan,
+    evaluate_transfers,
+    get_dgw_coverage,
+    roll_forward_free_transfers,
+)
 from projection import cold_start
 from projection.pipeline import (
     _get_bgw_gameweeks,
@@ -177,7 +182,10 @@ def _run_decision_cycle(
     if refresh_projections:
         logger.info("Running projection pipeline...")
         run_projections(season=season, persist=True)
-    projections = get_latest_projections()
+    # P1.1: the multi-period transfer ILP, the chip evaluator and the
+    # blank-gameweek count all read this frame -- it must span the whole
+    # planning horizon, not just the gameweek being decided.
+    projections = get_latest_projections(horizon=config.transfer_planning_horizon_gws)
     # Feature B (plan 2026-08-10): rumour-discount tier, real data for the
     # first time (previously always an empty dict).
     projections = apply_departure_discount(projections, load_p_leave_overrides())
@@ -397,7 +405,16 @@ def _run_decision_cycle(
             "captain_id": xi_solution.captain_id,
             "vice_captain_id": xi_solution.vice_captain_id,
             "budget": available_budget,
-            "free_transfers": max(0, free_transfers - len(transfer_plan.transfers_in)),
+            # P1.2: was `max(0, free_transfers - len(transfers_in))` — no weekly
+            # +1, no cap, and it hit 0 after the first transfer, which made the
+            # transfer ILP infeasible from then on. Shared with the backtest so
+            # the two cannot drift again.
+            "free_transfers": roll_forward_free_transfers(
+                free_transfers,
+                len(transfer_plan.transfers_in),
+                wildcard_played=wildcard_active,
+                free_hit_played=free_hit_active,
+            ),
         },
         projected_gain=xi_solution.total_xpts,
         dry_run=dry_run,

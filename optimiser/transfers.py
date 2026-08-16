@@ -24,6 +24,39 @@ class TransferPlan:
     net_xpts_gain: float
 
 
+def roll_forward_free_transfers(
+    free_transfers: int,
+    transfers_made: int,
+    wildcard_played: bool = False,
+    free_hit_played: bool = False,
+    transfer_rules: TransferRules | None = None,
+) -> int:
+    """Next gameweek's free-transfer allowance (P1.2, 2026-08-16,
+    plan/decision-engine-recovery-plan.md).
+
+    Real bug this exists to kill: ``agent/decision_engine.py`` stored
+    ``max(0, free_transfers - transfers_made)`` -- missing both the weekly
+    ``+1`` allowance and the cap -- while ``scripts/backtest.py`` carried the
+    correct formula inline. So the backtest banked transfers properly and the
+    live agent never did; worse, the moment the live count reached 0 the
+    transfer ILP became infeasible (``ft`` has ``lowBound=1``) and silently
+    returned an empty plan, permanently, from the first week a transfer was
+    made. One shared function so the two paths cannot drift again.
+
+    ``transfers_made`` may exceed ``free_transfers`` (hits were taken); the
+    surplus is paid in points, not in next week's allowance, so the result
+    still floors at the weekly allowance. A wildcard resets to the weekly
+    allowance. A Free Hit's transfers are reverted with the squad and never
+    counted against the allowance at all."""
+    trules = transfer_rules or TRANSFERS
+    if wildcard_played:
+        return trules.free_transfers_per_gw
+    if free_hit_played:
+        transfers_made = 0
+    carried = free_transfers - transfers_made + trules.free_transfers_per_gw
+    return min(trules.max_banked_free_transfers, max(trules.free_transfers_per_gw, carried))
+
+
 def _squad_xpts(squad_ids: list[int], projections: pd.DataFrame, horizon: int) -> float:
     gws = sorted(projections["gameweek"].unique())[:horizon]
     subset = projections[
@@ -61,6 +94,19 @@ def evaluate_transfers(
     cfg = config or OPTIMISER
     trules = transfer_rules or TRANSFERS
     horizon = cfg.transfer_planning_horizon_gws
+    # P1.2: `ft` has lowBound=1, so ft[0] == 0 makes the whole model
+    # Infeasible -- which this function catches and reports as "no transfers",
+    # indistinguishable from a genuine decision not to transfer. FPL always
+    # grants at least one free transfer per gameweek, so a count below that is
+    # a caller bug (it was the live decision engine's, for months); clamp and
+    # say so rather than silently doing nothing.
+    if free_transfers < trules.free_transfers_per_gw:
+        logger.warning(
+            "free_transfers=%d is below the weekly allowance (%d) — clamping. "
+            "FPL never grants fewer; check the caller's roll-forward.",
+            free_transfers, trules.free_transfers_per_gw,
+        )
+        free_transfers = trules.free_transfers_per_gw
     current_squad = players[players["id"].isin(current_squad_ids)].copy()
     budget = available_budget or float(current_squad["now_cost"].sum())
 
@@ -152,12 +198,21 @@ def evaluate_transfers(
         (pid, w): pulp.LpVariable(f"cp_{pid}_{w}", cat="Binary")
         for pid in pid_list for w in range(H)
     }
-    ft = {w: pulp.LpVariable(f"ft_{w}", lowBound=1, upBound=5, cat="Integer") for w in range(H + 1)}
+    # upBound is the WILDCARD allowance (15), not the banking cap (P1.3): the
+    # wildcard branch below pins ft[0] == 15, which against the old upBound=5
+    # made the whole model Infeasible -- caught and returned as an empty plan
+    # behind a warning, so a played wildcard produced zero transfers while
+    # still being recorded as used. Ordinary weeks are still capped at
+    # max_banked_free_transfers by the ft[w+1] constraint in the loop.
+    ft = {
+        w: pulp.LpVariable(f"ft_{w}", lowBound=1, upBound=SQUAD.squad_size, cat="Integer")
+        for w in range(H + 1)
+    }
     hit = {w: pulp.LpVariable(f"hit_{w}", lowBound=0, upBound=15, cat="Integer") for w in range(H)}
     n_trans = {w: pulp.LpVariable(f"nt_{w}", lowBound=0, upBound=15, cat="Integer") for w in range(H)}
 
     if wildcard_active:
-        prob += ft[0] == 15
+        prob += ft[0] == SQUAD.squad_size
     else:
         prob += ft[0] == free_transfers
 
@@ -214,18 +269,35 @@ def evaluate_transfers(
         else:
             prob += hit[w] <= trules.max_hits_per_gw
 
-        prob += ft[w + 1] <= ft[w] - n_trans[w] + 1
+        # P1.4: `+ hit[w]` is the slack that makes HITS LEGAL. Without it,
+        # `ft[w+1] <= ft[w] - n_trans[w] + 1` combined with `ft[w+1] >= 1`
+        # forced n_trans[w] <= ft[w] in every week, so the model could never
+        # take a hit at all -- verified against three candidates worth +29
+        # xPts/GW each with one free transfer: it took one transfer and zero
+        # hits. Transfers beyond the allowance are paid for in points (the
+        # objective's hit term), not out of next week's allowance.
+        prob += ft[w + 1] <= ft[w] - n_trans[w] + hit[w] + trules.free_transfers_per_gw
         prob += ft[w + 1] <= trules.max_banked_free_transfers
-        prob += ft[w + 1] >= 1
+        prob += ft[w + 1] >= trules.free_transfers_per_gw
 
+    # P1.7: bench players contributed exactly nothing here, so every transfer
+    # treated bench quality as worthless and eroded it to fodder over a season
+    # -- optimise_squad already weights the bench (bench_value_weight) and this
+    # is the same term, so an in-season transfer can no longer undo what the
+    # squad build deliberately paid for.
     prob += pulp.lpSum(
         scores_pw[(pid, w)] * starting[(pid, w)]
         + scores_pw[(pid, w)] * captain[(pid, w)]
-        - hit[w] * abs(trules.hit_cost_points)
+        + cfg.bench_value_weight * scores_pw[(pid, w)] * (squad[(pid, w)] - starting[(pid, w)])
         for pid in pid_list
         for w in range(H)
     ) + trules.ft_terminal_value * ft[H] - pulp.lpSum(
-        trules.transfer_switching_cost * n_trans[w] for w in range(H)
+        # P1.4: both of these used to sit INSIDE the per-player loop above, so
+        # a single hit cost `4 * len(pid_list)` (~900+ points at real pool
+        # sizes) rather than 4. Masked while hits were structurally impossible;
+        # it would have made them impossible again the moment they were legal.
+        hit[w] * abs(trules.hit_cost_points) + trules.transfer_switching_cost * n_trans[w]
+        for w in range(H)
     )
 
     solver_args = {"msg": False}
@@ -241,7 +313,9 @@ def evaluate_transfers(
     gw0_in = [pid for pid in pid_list if (pulp.value(tin[(pid, 0)]) or 0) > 0.5]
     gw0_out = [pid for pid in pid_list if (pulp.value(tout[(pid, 0)]) or 0) > 0.5]
 
-    actual_hits = max(0, len(gw0_in) - (free_transfers if not wildcard_active else 15))
+    actual_hits = max(
+        0, len(gw0_in) - (SQUAD.squad_size if wildcard_active else free_transfers)
+    )
 
     new_squad_ids = [pid for pid in current_squad_ids if pid not in set(gw0_out)] + gw0_in
     xpts_after = _squad_xpts(new_squad_ids, projections, horizon)

@@ -357,11 +357,32 @@ def _persist_projections(df: pd.DataFrame) -> None:
         db.close()
 
 
-def get_latest_projections(gw: int | None = None) -> pd.DataFrame:
+def get_latest_projections(gw: int | None = None, horizon: int = 1) -> pd.DataFrame:
+    """Latest persisted projections for ``horizon`` gameweeks starting at
+    ``gw`` (default: the next gameweek).
+
+    ``horizon`` (P1.1, 2026-08-16, plan/decision-engine-recovery-plan.md):
+    ``run_projections`` builds and persists
+    ``OPTIMISER.transfer_planning_horizon_gws`` gameweeks, but this function
+    used to return exactly ONE, unconditionally. Every live consumer
+    therefore saw a single-gameweek frame: ``evaluate_transfers`` computed
+    ``H = 1`` and its whole multi-period structure (free-transfer carry,
+    ``ft_terminal_value``, planning a move for next week) was unreachable;
+    ``recommend_chip`` compared a one-gameweek wildcard gain against a
+    five-gameweek threshold; and ``_run_decision_cycle``'s blank-gameweek
+    count treated every missing row as a blank. The backtest never hit any
+    of this because it passes its own full multi-gameweek frame straight to
+    the optimisers.
+
+    Defaults to 1 so the callers that genuinely want a single gameweek
+    (site export, the dashboard squad page) are unchanged; the decision
+    engine and DGW coverage pass a real horizon.
+    """
     db = get_session()
     try:
         _, next_gw = _get_current_and_next_gw()
         target_gw = gw or next_gw
+        last_gw = target_gw + max(1, horizon) - 1
 
         query = text("""
             SELECT
@@ -381,14 +402,14 @@ def get_latest_projections(gw: int | None = None) -> pd.DataFrame:
                 p.selected_by_percent
             FROM player_projections pp
             JOIN players p ON p.id = pp.player_id
-            WHERE pp.gameweek = :gw
+            WHERE pp.gameweek >= :gw AND pp.gameweek <= :last_gw
               AND pp.created_at = (
                   SELECT MAX(created_at) FROM player_projections
                   WHERE player_id = pp.player_id AND gameweek = pp.gameweek
               )
-            ORDER BY pp.xpts DESC
+            ORDER BY pp.gameweek, pp.xpts DESC
         """)
-        df = pd.read_sql(query, db.bind, params={"gw": target_gw})
+        df = pd.read_sql(query, db.bind, params={"gw": target_gw, "last_gw": last_gw})
         return df
     finally:
         db.close()

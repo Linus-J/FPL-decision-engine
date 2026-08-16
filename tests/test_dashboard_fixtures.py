@@ -66,7 +66,7 @@ def test_get_squad_dgw_exposure_delegates_to_coverage_helper(session, monkeypatc
     monkeypatch.setattr(fixtures_module, "_get_dgw_gameweeks", lambda lookahead: {12})
     monkeypatch.setattr(
         fixtures_module, "get_latest_projections",
-        lambda: pd.DataFrame({"player_id": [1], "gameweek": [12], "xpts": [8.0]}),
+        lambda **_: pd.DataFrame({"player_id": [1], "gameweek": [12], "xpts": [8.0]}),
     )
 
     captured = {}

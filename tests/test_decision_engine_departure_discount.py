@@ -20,7 +20,7 @@ def test_run_decision_cycle_applies_p_leave_discount_to_projections(monkeypatch)
 
     monkeypatch.setattr(de, "load_p_leave_overrides", lambda: {7: 0.5})
     monkeypatch.setattr(de, "apply_departure_discount", _fake_apply_departure_discount)
-    monkeypatch.setattr(de, "get_latest_projections", lambda: pd.DataFrame([
+    monkeypatch.setattr(de, "get_latest_projections", lambda **_: pd.DataFrame([
         {"player_id": 7, "gameweek": 1, "xpts": 5.0, "start_probability": 0.9},
     ]))
     monkeypatch.setattr(de, "_get_current_and_next_gw", lambda: (1, 1))
