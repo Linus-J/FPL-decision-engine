@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 from datetime import datetime, timedelta
 
 import aiohttp
@@ -78,10 +79,40 @@ def _extract_h2h(
     return 0.33, 0.33, 0.33
 
 
-def _cs_from_h2h(home_win: float, draw: float, away_win: float) -> tuple[float, float]:
-    home_cs = draw + away_win * 0.3
-    away_cs = draw + home_win * 0.3
-    return round(min(home_cs, 0.6), 3), round(min(away_cs, 0.6), 3)
+def _cs_from_h2h(
+    home_win: float, draw: float, away_win: float, over25: float = 0.0
+) -> tuple[float, float]:
+    """(P(home keeps a clean sheet), P(away keeps a clean sheet)).
+
+    A clean sheet belongs to the DEFENCE — ``home_cs`` is the away side
+    failing to score. The previous heuristic had it inverted:
+
+        home_cs = draw + away_win * 0.3
+
+    which is P(the HOME team fails to score), attributing home clean sheets
+    to away wins. Against a fixture priced at 80.6%/13.2%/6.2% it returned
+    home_cs=0.151 for the dominant side and 0.374 for the underdog — exactly
+    backwards, and each side was handed the other's number.
+    ``projection/features.py`` feeds these to the minutes model as
+    ``my_cs_prob``/``opp_cs_prob``, so it has been reading them inverted.
+
+    Replaced by the model's own Poisson rather than a re-swapped heuristic:
+    goals are drawn as Poisson(lambda) everywhere else in this project
+    (``projection/covariance.py::sample_team_goals``), so P(concede 0) is
+    exactly exp(-lambda_opponent) — the same closed form
+    ``projection/assemble.py`` uses. That makes this column consistent with
+    the rest of the model instead of a parallel approximation.
+
+    ``over25`` is what lets the total be split from the result; without it
+    ``team_goals_from_odds`` cannot separate a 1-0 from a 3-2, so the caller
+    should pass it whenever the totals market was available.
+    """
+    from projection.team_goals import team_goals_from_odds
+
+    lam_home, lam_away = team_goals_from_odds(home_win, draw, away_win, over25)
+    home_cs = math.exp(-max(0.0, lam_away))
+    away_cs = math.exp(-max(0.0, lam_home))
+    return round(home_cs, 3), round(away_cs, 3)
 
 
 def _extract_over25(bookmakers: list[dict]) -> float:
@@ -201,8 +232,8 @@ async def ingest_odds() -> int:
             home_win, draw, away_win = _extract_h2h(
                 bookmakers, event.get("home_team", ""), event.get("away_team", "")
             )
-            home_cs, away_cs = _cs_from_h2h(home_win, draw, away_win)
             over25 = _extract_over25(bookmakers)
+            home_cs, away_cs = _cs_from_h2h(home_win, draw, away_win, over25)
 
             # Append-only (finding L4): one row per fetch, keyed
             # (fixture_id, fetched_at). Never UPDATE — the as-of read

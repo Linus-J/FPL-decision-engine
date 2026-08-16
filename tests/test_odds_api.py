@@ -165,3 +165,44 @@ def test_odds_coverage_excludes_finished_fixtures(tmp_path, monkeypatch):
     s.close()
 
     assert list(odds_module.odds_coverage_by_gameweek("2026-27", horizon=5)) == [2]
+
+
+# --- clean-sheet derivation (2026-08-16) ---------------------------------
+
+
+def test_the_dominant_side_has_the_higher_clean_sheet_chance():
+    """The bug this replaces: `home_cs = draw + away_win * 0.3` computes
+    P(the HOME team fails to score), attributing home clean sheets to away
+    wins. Against a fixture priced 0.806/0.132/0.062 it returned home_cs=0.151
+    for the dominant side and 0.374 for the underdog — inverted, and each side
+    handed the other's number. features.py feeds these to the minutes model as
+    my_cs_prob/opp_cs_prob."""
+    from data.ingestors.odds_api import _cs_from_h2h
+
+    home_cs, away_cs = _cs_from_h2h(0.806, 0.132, 0.062, 0.611)
+    assert home_cs > away_cs
+
+
+def test_an_even_fixture_gives_both_sides_a_similar_chance():
+    from data.ingestors.odds_api import _cs_from_h2h
+
+    home_cs, away_cs = _cs_from_h2h(0.35, 0.30, 0.35, 0.5)
+    assert abs(home_cs - away_cs) < 0.1
+
+
+def test_a_high_scoring_fixture_lowers_both_clean_sheet_chances():
+    """The totals market is what separates a 1-0 from a 3-2; without it the
+    result alone cannot say how many goals were involved."""
+    from data.ingestors.odds_api import _cs_from_h2h
+
+    low = _cs_from_h2h(0.4, 0.3, 0.3, over25=0.2)
+    high = _cs_from_h2h(0.4, 0.3, 0.3, over25=0.9)
+    assert sum(high) < sum(low)
+
+
+def test_clean_sheet_probabilities_stay_in_range():
+    from data.ingestors.odds_api import _cs_from_h2h
+
+    for args in [(0.99, 0.005, 0.005, 0.99), (0.01, 0.01, 0.98, 0.01), (0.33, 0.34, 0.33, 0.5)]:
+        for p in _cs_from_h2h(*args):
+            assert 0.0 <= p <= 1.0
