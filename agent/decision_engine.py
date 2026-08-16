@@ -337,10 +337,18 @@ def _run_decision_cycle(
     available_budget = state.budget
     free_transfers = state.free_transfers
 
-    if projections.empty:
-        if squad_ids and season_has_played_history(season):
-            logger.error("No projections available — aborting")
-            return {"error": "no_projections"}
+    # THIRD gap, found 2026-08-16 by auditing the decision log: this branched
+    # on `projections.empty`, which is a fact about what happens to be
+    # PERSISTED rather than about the season. The moment the cold start began
+    # persisting its own projections (so the site and dashboard had numbers to
+    # show), the frame stopped being empty pre-season and this took the
+    # IN-SEASON path instead — which ran recommend_chip and recorded a Triple
+    # Captain as played in GW1, before a ball had been kicked.
+    #
+    # Whether this is a cold start is a property of the SEASON: either it has
+    # played gameweeks to condition on or it does not. Nothing about the
+    # projections table can change that answer.
+    if not season_has_played_history(season):
         # Real gap found 2026-07-30 (the user's own live-smoke-test request):
         # a true pre-season GW1 has no current-season history for
         # run_projections' trained-model pipeline to condition on (it
@@ -435,6 +443,12 @@ def _run_decision_cycle(
             ].values[0] if xi_solution.captain_id else "?",
         )
         return result
+
+    if projections.empty:
+        # Mid-season with nothing projected is a genuine failure, not a cold
+        # start -- the pipeline should have produced something.
+        logger.error("No projections available mid-season — aborting")
+        return {"error": "no_projections"}
 
     players = _load_players()
     players = players.merge(

@@ -16,7 +16,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import agent.decision_engine as decision_engine
-from config.strategy import OPTIMISER
+from config.strategy import CHIP_TIMING, OPTIMISER
 from data.models import Base, DecisionLog, SimDecisionLog, SimManager
 
 
@@ -233,3 +233,60 @@ def test_load_own_decision_log_isolates_personas(session):
     assert len(df1) == 1 and json.loads(df1.iloc[0]["details"])["a"] == 1
     assert len(df2) == 1 and json.loads(df2.iloc[0]["details"])["a"] == 2
     assert len(df_real) == 1 and json.loads(df_real.iloc[0]["details"])["a"] == 3
+
+
+def test_cold_start_branches_on_the_season_not_on_persisted_projections(monkeypatch, session):
+    """Found 2026-08-16 by auditing the live decision log, which contained a
+    Triple Captain recorded as PLAYED in GW1 before a ball was kicked.
+
+    The branch tested `projections.empty`, a fact about what happens to be
+    persisted rather than about the season. The moment the cold start began
+    persisting its own projections — so the site and dashboard had numbers to
+    show — the frame stopped being empty pre-season and the engine took the
+    IN-SEASON path, ran recommend_chip, and burned a chip.
+    """
+    import pandas as pd
+
+    from agent import decision_engine as de
+
+    # Pre-season, but WITH projections persisted — the exact state that broke.
+    monkeypatch.setattr(de, "season_has_played_history", lambda season: False)
+    monkeypatch.setattr(de, "_get_current_and_next_gw", lambda: (1, 1))
+    monkeypatch.setattr(de, "run_projections", lambda **k: None)
+    monkeypatch.setattr(
+        de, "get_latest_projections",
+        lambda **_: pd.DataFrame([
+            {"player_id": 1, "gameweek": 1, "xpts": 5.0, "start_probability": 0.9},
+        ]),
+    )
+    monkeypatch.setattr(de, "apply_departure_discount", lambda proj, ov: proj)
+    monkeypatch.setattr(de, "load_latest_ownership", lambda: pd.DataFrame())
+    monkeypatch.setattr(de, "load_p_leave_overrides", lambda: {})
+    monkeypatch.setattr(de, "_load_players", lambda: pd.DataFrame())
+    monkeypatch.setattr(de, "persist_projections", lambda df: None)
+    monkeypatch.setattr(de, "_record_decision", lambda *a, **k: None)
+    monkeypatch.setattr(de, "log_rumoured_squad_members", lambda *a, **k: None)
+
+    chip_calls = []
+    monkeypatch.setattr(
+        de, "recommend_chip",
+        lambda **k: chip_calls.append(k) or de.ChipRecommendation(None, "", 0.0),
+    )
+
+    called = {}
+
+    def _fake_cold_start(season, players=None, config=None):
+        called["cold_start"] = True
+        raise RuntimeError("stop here — reaching the cold start is the assertion")
+
+    monkeypatch.setattr(de.cold_start, "build_initial_squad", _fake_cold_start)
+
+    with pytest.raises(RuntimeError):
+        de._run_decision_cycle(
+            season="2026-27", dry_run=True, force_chip=None,
+            config=OPTIMISER, chip_timing=CHIP_TIMING, team_id=None,
+            sim_manager_id=None, refresh_projections=False,
+        )
+
+    assert called.get("cold_start"), "pre-season must cold start regardless of persisted rows"
+    assert not chip_calls, "a chip must never be evaluated before the season starts"
