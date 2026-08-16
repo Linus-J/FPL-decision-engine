@@ -173,8 +173,21 @@ def test_copied_column_is_flagged_even_though_it_looks_healthy():
     assert len(issues) == 1
     assert "double-count" in issues[0].message
 
-    # genuinely different data is fine
+    # genuinely different data is fine — even when it differs RARELY. npxg
+    # differs from xg on 0.79% of player-matches because that is how often a
+    # penalty is taken; an earlier 1% threshold flagged that correct data.
+    assert check_column_is_not_a_copy("npxg vs xg", 89, 11306) == []
     assert check_column_is_not_a_copy("npxg vs xg", 4000, 11306) == []
+
+
+def test_copied_column_check_accepts_a_caller_supplied_expectation():
+    """A caller that DOES know the expected rate can be stricter; the generic
+    default cannot guess it."""
+    from data.quality_checks import check_column_is_not_a_copy
+
+    assert check_column_is_not_a_copy(
+        "a vs b", 89, 11306, min_distinct_fraction=0.05
+    )
 
 
 def test_copied_column_check_ignores_an_empty_table():

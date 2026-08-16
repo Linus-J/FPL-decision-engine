@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from data.ingestors.fbref import aggregate_xg_rows
 from data.ingestors.understat_xg import parse_game_date, understat_row_to_xg
 
@@ -32,3 +34,99 @@ def test_aggregate_sums_key_passes_dgw():
     assert agg[(1, 5)]["key_passes"] == 3
     assert agg[(1, 5)]["xg"] == 0.6
     assert agg[(1, 5)]["xgi"] == 1.0   # xg 0.6 + xa 0.4
+
+
+# --- real non-penalty xG (2026-08-16) ------------------------------------
+#
+# npxg used to be stored equal to xg because the player-match feed has no
+# penalty split. Anything treating the pair as a decomposition (non-penalty
+# xG + penalty duty) therefore double-counted a taker's penalties — which is
+# exactly what projection/assemble.py briefly did. The shot-event feed does
+# carry the split.
+
+
+def test_explicit_penalty_situation_is_recognised():
+    """Trusted outright, so this keeps working if soccerdata starts labelling
+    penalties instead of nulling them."""
+    from data.ingestors.understat_xg import is_penalty_shot
+
+    assert is_penalty_shot("Penalty", 0.7612) is True
+    assert is_penalty_shot("penalty", 0.5) is True
+
+
+def test_null_situation_at_the_penalty_price_is_a_penalty():
+    """soccerdata's situation mapping has no Penalty label, so Understat's
+    penalties arrive NULL. Verified against 2025-26: all 92 null-situation
+    shots carry this xG, and no other shot has a null situation."""
+    from data.ingestors.understat_xg import is_penalty_shot
+
+    assert is_penalty_shot(None, 0.7612) is True
+    assert is_penalty_shot(float("nan"), 0.7611) is True
+    assert is_penalty_shot("", 0.7612) is True
+
+
+def test_a_null_situation_at_an_ordinary_xg_is_not_a_penalty():
+    """The guard that matters. If a null appears for some other reason, the
+    shot falls through as open play rather than silently stripping real xG
+    out of a player's non-penalty total."""
+    from data.ingestors.understat_xg import is_penalty_shot
+
+    assert is_penalty_shot(None, 0.05) is False
+    assert is_penalty_shot(None, 0.95) is False
+
+
+def test_ordinary_shots_are_never_penalties():
+    from data.ingestors.understat_xg import is_penalty_shot
+
+    assert is_penalty_shot("Open Play", 0.7612) is False
+    assert is_penalty_shot("From Corner", 0.3) is False
+
+
+def test_aggregate_npxg_sums_only_non_penalty_shots():
+    from data.ingestors.understat_xg import aggregate_npxg
+
+    rows = [
+        {"player_id": 1, "game_id": 9, "situation": "Open Play", "xg": 0.20},
+        {"player_id": 1, "game_id": 9, "situation": None, "xg": 0.7612},  # penalty
+        {"player_id": 1, "game_id": 9, "situation": "From Corner", "xg": 0.10},
+        {"player_id": 2, "game_id": 9, "situation": "Open Play", "xg": 0.40},
+    ]
+    out = aggregate_npxg(rows)
+    assert out[(1, 9)] == pytest.approx(0.30), "the penalty is excluded"
+    assert out[(2, 9)] == pytest.approx(0.40)
+
+
+def test_npxg_is_used_when_supplied():
+    from data.ingestors.understat_xg import understat_row_to_xg
+
+    row = understat_row_to_xg({"xg": 1.0, "xa": 0.1, "shots": 3, "key_passes": 1}, npxg=0.25)
+    assert row["xg"] == pytest.approx(1.0)
+    assert row["npxg"] == pytest.approx(0.25)
+
+
+def test_npxg_never_exceeds_total_xg():
+    """If the shot-event sum disagrees with the match feed's own total, the
+    total is authoritative — npxg above xg would make the penalty component
+    negative downstream."""
+    from data.ingestors.understat_xg import understat_row_to_xg
+
+    row = understat_row_to_xg({"xg": 0.5, "xa": 0.0, "shots": 1, "key_passes": 0}, npxg=0.9)
+    assert row["npxg"] == pytest.approx(0.5)
+
+
+def test_missing_shot_feed_falls_back_to_total_xg():
+    """Documented degradation, not silent: the caller logs it and the weekly
+    copied-column check flags the result."""
+    from data.ingestors.understat_xg import understat_row_to_xg
+
+    row = understat_row_to_xg({"xg": 0.8, "xa": 0.0, "shots": 2, "key_passes": 0}, npxg=None)
+    assert row["npxg"] == pytest.approx(0.8)
+
+
+def test_a_player_who_took_no_shots_gets_zero_not_total_xg():
+    """Absent from the shot aggregation means no shots, which is genuinely
+    0.0 non-penalty xG — not 'unknown, use the total'."""
+    from data.ingestors.understat_xg import understat_row_to_xg
+
+    row = understat_row_to_xg({"xg": 0.0, "xa": 0.3, "shots": 0, "key_passes": 4}, npxg=0.0)
+    assert row["npxg"] == pytest.approx(0.0)

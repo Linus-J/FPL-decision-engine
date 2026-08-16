@@ -241,7 +241,7 @@ def check_referential_integrity(
 
 
 def check_column_is_not_a_copy(
-    label: str, distinct_count: int, total: int, *, min_distinct_fraction: float = 0.01
+    label: str, distinct_count: int, total: int, *, min_distinct_fraction: float = 0.0
 ) -> list[QualityIssue]:
     """Flag a column that is supposed to carry DIFFERENT information from
     another but is byte-identical to it (2026-08-16).
@@ -252,19 +252,27 @@ def check_column_is_not_a_copy(
     values verbatim, because the per-gameweek Understat feed has no penalty
     split. Anything treating the pair as a decomposition (non-penalty xG plus
     penalties) then silently double-counts.
+
+    ``min_distinct_fraction`` defaults to 0.0, i.e. flag only when the two
+    columns differ on NO rows at all. That is the signal a verbatim copy
+    actually gives; HOW OFTEN two genuinely-different columns should differ
+    is domain knowledge a generic check cannot assume. An earlier 1% default
+    proved the point by flagging correct data: npxg differs from xg on 0.79%
+    of player-matches, because that is simply how often a penalty is taken.
+    Callers that do know the expected rate can pass a stricter bound.
     """
     if total == 0:
         return []
     fraction = distinct_count / total
-    if fraction < min_distinct_fraction:
+    if distinct_count == 0 or fraction < min_distinct_fraction:
         return [
             QualityIssue(
                 check="column_is_not_a_copy",
                 severity="warning",
                 message=(
                     f"{label}: differs on only {distinct_count}/{total} rows "
-                    f"({fraction:.2%}) — it is effectively a copy, so anything "
-                    f"treating the pair as a decomposition will double-count."
+                    f"({fraction:.2%}) — effectively a copy, so anything treating "
+                    f"the pair as a decomposition will double-count."
                 ),
             )
         ]
