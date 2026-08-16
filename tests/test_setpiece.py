@@ -272,3 +272,46 @@ def test_partial_write_preserves_fields_the_source_did_not_set(session):
     row = session.query(PlayerSetPieceRole).one()
     assert row.penalty_order == 1
     assert row.key_passes_per_game == pytest.approx(2.5), "must not be clobbered"
+
+
+# --- source precedence (2026-08-16) --------------------------------------
+
+
+def test_published_duty_is_reported_for_precedence(session):
+    """run_weekly runs the FBref scrape WEEKLY, and its inference is from
+    last season. Without precedence it would overwrite a published
+    current-season duty with a stale one."""
+    from data.ingestors.setpiece import players_with_published_duty
+
+    write_setpiece_roles("2026-27", [
+        {"player_id": 1, "penalty_order": 1, "is_penalty_taker": True,
+         "penalty_xg_per_game": 0.08},
+        {"player_id": 2, "key_passes_per_game": 1.0},  # no published duty
+    ])
+    assert players_with_published_duty("2026-27") == {1}
+    assert players_with_published_duty("2025-26") == set()
+
+
+def test_a_stale_scrape_cannot_zero_a_published_taker(session):
+    """The worst case, and the reason precedence exists: a summer signing.
+    The depth chart says he takes them; FBref has no PL record of him doing
+    so. Writes are partial, so a naive scrape would leave penalty_order=1
+    while zeroing penalty_xg_per_game — and load_penalty_duty reads the
+    VALUE while filtering on the ORDER, so his duty would silently vanish."""
+    write_setpiece_roles("2026-27", [
+        {"player_id": 1, "penalty_order": 1, "is_penalty_taker": True,
+         "penalty_xg_per_game": 0.08, "source": "depth-chart"},
+    ])
+
+    # What the scrape writes for a player with no prior PL penalties, AFTER
+    # ingest_setpiece_roles has applied precedence — it drops exactly the two
+    # penalty fields for anyone carrying a published duty.
+    write_setpiece_roles("2026-27", [
+        {"player_id": 1, "key_passes_per_game": 1.7},
+    ])
+
+    row = session.query(PlayerSetPieceRole).one()
+    assert row.penalty_order == 1
+    assert row.is_penalty_taker is True
+    assert row.penalty_xg_per_game == pytest.approx(0.08), "published duty survived"
+    assert row.key_passes_per_game == pytest.approx(1.7), "scrape still contributed"

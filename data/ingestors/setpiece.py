@@ -35,6 +35,7 @@ import logging
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 
+from sqlalchemy import text
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session
@@ -199,6 +200,37 @@ def write_setpiece_roles(season: str, roles: Iterable[Mapping]) -> int:
         db.close()
 
 
+def players_with_published_duty(season: str) -> set[int]:
+    """Players whose penalty duty came from a PUBLISHED depth chart.
+
+    Source precedence (2026-08-16). ``run_weekly.py`` runs the FBref scrape
+    every week, and its inference is from LAST season's attempt share. Left
+    unchecked it would overwrite a published current-season duty with a stale
+    one -- and because writes are partial, it would leave ``penalty_order``
+    intact while zeroing the value the order is supposed to carry. A player
+    who changed clubs in the summer is the worst case: the depth chart says
+    he is the taker, FBref has no PL record of him taking one, and
+    ``load_penalty_duty`` would then read his value as 0.0 while still
+    counting him as being on duty.
+
+    A published list beats inference from a season that has already ended,
+    so the scrape defers on penalties for these players. It still contributes
+    key passes, which the depth chart says nothing about.
+    """
+    db = get_session()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT player_id FROM player_setpiece_roles "
+                "WHERE season = :season AND penalty_order IS NOT NULL"
+            ),
+            {"season": season},
+        ).fetchall()
+    finally:
+        db.close()
+    return {int(r[0]) for r in rows}
+
+
 def ingest_setpiece_roles(  # pragma: no cover - live network + browser only
     season: str,
     *,
@@ -260,20 +292,28 @@ def ingest_setpiece_roles(  # pragma: no cover - live network + browser only
     roles = derive_setpiece_roles(merged)
 
     name_map = _build_name_map()
+    published = players_with_published_duty(season)
     unmatched = 0
+    deferred = 0
     for role in roles:
         player_id = _match_player(role["player"], name_map)
         if player_id is None:
             unmatched += 1
             continue
         role["player_id"] = player_id
+        if player_id in published:
+            # A published depth chart already states this player's current
+            # duty. Drop the penalty fields so last season's attempt share
+            # cannot overwrite it; key passes still apply.
+            role.pop("is_penalty_taker", None)
+            role.pop("penalty_xg_per_game", None)
+            deferred += 1
 
     written = write_setpiece_roles(season, roles)
     logger.info(
         "Set-piece roles %s (evidence: %s): %d written, %d unmatched, "
-        "%d penalty takers",
-        season, evidence_season, written, unmatched,
-        sum(1 for r in roles if r.get("player_id") and r["is_penalty_taker"]),
+        "%d deferred to a published depth chart",
+        season, evidence_season, written, unmatched, deferred,
     )
     return written, unmatched
 
