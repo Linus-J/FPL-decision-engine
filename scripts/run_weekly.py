@@ -4,7 +4,7 @@ gameweek that just finished, THEN runs the real agent decision, THEN the
 simulation batch -- in that order, so the decision is made against
 up-to-date DefCon/bonus/ownership data, not whatever was last scraped.
 
-FBref -> WhoScored -> ownership -> data_quality_gate.py ->
+FBref -> WhoScored -> set-pieces -> ownership -> data_quality_gate.py ->
 backfill_decision_outcomes.py -> run_agent.py -> run_simulations.py.
 
 The outcome backfill scores LAST gameweek's decisions (for the real bot and
@@ -100,6 +100,15 @@ def main() -> None:
         _run_or_warn(
             "scripts/scrape_whoscored.py",
             [sys.executable, "scripts/scrape_whoscored.py", args.season],
+        )
+        # P3.7: penalty/set-piece duty. Shares the browser requirement above,
+        # so it lives behind the same --skip-match-events guard. Duty moves
+        # with transfers and managers, so this is refreshed rather than
+        # scraped once -- write_setpiece_roles updates in place.
+        _run_or_warn(
+            "scripts/scrape_setpieces.py",
+            [sys.executable, "scripts/scrape_setpieces.py", args.season],
+            env=fbref_env,
         )
 
     gw = _current_gameweek()
