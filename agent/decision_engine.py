@@ -582,6 +582,18 @@ def _run_decision_cycle(
             # the outcome scorer had no way to net them off. Recorded here
             # too, on the row whose actual_outcome they reduce.
             "hits_taken": transfer_plan.hits_taken,
+            # P2.6: the counterfactual. At season end "what went wrong" is
+            # unanswerable beyond the score unless what was DECLINED was
+            # recorded too. A chip that never fired left no trace at all --
+            # only played chips got a row -- so an entire season of
+            # near-misses was invisible. `free_transfers_used` separates
+            # "banked deliberately" from "found nothing worth doing".
+            "chip_considered": chip_rec.chip.value if chip_rec.chip else None,
+            "chip_reason": chip_rec.reason,
+            "chip_expected_gain": round(chip_rec.expected_gain, 2),
+            "free_transfers_available": free_transfers,
+            "free_transfers_used": len(transfer_plan.transfers_in),
+            "transfer_xpts_gain": round(transfer_plan.xpts_gain, 2),
             "budget": available_budget,
             # P1.2: was `max(0, free_transfers - len(transfers_in))` — no weekly
             # +1, no cap, and it hit 0 after the first transfer, which made the
