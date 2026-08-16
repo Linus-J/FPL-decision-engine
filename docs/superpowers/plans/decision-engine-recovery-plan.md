@@ -152,10 +152,12 @@ not drifted.
 
 Still open before this is genuinely load-bearing:
 
-- **The dashboard doesn't surface any of it yet.** `simulation/analysis.py`
-  is importable and tested but `dashboard/pages/6_Simulations.py` still reads
-  the raw tables. Low effort, worth doing before GW1 finishes so the first
-  real read-out is visible.
+- ~~The dashboard doesn't surface any of it yet.~~ **Done 2026-08-16.** The
+  Simulations page now reads through `simulation/analysis.py` and shows axis
+  effects, paired deltas and calibration. Wiring it up surfaced two real bugs
+  in the analysis layer (a cohort with two baseline personas raised on the
+  paired map; an empty result had no columns), both caught by the
+  pre-existing dashboard tests rather than by inspection.
 - **`swept_axis` is a string on `SimManager`.** The analysis groups on it. If
   a future sweep renames an axis mid-season the grouping silently splits.
 - One axis, `risk_level`, still partly drives an inert path (`lambda` needs
