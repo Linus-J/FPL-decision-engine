@@ -139,7 +139,30 @@ binds live.
 
 ---
 
-## P2 — Make the measurement trustworthy *(top priority given the chosen validation strategy)*
+## P2 — Make the measurement trustworthy — **COMPLETE 2026-08-16**
+
+Landed in `62d2f35` (P2.1–P2.3), `a51ae9b` (P2.4, plus P3.5) and `e0624da`
+(P2.5, P2.6). Suite 603 → 622 passing.
+
+The live cohort was regenerated: 90 personas (backed up first; no outcomes
+existed, GW1 being unplayed, so nothing measured was lost), all 90 ran GW1
+successfully, and the baseline control's projection matches the real bot's
+exactly — which is the check that the simulation path and the real path have
+not drifted.
+
+Still open before this is genuinely load-bearing:
+
+- **The dashboard doesn't surface any of it yet.** `simulation/analysis.py`
+  is importable and tested but `dashboard/pages/6_Simulations.py` still reads
+  the raw tables. Low effort, worth doing before GW1 finishes so the first
+  real read-out is visible.
+- **`swept_axis` is a string on `SimManager`.** The analysis groups on it. If
+  a future sweep renames an axis mid-season the grouping silently splits.
+- One axis, `risk_level`, still partly drives an inert path (`lambda` needs
+  ownership, see P3.2). Its `mu` half is real, so it is not wasted, but its
+  result will under-state what a fully-wired version would show.
+
+### Original scope (all landed)
 
 The plan is to learn from a live season. That only works if what gets recorded
 is correct. Current state:
