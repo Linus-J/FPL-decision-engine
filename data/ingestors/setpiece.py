@@ -39,6 +39,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session
+from data.ingestors.fbref import _match_player, _normalize_name
 from data.models import PlayerSetPieceRole
 
 logger = logging.getLogger(__name__)
@@ -386,6 +387,17 @@ _TEAM_ALIASES = {
 # penalty taker gets into projections.
 _UNCERTAIN_MARKER = "*"
 
+# Squad-scoped disambiguation, for short names that are genuinely ambiguous
+# WITHIN one squad. Deliberately not added to fbref.py's global alias map:
+# "Pedro" means João Pedro at Chelsea and nothing in particular elsewhere.
+# Each entry is a real ambiguity the collision check refused to guess at.
+_TEAM_ALIASES_BY_SQUAD: dict[tuple[str, str], str] = {
+    # Chelsea field both João Pedro and Pedro Neto. The published list uses
+    # "Pedro" and "Neto" as separate entries in the same table, so they are
+    # meant as different players — "Pedro" is João Pedro.
+    ("Chelsea", "pedro"): "João Pedro",
+}
+
 # League-average penalties awarded to a given team in a given match. ~90-100
 # penalties across 380 PL matches is ~0.12 per team per game. Combined with
 # PENALTY_CONVERSION this turns depth-chart position into expected penalty
@@ -447,8 +459,16 @@ def parse_setpiece_table(raw: str) -> list[dict]:
                 name = name.replace(_UNCERTAIN_MARKER, "").strip()
                 if not name:
                     continue
+                # Keyed by the NORMALISED name, not the raw one. A published
+                # list spells the same player differently between columns
+                # ("Schär" under free kicks, "Schar" under corners), which
+                # produced two role dicts for one player -- and since the
+                # write is an upsert on (player_id, season), the second
+                # silently erased the first's duty. Schär lost his free-kick
+                # role exactly this way.
+                key = (team, _normalize_name(name))
                 role = roles.setdefault(
-                    (team, name),
+                    key,
                     {
                         "team": team, "player": name, "uncertain": False,
                         "penalty_order": None, "freekick_order": None,
@@ -496,7 +516,6 @@ def ingest_depth_chart(season: str, raw: str, source: str) -> tuple[int, list[st
     rather than guessed at, since a wrong match would hand one player's
     penalty duty to another.
     """
-    from data.ingestors.fbref import _match_player, _normalize_name
 
     roles = roles_from_depth_chart(parse_setpiece_table(raw))
     if not roles:
@@ -517,15 +536,33 @@ def ingest_depth_chart(season: str, raw: str, source: str) -> tuple[int, list[st
 
     unresolved: list[str] = []
     uncertain: list[str] = []
+    resolved_to: dict[int, str] = {}
+    collisions: list[str] = []
     for role in roles:
         team_id = team_ids.get(role["team"].lower())
         if team_id is None:
             unresolved.append(f"{role['player']} (unknown team {role['team']!r})")
             continue
-        player_id = _match_player(role["player"], by_team.get(team_id, {}))
+        squad = by_team.get(team_id, {})
+        alias = _TEAM_ALIASES_BY_SQUAD.get((role["team"], _normalize_name(role["player"])))
+        player_id = _match_player(alias or role["player"], squad)
         if player_id is None:
             unresolved.append(f"{role['player']} ({role['team']})")
             continue
+        # Two DIFFERENT source names resolving to one player means the matcher
+        # guessed. Chelsea list both "Pedro" and "Neto"; "Pedro" resolves to
+        # Pedro Neto on his first name, so João Pedro's penalty duty was
+        # assigned to Neto and then overwritten by Neto's own entries --
+        # Chelsea's second penalty taker vanished entirely. Skipping and
+        # reporting beats guessing: the project's matcher already refuses
+        # fuzzy matches for exactly this reason.
+        if player_id in resolved_to:
+            collisions.append(
+                f"{role['team']}: {resolved_to[player_id]!r} and {role['player']!r} "
+                f"both resolve to the same player — SKIPPED, add a squad alias"
+            )
+            continue
+        resolved_to[player_id] = role["player"]
         role["player_id"] = player_id
         role["source"] = source
         if role["uncertain"]:
@@ -537,6 +574,11 @@ def ingest_depth_chart(season: str, raw: str, source: str) -> tuple[int, list[st
             "%d taker(s) flagged uncertain in the source and recorded anyway "
             "— verify before the deadline: %s",
             len(uncertain), ", ".join(sorted(uncertain)),
+        )
+    if collisions:
+        logger.error(
+            "%d ambiguous name(s) skipped rather than guessed:\n  %s",
+            len(collisions), "\n  ".join(collisions),
         )
     if unresolved:
         logger.warning(

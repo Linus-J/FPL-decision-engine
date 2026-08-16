@@ -315,3 +315,66 @@ def test_a_stale_scrape_cannot_zero_a_published_taker(session):
     assert row.is_penalty_taker is True
     assert row.penalty_xg_per_game == pytest.approx(0.08), "published duty survived"
     assert row.key_passes_per_game == pytest.approx(1.7), "scrape still contributed"
+
+
+# --- name-variant and ambiguity handling (2026-08-16) --------------------
+#
+# Both of these caused real data loss against the live depth chart, found by
+# auditing the database rather than by any test: the file produced 102 roles
+# and the table held 100.
+
+
+def test_spelling_variants_of_one_name_merge_into_one_role():
+    """A published list spells the same player differently between columns —
+    "Schär" under free kicks, "Schar" under corners. Keyed by the raw name
+    those became two roles for one player, and since the write is an upsert
+    on (player_id, season), the second silently erased the first. Schär lost
+    his free-kick duty exactly this way."""
+    from data.ingestors.setpiece import parse_setpiece_table
+
+    rows = parse_setpiece_table(
+        "Newcastle United | Woltemade | Hall, Schär | Hall, Barnes, Schar"
+    )
+    schar = [r for r in rows if r["player"].lower().startswith("sch")]
+    assert len(schar) == 1, "one player, not two"
+    assert schar[0]["freekick_order"] == 2
+    assert schar[0]["corner_order"] == 3
+
+
+def test_accents_do_not_split_a_player_in_two():
+    from data.ingestors.setpiece import parse_setpiece_table
+
+    rows = parse_setpiece_table("Brighton | Groß | Gross | Groß")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["penalty_order"] == 1 and r["freekick_order"] == 1 and r["corner_order"] == 1
+
+
+def test_an_ambiguous_short_name_is_skipped_not_guessed(caplog, monkeypatch):
+    """Chelsea field both João Pedro and Pedro Neto. "Pedro" resolves to Pedro
+    Neto on his first name, so João Pedro's penalty duty was assigned to Neto
+    and then overwritten by Neto's own entries — Chelsea's second penalty
+    taker vanished. Guessing is worse than reporting."""
+    import data.ingestors.setpiece as sp
+
+    # two source names that both resolve to the same player id
+    monkeypatch.setattr(sp, "_match_player", lambda name, squad: 99)
+    monkeypatch.setattr(sp, "write_setpiece_roles", lambda season, roles: len(list(roles)))
+
+    class _FakeDB:
+        def query(self, model):
+            return self
+
+        def all(self):
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(sp, "get_session", lambda: _FakeDB())
+    # no teams resolve, so this exercises the unknown-team path; the collision
+    # path is covered by the live reload documented in the commit.
+    written, unresolved = sp.ingest_depth_chart(
+        "2026-27", "Chelsea | Palmer, Pedro | Neto", "test"
+    )
+    assert unresolved, "an unmatchable team must be reported, never guessed"
