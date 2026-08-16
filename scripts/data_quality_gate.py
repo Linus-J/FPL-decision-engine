@@ -87,10 +87,189 @@ def run_understat_coverage_check(season: str = "2025-26") -> list:
     return check_name_match_coverage(f"understat/{season}", matched, len(names))
 
 
+
+# --- Checks added 2026-08-16 ------------------------------------------------
+#
+# The suite proves the code does what it was written to do. These ask a
+# different question: is the DATA the code is running on actually there, and
+# are the numbers it produces plausible? Two of data/quality_checks.py's four
+# checks had no caller at all -- including check_stat_column_not_dead, which
+# is precisely the check that would have flagged cs_probability being 0.0 for
+# every row ever written.
+
+
+def run_source_coverage_checks(season: str = "2025-26") -> list:
+    """How much of the football we model does each source actually see?
+
+    Weighted by MINUTES, not player count: a source missing thirty fringe
+    players is noise; one missing three everpresents is a hole in every
+    projection they appear in.
+    """
+    from sqlalchemy import text
+
+    from data.db import get_session
+    from data.quality_checks import check_source_coverage
+
+    issues = []
+    db = get_session()
+    try:
+        total = db.execute(
+            text(
+                "SELECT COALESCE(SUM(minutes), 0) FROM player_gw_stats "
+                "WHERE season = :s"
+            ),
+            {"s": season},
+        ).scalar() or 0
+        for label, table in (
+            ("understat xg", "player_xg_stats"),
+            ("match events", "player_match_events"),
+            ("recomputed bonus", "recomputed_bonus"),
+        ):
+            covered = db.execute(
+                text(
+                    f"SELECT COALESCE(SUM(s.minutes), 0) FROM player_gw_stats s "
+                    f"WHERE s.season = :s AND EXISTS ("
+                    f"  SELECT 1 FROM {table} x "
+                    f"  WHERE x.player_id = s.player_id AND x.season = s.season)"
+                ),
+                {"s": season},
+            ).scalar() or 0
+            issues += check_source_coverage(
+                f"{label}/{season}", float(covered), float(total)
+            )
+    finally:
+        db.close()
+    return issues
+
+
+def run_dead_column_checks(season: str = "2026-27") -> list:
+    """Columns that are supposed to carry real per-player data.
+
+    Catches the FBref dead-mapping bug class: a column that exists, is
+    written on every row, and is always the same default -- which reads as
+    "no signal" downstream rather than as an error.
+    """
+    from sqlalchemy import text
+
+    from data.db import get_session
+    from data.quality_checks import QualityIssue, check_stat_column_not_dead
+
+    # cs_probability is a KNOWN unimplemented surface, not a regression:
+    # assemble.py computes each player's clean-sheet outcome per scenario
+    # (it feeds the BPS simulator) but never reduces it to a probability, so
+    # persist_projections leaves the column at its 0.0 default. The only
+    # consumer is scripts/plot_analysis.py's clean-sheet-by-team chart, which
+    # is consequently always blank. Reported as a warning with the reason
+    # rather than an error: failing the gate every week for a known display
+    # gap is how a gate gets ignored.
+    known_gaps = {
+        "cs_probability": (
+            "assemble.py never surfaces it (it has the per-scenario clean sheet "
+            "internally, for BPS) — plot_analysis.py's clean-sheet-by-team chart "
+            "is blank as a result. Display only; no decision reads it."
+        ),
+    }
+
+    issues = []
+    db = get_session()
+    try:
+        for column in ("xpts", "xpts_var", "start_probability", "cs_probability"):
+            total = db.execute(
+                text("SELECT COUNT(*) FROM player_projections WHERE gameweek IS NOT NULL")
+            ).scalar() or 0
+            nonzero = db.execute(
+                text(
+                    f"SELECT COUNT(*) FROM player_projections WHERE {column} != 0"
+                )
+            ).scalar() or 0
+            found = check_stat_column_not_dead(
+                f"player_projections.{column}", int(nonzero), int(total)
+            )
+            if found and column in known_gaps:
+                found = [
+                    QualityIssue(
+                        check=i.check, severity="warning",
+                        message=f"{i.message} KNOWN GAP: {known_gaps[column]}",
+                    )
+                    for i in found
+                ]
+            issues += found
+    finally:
+        db.close()
+    return issues
+
+
+def run_referential_integrity_checks() -> list:
+    """Rows pointing at a player that does not exist. An orphan is silent --
+    it simply never joins, so that player's data vanishes from projections
+    rather than raising."""
+    from sqlalchemy import text
+
+    from data.db import get_session
+    from data.quality_checks import check_referential_integrity
+
+    issues = []
+    db = get_session()
+    try:
+        for table in (
+            "player_gw_stats", "player_xg_stats", "player_match_events",
+            "player_projections", "player_setpiece_roles", "recomputed_bonus",
+        ):
+            total = db.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar() or 0
+            orphans = db.execute(
+                text(
+                    f"SELECT COUNT(*) FROM {table} t "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.id = t.player_id)"
+                )
+            ).scalar() or 0
+            issues += check_referential_integrity(table, int(orphans), int(total))
+    finally:
+        db.close()
+    return issues
+
+
+def run_projection_sanity_checks() -> list:
+    """Are the numbers plausible at all?
+
+    Unit tests prove the arithmetic matches what was written; they cannot
+    say the answer is sane. Every real defect this project has had showed up
+    first as a number outside its plausible range.
+    """
+    from sqlalchemy import text
+
+    from data.db import get_session
+    from data.quality_checks import check_projection_sanity
+
+    db = get_session()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT xpts FROM player_projections WHERE gameweek = "
+                "(SELECT MIN(gameweek) FROM player_projections)"
+            )
+        ).fetchall()
+    finally:
+        db.close()
+    if not rows:
+        return []  # nothing projected yet is a legitimate pre-season state
+    values = [float(r[0]) for r in rows]
+    # A per-player, per-gameweek expectation across the WHOLE pool, most of
+    # whom are fringe. Sub-0.5 means a scale error (per-appearance mistaken
+    # for per-gameweek, or availability applied twice); above 4 means the
+    # pool average is scoring like a premium, which no pool does.
+    return check_projection_sanity(
+        "player_projections.xpts (pool mean)", values, low=0.5, high=4.0
+    )
+
+
 def main() -> int:
     issues = []
     issues += run_team_id_freshness_check()
     issues += run_understat_coverage_check()
+    issues += run_source_coverage_checks()
+    issues += run_dead_column_checks()
+    issues += run_referential_integrity_checks()
+    issues += run_projection_sanity_checks()
 
     if not issues:
         logger.info("data quality gate: all checks passed")

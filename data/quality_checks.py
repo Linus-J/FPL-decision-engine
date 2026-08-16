@@ -141,3 +141,100 @@ def check_no_single_teammate_monopoly(
             )
         ]
     return []
+
+
+def check_source_coverage(
+    source: str,
+    covered_minutes: float,
+    total_minutes: float,
+    *,
+    min_coverage: float = 0.90,
+) -> list[QualityIssue]:
+    """Flag an external source that fails to reach the players who actually
+    PLAY (2026-08-16).
+
+    ``check_name_match_coverage`` counts names, which treats a squad
+    also-ran and a nailed-on starter as equally important. They are not: a
+    source missing thirty fringe players is noise, and one missing three
+    everpresents is a hole in every projection they appear in. Weighting by
+    minutes asks the question that matters — how much of the football we are
+    modelling does this source actually see.
+    """
+    if total_minutes <= 0:
+        return []
+    coverage = covered_minutes / total_minutes
+    if coverage < min_coverage:
+        return [
+            QualityIssue(
+                check="source_coverage",
+                severity="error" if coverage < 0.75 else "warning",
+                message=(
+                    f"{source}: covers only {coverage:.1%} of played minutes "
+                    f"— below the {min_coverage:.0%} floor. Players outside it "
+                    f"project on defaults, not data."
+                ),
+            )
+        ]
+    return []
+
+
+def check_projection_sanity(
+    label: str, values: list[float], *, low: float, high: float
+) -> list[QualityIssue]:
+    """Flag a projection distribution that has drifted somewhere implausible.
+
+    Unit tests prove the arithmetic is what was written; they cannot tell
+    you the answer is sane. A mean projected score of 3 or 300 points is
+    wrong regardless of how faithfully the code computed it, and every such
+    failure this project has actually had (points-per-appearance mistaken
+    for points-per-gameweek, a hit costing 4x the candidate-pool size, a
+    horizon silently collapsing to one gameweek) showed up first as a number
+    outside its plausible range.
+    """
+    if not values:
+        return [
+            QualityIssue(
+                check="projection_sanity",
+                severity="error",
+                message=f"{label}: no values at all — the pipeline produced nothing.",
+            )
+        ]
+    mean = sum(values) / len(values)
+    if not low <= mean <= high:
+        return [
+            QualityIssue(
+                check="projection_sanity",
+                severity="error",
+                message=(
+                    f"{label}: mean {mean:.2f} is outside the plausible range "
+                    f"[{low}, {high}] — the arithmetic may be right and the "
+                    f"answer still wrong."
+                ),
+            )
+        ]
+    return []
+
+
+def check_referential_integrity(
+    label: str, orphan_count: int, total: int
+) -> list[QualityIssue]:
+    """Flag rows referencing a player that does not exist.
+
+    SQLite enforces foreign keys only when ``PRAGMA foreign_keys=ON`` is set
+    on the connection, which this project does — but rows written before
+    that, or against a different database file, can still be orphaned. An
+    orphan is silent: it simply never joins, so the player's data vanishes
+    from projections rather than erroring.
+    """
+    if orphan_count == 0:
+        return []
+    return [
+        QualityIssue(
+            check="referential_integrity",
+            severity="error",
+            message=(
+                f"{label}: {orphan_count}/{total} rows reference a player_id "
+                f"that is not in `players` — those rows silently never join."
+            ),
+        )
+    ]

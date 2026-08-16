@@ -73,3 +73,89 @@ def test_no_single_teammate_monopoly_allows_genuine_single_signal():
 def test_no_single_teammate_monopoly_allows_balanced_team():
     team_weights = {5: 0.4, 18: 0.35, 29: 0.25}
     assert check_no_single_teammate_monopoly(team_weights) == []
+
+
+# --- Checks added 2026-08-16: verifying the DATA, not the code -------------
+#
+# The rest of the suite proves the code does what it was written to do.
+# These ask whether the data it runs on is actually there and whether the
+# numbers coming out are plausible — the failure mode where every unit test
+# passes and the answer is still wrong.
+
+
+def test_source_coverage_weights_by_minutes_not_player_count():
+    """A source missing thirty fringe players is noise; one missing three
+    everpresents is a hole in every projection they appear in. Counting
+    names treats those as identical, which is why this exists alongside
+    check_name_match_coverage."""
+    from data.quality_checks import check_source_coverage
+
+    # 95% of minutes covered, even if many individual players are missing
+    assert check_source_coverage("understat", 9500.0, 10000.0) == []
+    # 60% of minutes covered is an error however few players it is
+    issues = check_source_coverage("understat", 6000.0, 10000.0)
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+
+
+def test_source_coverage_warns_before_it_errors():
+    from data.quality_checks import check_source_coverage
+
+    warn = check_source_coverage("events", 8000.0, 10000.0)
+    assert warn and warn[0].severity == "warning"
+
+
+def test_source_coverage_ignores_an_empty_season():
+    """A season with no minutes played yet is pre-season, not a data gap."""
+    from data.quality_checks import check_source_coverage
+
+    assert check_source_coverage("understat", 0.0, 0.0) == []
+
+
+def test_projection_sanity_catches_a_scale_error():
+    """The exact regression P0.1 fixed: points-per-APPEARANCE used where
+    points-per-gameweek was meant. Every value is individually reasonable
+    and the arithmetic is faithful — the pool mean is what gives it away."""
+    from data.quality_checks import check_projection_sanity
+
+    per_appearance = [5.5] * 100      # plausible per appearance, absurd as a pool mean
+    issues = check_projection_sanity("xpts", per_appearance, low=0.5, high=4.0)
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert "outside the plausible range" in issues[0].message
+
+
+def test_projection_sanity_catches_a_collapse_to_zero():
+    from data.quality_checks import check_projection_sanity
+
+    assert check_projection_sanity("xpts", [0.0] * 100, low=0.5, high=4.0)
+
+
+def test_projection_sanity_passes_a_realistic_pool():
+    """Most of the player pool are fringe, so a realistic per-gameweek mean
+    across everyone is low — around 1-2 points, not a starter's 5."""
+    from data.quality_checks import check_projection_sanity
+
+    pool = [0.2] * 60 + [1.5] * 25 + [4.0] * 15
+    assert check_projection_sanity("xpts", pool, low=0.5, high=4.0) == []
+
+
+def test_projection_sanity_treats_no_values_as_an_error():
+    """An empty projection frame means the pipeline produced nothing, which
+    is a failure rather than a benign zero."""
+    from data.quality_checks import check_projection_sanity
+
+    issues = check_projection_sanity("xpts", [], low=0.5, high=4.0)
+    assert len(issues) == 1 and issues[0].severity == "error"
+
+
+def test_referential_integrity_flags_orphans():
+    """An orphaned row is SILENT — it simply never joins, so that player's
+    data vanishes from projections rather than raising."""
+    from data.quality_checks import check_referential_integrity
+
+    assert check_referential_integrity("player_xg_stats", 0, 1000) == []
+    issues = check_referential_integrity("player_xg_stats", 12, 1000)
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert "silently never join" in issues[0].message
