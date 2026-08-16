@@ -230,5 +230,59 @@ async def ingest_odds() -> int:
         db.close()
 
 
+def odds_coverage_by_gameweek(season: str, horizon: int) -> dict[int, tuple[int, int]]:
+    """gameweek -> (fixtures WITH odds, fixtures total) for the next
+    ``horizon`` gameweeks (P3.11, 2026-08-16).
+
+    Bookmakers only price near-term fixtures, so the planning horizon is
+    routinely longer than the odds window. When a gameweek has no odds,
+    ``projection/assemble.py`` silently falls back to a flat
+    ``lam_home=1.35, lam_away=1.15`` -- a league-average scoreline for every
+    fixture, which erases exactly the fixture-difficulty signal the extra
+    horizon was added to exploit.
+
+    Measured at 6 of 10 GW1 fixtures and nothing beyond GW1 on 2026-08-16.
+    Nothing here can widen the window; the point is that the horizon's real
+    information content stops being an assumption.
+    """
+    db = get_session()
+    try:
+        rows = db.execute(text("""
+            SELECT f.gameweek,
+                   -- DISTINCT on both: fixture_odds is append-only (one row
+                   -- per fetch), so a plain COUNT(*) counts fetches, not
+                   -- fixtures, and reported 112 "fixtures" for a 10-match
+                   -- gameweek.
+                   COUNT(DISTINCT f.id) AS fixtures,
+                   COUNT(DISTINCT fo.fixture_id) AS with_odds
+            FROM fixtures f
+            LEFT JOIN fixture_odds fo ON fo.fixture_id = f.id
+            WHERE f.season = :season AND f.finished = 0
+            GROUP BY f.gameweek
+            ORDER BY f.gameweek
+        """), {"season": season}).fetchall()
+    finally:
+        db.close()
+    coverage = {int(gw): (int(with_odds), int(fixtures)) for gw, fixtures, with_odds in rows}
+    upcoming = sorted(coverage)[:horizon]
+    return {gw: coverage[gw] for gw in upcoming}
+
+
+def log_odds_coverage(season: str, horizon: int) -> dict[int, tuple[int, int]]:
+    """Report coverage across the planning horizon, warning on any gameweek
+    the model will end up projecting with flat league-average scorelines."""
+    coverage = odds_coverage_by_gameweek(season, horizon)
+    for gw, (with_odds, total) in coverage.items():
+        if with_odds < total:
+            logger.warning(
+                "Odds coverage GW%d: %d/%d fixtures — the rest project on a flat "
+                "league-average scoreline, not real fixture difficulty",
+                gw, with_odds, total,
+            )
+        else:
+            logger.info("Odds coverage GW%d: %d/%d fixtures", gw, with_odds, total)
+    return coverage
+
+
 def ingest_odds_sync() -> int:
     return asyncio.run(ingest_odds())

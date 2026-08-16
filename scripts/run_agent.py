@@ -18,7 +18,8 @@ from agent import decision_engine, fpl_client, notifier
 from config.settings import settings
 from data.ingestors.fpl_api import run_full_ingest
 from data.ingestors.injury_parser import run_injury_parser
-from data.ingestors.odds_api import ingest_odds_sync
+from config.strategy import OPTIMISER
+from data.ingestors.odds_api import ingest_odds_sync, log_odds_coverage
 from data.ingestors.understat import run_understat_ingest
 from optimiser.chips import Chip
 
@@ -63,6 +64,13 @@ def main() -> None:
 
     try:
         ingest_odds_sync()
+        # P3.11: make the odds window visible. Bookmakers price only
+        # near-term fixtures, so the planning horizon is routinely longer
+        # than the odds window — and an uncovered gameweek silently projects
+        # on a flat league-average scoreline instead of real fixture
+        # difficulty. Nothing here widens the window; it stops the horizon's
+        # real information content being an assumption.
+        log_odds_coverage(args.season, OPTIMISER.projection_horizon_gws)
     except Exception as exc:
         logging.getLogger().warning("Odds ingest skipped: %s", exc)
 
