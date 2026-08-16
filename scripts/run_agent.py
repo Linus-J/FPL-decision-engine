@@ -19,7 +19,6 @@ from config.settings import settings
 from data.ingestors.fpl_api import run_full_ingest
 from data.ingestors.injury_parser import run_injury_parser
 from data.ingestors.odds_api import ingest_odds_sync
-from data.ingestors.press_conference import ingest_press_signals_sync
 from data.ingestors.understat import run_understat_ingest
 from optimiser.chips import Chip
 
@@ -77,10 +76,14 @@ def main() -> None:
     except Exception as exc:
         logging.getLogger().warning("Injury parser skipped: %s", exc)
 
-    try:
-        ingest_press_signals_sync()
-    except Exception as exc:
-        logging.getLogger().warning("Press signal ingest skipped: %s", exc)
+    # P3.8 (2026-08-16): press-conference signals are NOT ingested here any
+    # more. `player_press_signals` was written every run and read by nothing
+    # but the model definition -- a shadow layer that was never compared to
+    # anything, so it was pure weekly cost. The ingestor
+    # (data/ingestors/press_conference.py) and its table are kept intact;
+    # re-enable this once there is a way to measure whether the signal helps
+    # (the obvious route is a swept persona axis, so the cohort answers it
+    # before the real bot ever uses it -- see the recovery plan P3.8).
 
     decision = decision_engine.run(
         season=args.season,

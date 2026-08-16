@@ -109,3 +109,62 @@ def test_ownership_snapshot_schema_roundtrip(session):
     assert row.captaincy_pct_top10k == 5.5
     assert row.captaincy_pct_overall is None  # documented gap, not a silent 0
     assert row.sample_size == 1000
+
+
+# --- P3.2 (2026-08-16): the read side, wired for the first time ----------
+
+
+def test_load_latest_ownership_is_empty_before_anything_is_ingested(tmp_path, monkeypatch):
+    """Pre-GW1 reality: sampling the Overall league returns no ranked
+    entries, so the table is empty. Consumers treat an empty frame as "0% EO
+    for everyone", which is a uniform rescale and changes no ranking -- so
+    this must be an empty frame with the right columns, not an error."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import data.ingestors.ownership as ownership_module
+    from data.models import Base
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'eo.db'}")
+    Base.metadata.create_all(bind=engine)
+    Local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(ownership_module, "get_session", lambda: Local())
+
+    df = ownership_module.load_latest_ownership()
+    assert df.empty
+    assert list(df.columns) == ["player_id", "top10k_selected_pct"]
+
+
+def test_load_latest_ownership_keeps_only_the_most_recent_sample(tmp_path, monkeypatch):
+    """EO is re-sampled every gameweek, so the table accumulates rows per
+    player. Feeding stale duplicates into the objective would weight a
+    player by an ownership they no longer have."""
+    from datetime import datetime
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import data.ingestors.ownership as ownership_module
+    from data.models import Base, OwnershipSnapshot
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'eo2.db'}")
+    Base.metadata.create_all(bind=engine)
+    Local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(ownership_module, "get_session", lambda: Local())
+
+    s = Local()
+    s.add_all([
+        OwnershipSnapshot(player_id=1, top10k_selected_pct=20.0,
+                          snapshot_ts=datetime(2026, 8, 20)),
+        OwnershipSnapshot(player_id=1, top10k_selected_pct=55.0,
+                          snapshot_ts=datetime(2026, 8, 27)),
+        OwnershipSnapshot(player_id=2, top10k_selected_pct=10.0,
+                          snapshot_ts=datetime(2026, 8, 27)),
+    ])
+    s.commit()
+    s.close()
+
+    df = ownership_module.load_latest_ownership().set_index("player_id")
+    assert len(df) == 2
+    assert df.loc[1, "top10k_selected_pct"] == 55.0
+    assert df.loc[2, "top10k_selected_pct"] == 10.0

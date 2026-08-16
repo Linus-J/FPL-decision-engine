@@ -96,7 +96,6 @@ def evaluate_transfers(
     free_transfers: int = 1,
     available_budget: float | None = None,
     wildcard_active: bool = False,
-    dgw_gws: set[int] | None = None,
     solver_time_limit: int | None = None,
     ownership: pd.DataFrame | None = None,
     config: OptimiserConfig | None = None,
@@ -407,12 +406,6 @@ def evaluate_transfers(
         plan.hits_taken, plan.net_xpts_gain, status,
     )
     return plan
-
-
-def should_take_hit(plan: TransferPlan) -> bool:
-    if plan.hits_taken == 0:
-        return False
-    return plan.net_xpts_gain > 0
 
 
 def get_dgw_coverage(

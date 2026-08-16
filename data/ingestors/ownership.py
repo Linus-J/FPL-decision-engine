@@ -28,6 +28,8 @@ import logging
 from datetime import datetime
 
 import aiohttp
+import pandas as pd
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session
@@ -192,3 +194,46 @@ async def ingest_ownership_snapshot(  # pragma: no cover - live network
         gw, written, len(picks_by_entry), len(entry_ids),
     )
     return written, len(entry_ids)
+
+
+def load_latest_ownership(gameweek: int | None = None) -> pd.DataFrame:
+    """The most recent EO snapshot as a ``(player_id, top10k_selected_pct)``
+    frame -- the shape ``optimise_squad`` / ``evaluate_transfers`` /
+    ``optimise_starting_xi`` already accept (P3.2, 2026-08-16).
+
+    Until now nothing read this table at all. The optimisers grew an
+    ``ownership=`` parameter during P3-3, but no call site ever passed it, so
+    the weekly ingest above wrote into a void -- and the table is still empty
+    besides, because sampling the Overall league before GW1's deadline
+    returns zero ranked entries. Wiring the read side now means the signal
+    starts working the moment real rows exist, rather than needing a second
+    change later.
+
+    Returns an EMPTY frame when nothing has been ingested, which every
+    consumer already treats as "assume 0% EO for everyone" -- a uniform
+    rescale of the objective that changes no ranking.
+
+    Note it stays a no-op for the real bot regardless while
+    ``OPTIMISER.risk_level`` is 0, since that makes lambda 0 (see
+    optimiser/scoring.py). The simulation cohort's risk_level axis is what
+    will actually exercise it.
+    """
+    db = get_session()
+    try:
+        query = select(
+            OwnershipSnapshot.player_id,
+            OwnershipSnapshot.top10k_selected_pct,
+            OwnershipSnapshot.snapshot_ts,
+        )
+        rows = db.execute(query).fetchall()
+    finally:
+        db.close()
+
+    if not rows:
+        return pd.DataFrame(columns=["player_id", "top10k_selected_pct"])
+
+    df = pd.DataFrame(rows, columns=["player_id", "top10k_selected_pct", "snapshot_ts"])
+    # One row per player: the most recent sample. `gameweek` is accepted for
+    # caller clarity but the table is keyed by timestamp, not gameweek.
+    df = df.sort_values("snapshot_ts").drop_duplicates("player_id", keep="last")
+    return df[["player_id", "top10k_selected_pct"]].reset_index(drop=True)

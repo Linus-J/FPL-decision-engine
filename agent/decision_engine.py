@@ -18,6 +18,7 @@ from config.strategy import (
 )
 from data.db import get_session
 from data.models import DecisionLog, SimDecisionLog, SimManager
+from data.ingestors.ownership import load_latest_ownership
 from data.overrides import apply_team_overrides, load_p_leave_overrides, log_rumoured_squad_members
 from optimiser.chips import Chip, ChipRecommendation, chips_used_this_season, recommend_chip
 from optimiser.departure_risk import apply_departure_discount
@@ -323,6 +324,13 @@ def _run_decision_cycle(
     # first time (previously always an empty dict).
     projections = apply_departure_discount(projections, load_p_leave_overrides())
 
+    # P3.2: effective ownership, read for the first time by anything. Empty
+    # until the Overall league has ranked entries (post-GW1 deadline), and
+    # a no-op for the real bot regardless while risk_level is 0 -- but the
+    # cohort's risk_level axis exercises it, and it needs no second change
+    # once real rows land.
+    ownership = load_latest_ownership()
+
     state = _load_squad_state(sim_manager_id, team_id, config)
     squad_ids = state.squad_ids
     available_budget = state.budget
@@ -491,6 +499,7 @@ def _run_decision_cycle(
             budget=available_budget,
             horizon=1,
             season=season,
+            ownership=ownership,
             config=config,
         )
     else:
@@ -501,7 +510,7 @@ def _run_decision_cycle(
             free_transfers=free_transfers,
             available_budget=available_budget,
             wildcard_active=wildcard_active,
-            dgw_gws=dgw_gws,
+            ownership=ownership,
             config=config,
             transfer_rules=transfer_rules,
             # P1.6: real affordability. Without these the optimiser priced
@@ -518,7 +527,8 @@ def _run_decision_cycle(
 
         squad_df = players[players["id"].isin(new_squad_ids)].copy()
         squad_solution = optimise_starting_xi(
-            squad_df, projections, next_gw, season=season, config=config
+            squad_df, projections, next_gw, season=season,
+            ownership=ownership, config=config,
         )
 
     xi_solution = squad_solution

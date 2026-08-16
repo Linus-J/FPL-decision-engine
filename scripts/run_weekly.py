@@ -4,8 +4,8 @@ gameweek that just finished, THEN runs the real agent decision, THEN the
 simulation batch -- in that order, so the decision is made against
 up-to-date DefCon/bonus/ownership data, not whatever was last scraped.
 
-FBref -> WhoScored -> ownership -> backfill_decision_outcomes.py ->
-run_agent.py -> run_simulations.py.
+FBref -> WhoScored -> ownership -> data_quality_gate.py ->
+backfill_decision_outcomes.py -> run_agent.py -> run_simulations.py.
 
 The outcome backfill scores LAST gameweek's decisions (for the real bot and
 all 100 personas) before this gameweek's are made, so it always runs against
@@ -108,6 +108,17 @@ def main() -> None:
             "scripts/ingest_ownership.py",
             [sys.executable, "scripts/ingest_ownership.py", str(gw)],
         )
+
+    # P3.9 (2026-08-16): data-integrity checks BEFORE anything decides on the
+    # data. This script existed from the 2026-07-28 audit and was never wired
+    # into any scheduled run, so the bug classes it catches (stale team_ids,
+    # collapsed name matching) could only ever be found by hand. Warn-only by
+    # design: a blocked week is worse than a week decided on slightly stale
+    # data, and its exit code is surfaced either way.
+    _run_or_warn(
+        "scripts/data_quality_gate.py",
+        [sys.executable, "scripts/data_quality_gate.py"],
+    )
 
     # P2.3 (2026-08-16): score the gameweek that just finished, for the real
     # bot and every persona, BEFORE new decisions are made. This step existed

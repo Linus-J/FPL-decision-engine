@@ -358,8 +358,12 @@ class OptimiserConfig:
     # MAGNITUDE only.
     max_ownership_differential: float = 0.5
 
-    # Whether to factor in price change predictions
-    use_price_change_signals: bool = True
+    # use_price_change_signals removed 2026-08-16 (P3.3) -- read NOWHERE, so
+    # it advertised a feature that did not exist: there is no price-change
+    # modelling in this project at all. The useful half of that idea (what a
+    # player actually SELLS for) is now real -- see optimiser/transfers.py::
+    # selling_price. If prediction is built later, player_state_snapshots
+    # already holds the per-gameweek now_cost history to train on.
 
     # Continuous risk posture in [-1.0, 1.0]: -1.0 = safe, 0.0 = medium,
     # +1.0 = aggressive (plan/risk-aware-cold-start-v1.md, 2026-07-31,
