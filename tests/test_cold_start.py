@@ -884,3 +884,34 @@ def test_project_cold_start_without_p_appear_column_is_unweighted(temp_session):
     proj = cs.project_cold_start(players, prior)
     row = proj[proj["player_id"] == ids["p1"]].iloc[0]
     assert row["xpts"] == pytest.approx(6.0)
+
+
+def test_prior_league_falls_back_to_raw_output_when_expected_goals_are_absent():
+    """The FBref prior-league scrape only populated the basic stats: measured
+    2026-08-16, goals90/assists90 have 7,413/7,097 non-zero rows and
+    npxg90/xa90/sca90 have ZERO. Using the expected-goals inputs regardless
+    projected every league-tier player at the floor, making a genuinely good
+    foreign signing invisible to the optimiser."""
+    row = {"league": "ESP-La Liga", "npxg90": 0.0, "xa90": 0.0,
+           "goals90": 0.5, "assists90": 0.3, "minutes": 2700, "matches": 30}
+    xpts, _var, _sp = cs._prior_league_projection("FWD", row)
+    assert xpts > cs._MIN_XPTS * 2, "raw output must reach the projection"
+
+
+def test_prior_league_prefers_expected_goals_when_they_exist():
+    """npxG/xA are smoother and luck-adjusted; one season's raw output is a
+    small, high-variance sample. The fallback is for absent data only."""
+    smooth = {"league": "ESP-La Liga", "npxg90": 0.6, "xa90": 0.4,
+              "goals90": 0.0, "assists90": 0.0, "minutes": 2700, "matches": 30}
+    raw = {"league": "ESP-La Liga", "npxg90": 0.0, "xa90": 0.0,
+           "goals90": 0.6, "assists90": 0.4, "minutes": 2700, "matches": 30}
+    assert cs._prior_league_projection("FWD", smooth)[0] == pytest.approx(
+        cs._prior_league_projection("FWD", raw)[0]
+    )
+
+
+def test_prior_league_with_no_output_at_all_still_floors_safely():
+    row = {"league": "ESP-La Liga", "npxg90": 0.0, "xa90": 0.0,
+           "goals90": 0.0, "assists90": 0.0, "minutes": 900, "matches": 10}
+    xpts, var, sp = cs._prior_league_projection("DEF", row)
+    assert xpts >= 0.0 and var >= 0.0 and 0.0 <= sp <= 1.0

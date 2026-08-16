@@ -542,8 +542,26 @@ def _prior_league_projection(position: str, pl_row: dict) -> tuple[float, float,
     prior_league_stats has no defensive data for these players, an honest
     limitation, not an oversight."""
     factor = PRIOR_LEAGUE.translation_factor(pl_row["league"])
-    translated_npxg90 = pl_row["npxg90"] * factor
-    translated_xa90 = pl_row["xa90"] * factor
+    # npxG90/xA90 are preferred -- smoother and luck-adjusted, where one
+    # season's raw output is a small, high-variance sample. But the FBref
+    # prior-league scrape only populated the basic stats: measured 2026-08-16,
+    # goals90/assists90 have 7,413/7,097 non-zero rows and npxg90/xa90/sca90
+    # have ZERO. Using them regardless projected every one of the 28
+    # league-tier players at the 2.0 floor, which makes a genuinely good
+    # foreign signing invisible to the optimiser.
+    #
+    # Falling back to raw goals90/assists90 is also closer to how the
+    # translation factor was calibrated in the first place -- it was fit
+    # against realized RAW goal+assist output (see
+    # projection/prior_league_translation.py); the expected-goals inputs were
+    # an application-time refinement.
+    npxg90 = float(pl_row.get("npxg90") or 0.0)
+    xa90 = float(pl_row.get("xa90") or 0.0)
+    if npxg90 <= 0.0 and xa90 <= 0.0:
+        npxg90 = float(pl_row.get("goals90") or 0.0)
+        xa90 = float(pl_row.get("assists90") or 0.0)
+    translated_npxg90 = npxg90 * factor
+    translated_xa90 = xa90 * factor
     # Per-MATCH (conditional on featuring): per-90 rates plus the appearance
     # points a player only collects by playing.
     xpts_played = max(
