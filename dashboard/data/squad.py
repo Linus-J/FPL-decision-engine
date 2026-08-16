@@ -98,9 +98,13 @@ def get_current_squad(db: Session, team_id: int) -> pd.DataFrame:
 
     projections = get_latest_projections(gw_used)
     if not projections.empty:
-        squad = squad.merge(projections[["player_id", "xpts"]], on="player_id", how="left")
+        cols = ["player_id", "xpts"]
+        if "xpts_var" in projections.columns:
+            cols.append("xpts_var")
+        squad = squad.merge(projections[cols], on="player_id", how="left")
     else:
         squad["xpts"] = float("nan")
+        squad["xpts_var"] = float("nan")
     squad["gameweek"] = gw_used
     squad.attrs["fallback_projected_total"] = (
         fallback_total if squad["xpts"].isna().all() else None

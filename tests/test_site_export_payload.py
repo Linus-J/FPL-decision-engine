@@ -267,3 +267,61 @@ def test_build_run_payload_assembles_full_schema(session, monkeypatch):
 def test_build_run_payload_raises_when_no_squad_available(session):
     with pytest.raises(RuntimeError, match="No current squad"):
         payload_module.build_run_payload(session, team_id=12345)
+
+
+# --- projected-points spread (2026-08-16) --------------------------------
+#
+# p10/median/mean/p90 used to collapse to a single value whenever
+# projection_samples had no draws — which is every pre-season gameweek, since
+# the cold start produces none. The site showed a zero-width bar for every
+# player, implying a certainty that does not exist.
+
+
+def test_real_monte_carlo_quantiles_take_precedence():
+    from scripts.site_export.payload import _xpts_entry
+
+    real = {"p10": 1.0, "median": 4.0, "mean": 4.5, "p90": 9.0}
+    out = _xpts_entry(7, {7: real}, fallback_mean=99.0, fallback_var=99.0)
+    assert out == real
+
+
+def test_spread_is_derived_from_variance_when_samples_are_missing():
+    from scripts.site_export.payload import _xpts_entry
+
+    out = _xpts_entry(7, {}, fallback_mean=5.0, fallback_var=4.0)  # sd = 2.0
+    assert out["mean"] == pytest.approx(5.0)
+    assert out["median"] == pytest.approx(5.0)
+    assert out["p10"] < out["mean"] < out["p90"], "the bar must have real width"
+    # symmetric about the mean by construction (normal approximation)
+    assert (out["p90"] - out["mean"]) == pytest.approx(out["mean"] - out["p10"])
+
+
+def test_a_higher_variance_gives_a_wider_spread():
+    from scripts.site_export.payload import _xpts_entry
+
+    tight = _xpts_entry(7, {}, fallback_mean=5.0, fallback_var=1.0)
+    loose = _xpts_entry(7, {}, fallback_mean=5.0, fallback_var=9.0)
+    assert (loose["p90"] - loose["p10"]) > (tight["p90"] - tight["p10"])
+
+
+def test_p10_is_floored_at_zero():
+    """A negative score needs a card or own goal, which is far rarer than a
+    symmetric normal implies down there."""
+    from scripts.site_export.payload import _xpts_entry
+
+    out = _xpts_entry(7, {}, fallback_mean=0.5, fallback_var=9.0)
+    assert out["p10"] == 0.0
+
+
+def test_zero_variance_still_collapses_to_a_point():
+    """Genuinely no spread information is not the same as inventing one."""
+    from scripts.site_export.payload import _xpts_entry
+
+    out = _xpts_entry(7, {}, fallback_mean=3.0, fallback_var=0.0)
+    assert out == {"p10": 3.0, "median": 3.0, "mean": 3.0, "p90": 3.0}
+
+
+def test_no_projection_at_all_returns_none():
+    from scripts.site_export.payload import _xpts_entry
+
+    assert _xpts_entry(7, {}, fallback_mean=None, fallback_var=1.0) is None

@@ -54,15 +54,47 @@ def _label_for_gw(db: Session, season: str, gw: int) -> str:
     return f"GW{gw}"
 
 
+# 10th/90th percentile of a standard normal.
+_Z10 = -1.2816
+
+
 def _xpts_entry(
-    player_id: int, dist: dict[int, dict[str, float]], fallback_mean: float | None
+    player_id: int,
+    dist: dict[int, dict[str, float]],
+    fallback_mean: float | None,
+    fallback_var: float | None = None,
 ) -> dict[str, float] | None:
+    """A player's projected-points summary for the site.
+
+    Real Monte Carlo quantiles when ``projection_samples`` has them. When it
+    does not — every pre-season gameweek, since the cold start produces no
+    draws — the spread used to collapse to p10 == median == mean == p90, so
+    the site showed a bar of zero width for every player.
+
+    ``xpts_var`` is available even then, so the interval is derived from it
+    with a normal approximation. That is deliberately approximate: FPL scores
+    are discrete and right-skewed (a long tail of hauls above a dense low
+    mode), so a symmetric interval has the wrong SHAPE. It has roughly the
+    right WIDTH, which is the part that carries information, and a
+    zero-width bar is not a more honest alternative — it implies certainty
+    that does not exist. Real samples always take precedence.
+    """
     if player_id in dist:
         return dist[player_id]
-    if fallback_mean is not None and not pd.isna(fallback_mean):
-        mean = float(fallback_mean)
+    if fallback_mean is None or pd.isna(fallback_mean):
+        return None
+    mean = float(fallback_mean)
+    if fallback_var is None or pd.isna(fallback_var) or float(fallback_var) <= 0:
         return {"p10": mean, "median": mean, "mean": mean, "p90": mean}
-    return None
+    sd = float(fallback_var) ** 0.5
+    # Floored at zero: a negative score needs a card or own goal, which is far
+    # rarer than a symmetric normal implies down there.
+    return {
+        "p10": round(max(0.0, mean + _Z10 * sd), 4),
+        "median": round(mean, 4),
+        "mean": round(mean, 4),
+        "p90": round(mean - _Z10 * sd, 4),
+    }
 
 
 def _build_squad_entries(squad_df: pd.DataFrame, dist: dict[int, dict[str, float]]) -> list[dict]:
@@ -88,7 +120,9 @@ def _build_squad_entries(squad_df: pd.DataFrame, dist: dict[int, dict[str, float
             "is_captain": bool(row["is_captain"]),
             "is_vice_captain": bool(row["is_vice_captain"]),
             "bench_order": bench_order_by_player.get(player_id),
-            "xpts": _xpts_entry(player_id, dist, row["xpts"]),
+            "xpts": _xpts_entry(
+                player_id, dist, row["xpts"], row.get("xpts_var")
+            ),
         })
     return entries
 
