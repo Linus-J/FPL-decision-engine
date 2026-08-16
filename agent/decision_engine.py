@@ -17,8 +17,8 @@ from config.strategy import (
     TransferRules,
 )
 from data.db import get_session
-from data.models import DecisionLog, SimDecisionLog, SimManager
 from data.ingestors.ownership import load_latest_ownership
+from data.models import DecisionLog, SimDecisionLog, SimManager
 from data.overrides import apply_team_overrides, load_p_leave_overrides, log_rumoured_squad_members
 from optimiser.chips import Chip, ChipRecommendation, chips_used_this_season, recommend_chip
 from optimiser.departure_risk import apply_departure_discount
@@ -36,6 +36,7 @@ from projection.pipeline import (
     _get_current_and_next_gw,
     _get_dgw_gameweeks,
     get_latest_projections,
+    persist_projections,
     run_projections,
     season_has_played_history,
 )
@@ -367,6 +368,15 @@ def _run_decision_cycle(
         solution, cs_projections = cold_start.build_initial_squad(
             season, players=cs_players, config=config
         )
+        # Persist the cold-start projections (2026-08-16). run_projections
+        # correctly writes nothing pre-season (it has no rolling history to
+        # condition on), and this branch never wrote its own -- so
+        # `player_projections` stayed empty for the whole pre-season and every
+        # reader of it showed a squad with no numbers: the site export's xpts
+        # came back None for all 15, and the dashboard squad page likewise.
+        # Same shape and same table as the in-season path, so nothing
+        # downstream needs to know which built them.
+        persist_projections(cs_projections)
         xi_solution = optimise_starting_xi(
             solution.squad, cs_projections, next_gw, season=season, config=config
         )

@@ -248,7 +248,7 @@ def run_projections(
         )
         empty_cols = ["player_id", "gameweek", "xpts", "xpts_mean", "xpts_var", "start_probability"]
         if persist:
-            _persist_projections(pd.DataFrame(columns=empty_cols))
+            persist_projections(pd.DataFrame(columns=empty_cols))
         return pd.DataFrame(columns=empty_cols)
 
     min_model = train_minutes(df_override=history, save=False, fast=True)
@@ -293,7 +293,7 @@ def run_projections(
         projections_df["created_at"] = datetime.utcnow()
 
     if persist:
-        _persist_projections(projections_df)
+        persist_projections(projections_df)
 
     logger.info(
         "Projections complete: %d player-GW rows for GWs %s",
@@ -329,13 +329,16 @@ def _estimate_cs_probability(team_id: int, position: str, gw: int) -> float:
         db.close()
 
 
-def _persist_projections(df: pd.DataFrame) -> None:
+def persist_projections(df: pd.DataFrame) -> None:
     """Persists the P10 MC assembly's output. ``cs_probability`` is left at
     its column default (0.0) — assemble.py computes each player's
     clean-sheet component internally (P5) but doesn't currently surface it
     as a standalone output column; the only consumer is a reporting script
     (scripts/plot_analysis.py), not core decision logic, so this is a
     documented gap rather than a silent one, not a P3-0 blocker."""
+    # Stamped here rather than required of the caller: the cold-start frame
+    # has no created_at column, and the read side keys "latest run" on it.
+    created_at = datetime.utcnow()
     db = get_session()
     try:
         for _, row in df.iterrows():
@@ -348,7 +351,7 @@ def _persist_projections(df: pd.DataFrame) -> None:
                     xpts_mean=float(row.get("xpts_mean", row["xpts"])),
                     xpts_var=float(row.get("xpts_var", 0.0)),
                     start_probability=float(row["start_probability"]),
-                    created_at=row["created_at"],
+                    created_at=row.get("created_at") or created_at,
                 )
                 .on_conflict_do_nothing()
             )
