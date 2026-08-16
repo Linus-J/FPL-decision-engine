@@ -15,6 +15,10 @@ A Fantasy Premier League system with three parts:
 >
 > **[GW1 checklist](docs/gw1-checklist.md)** — the current squad to enter, and
 > what to run before/after the deadline.
+>
+> **[Database audit](docs/db-audit-2026-08-16.md)** — full pre-season data
+> interrogation: seven defects found, entity resolution measured, every
+> all-null column explained.
 
 ---
 
