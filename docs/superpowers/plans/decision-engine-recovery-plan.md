@@ -214,7 +214,43 @@ is unanswerable beyond the score.
 
 ---
 
-## P3 — Part C: inert machinery, and what to do about each
+## P3 — **COMPLETE 2026-08-16** (one item needs you)
+
+Landed in `5cbbc20` (P3.2, P3.3, P3.4, P3.6, P3.8, P3.9), `eee9ea5` +
+`f856b31` (P3.7), `0a59b46` (P3.11); P3.5 and P3.10 landed earlier with P1/P2.
+Suite 622 → 642 passing.
+
+**P3.1 — my earlier recommendation was wrong; no change made.** I proposed
+gating the P3-1 MC sample writes behind a flag, on the grounds that
+`scenario_based_captain` short-circuits at `mu == 0` and the samples were
+therefore dead weight. They are not. Two live consumers need them:
+`chip_scenarios.load_scenario_totals` feeds the chip payoff-probability gate
+regardless of `mu`, and the P2.4 cohort now sweeps `mu_baseline` through
+non-zero values, so personas genuinely exercise scenario captaincy against
+samples the real run persists. Gating them off would have broken the sweep.
+The accurate statement is narrower: the REAL BOT's captaincy is a plain
+argmax because its own `mu` is 0, and the cohort is now testing whether that
+is right.
+
+**Still open — needs your call.** The set-piece scraper is built and
+unit-tested, but **its live run needs a display**. FBref's Cloudflare
+challenge cannot be solved headless (its own solver says so), confirmed by a
+real attempt on 2026-08-16 that failed after four retries. So
+`player_setpiece_roles` is still empty and penalty duty is still absent from
+projections until someone runs, on a machine with a display:
+
+    DB_PATH=fpl_bot_v2.db uv run --with soccerdata \
+        python scripts/scrape_setpieces.py 2026-27 --headed
+
+Worth doing before the GW1 deadline — it is the largest missing signal in the
+model, and the GW1 squad was built without it.
+
+**Measured while wiring P3.11:** odds cover 6 of 10 GW1 fixtures and nothing
+beyond GW1. So GW2–5 of the horizon P1.1 restored are currently odds-blind
+and project on a flat league-average scoreline. The multi-period planning is
+real but weaker than its length suggests until the odds window widens.
+
+### Original findings and decisions
 
 Each item: what it is, why it ended up dead, and the call.
 
