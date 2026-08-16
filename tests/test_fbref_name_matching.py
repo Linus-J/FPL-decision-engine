@@ -136,3 +136,23 @@ def test_match_player_known_alias_resolves_nickname():
 def test_match_player_known_alias_resolves_lucas_paqueta():
     name_map = {"lucas tolentino coelho de lima": 769, "l.paqueta": 769}
     assert _match_player("Lucas Paquetá", name_map) == 769
+
+
+def test_non_decomposing_ligatures_transliterate_rather_than_vanish():
+    """NFKD does not decompose ß/æ/œ, so the ascii pass used to DROP them:
+    "Groß" normalised to "gro" — a truncated stem that cannot match an
+    English source's "Gross" and could collide with an unrelated name. Same
+    class as the đ→dj case already handled (2026-08-16)."""
+    from data.ingestors.fbref import _normalize_name
+
+    assert _normalize_name("Groß") == _normalize_name("Gross") == "gross"
+    assert _normalize_name("Kjær") == _normalize_name("Kjaer") == "kjaer"
+    assert _normalize_name("Lærke") == "laerke"
+
+
+def test_transliteration_still_handles_the_cases_it_already_did():
+    from data.ingestors.fbref import _normalize_name
+
+    assert _normalize_name("Ødegaard") == _normalize_name("Odegaard")
+    assert _normalize_name("Đorđe Petrović") == "djordje petrovic"
+    assert _normalize_name("Guéhi") == _normalize_name("Guehi")

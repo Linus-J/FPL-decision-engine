@@ -212,6 +212,12 @@ _NON_DECOMPOSING_TRANSLIT = str.maketrans({
     # dropping the "j" broke "Đorđe" -> "Djordje" matching (real case: FBref's
     # "Djordje Petrovic" vs our stored "Đorđe Petrović").
     "đ": "dj", "Đ": "Dj",
+    # ß/æ/œ don't decompose under NFKD either, so the ascii pass DROPPED them
+    # rather than transliterating: "Groß" normalised to "gro", a truncated
+    # stem that cannot match an English source's "Gross" and could collide
+    # with an unrelated name. Same class of bug as đ above (2026-08-16).
+    "ß": "ss", "ẞ": "Ss",
+    "æ": "ae", "Æ": "Ae", "œ": "oe", "Œ": "Oe",
 })
 
 
