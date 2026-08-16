@@ -14,6 +14,10 @@ from optimiser.squad import optimise_squad
 
 logger = logging.getLogger(__name__)
 
+# Gameweeks in a normal Premier League season -- the fallback when the
+# gameweeks table can't answer for a specific season (P3.10).
+_DEFAULT_SEASON_GWS = 38
+
 
 def _clears_threshold(
     point_value: float,
@@ -48,18 +52,21 @@ def _get_wc_half_boundary(season: str | None = None) -> int:
     logic could never see a real boundary crossing within the season at
     all. Scoping the count to the season actually being decided for fixes
     both at once."""
+    # P3.10 (2026-08-16): with no season there is no safe query. Counting
+    # `gameweeks` unscoped is what produced the original 227 // 2 = 113
+    # boundary this docstring describes; falling back to the configured
+    # first-half deadline is the same failure class, closed properly.
+    if season is None:
+        return CHIPS.wildcard_first_half_deadline_gw
     db = get_session()
     try:
-        if season is not None:
-            total = (
-                db.execute(
-                    text("SELECT COUNT(*) FROM gameweeks WHERE season = :season"),
-                    {"season": season},
-                ).scalar()
-                or 38
-            )
-        else:
-            total = db.execute(text("SELECT COUNT(*) FROM gameweeks")).scalar() or 38
+        total = (
+            db.execute(
+                text("SELECT COUNT(*) FROM gameweeks WHERE season = :season"),
+                {"season": season},
+            ).scalar()
+            or _DEFAULT_SEASON_GWS
+        )
         return total // 2
     except Exception:
         return CHIPS.wildcard_first_half_deadline_gw
@@ -69,19 +76,22 @@ def _get_wc_half_boundary(season: str | None = None) -> int:
 
 @lru_cache(maxsize=16)
 def _get_total_gws(season: str | None = None) -> int:
+    # P3.10: same season-unscoped hazard as _get_wc_half_boundary -- an
+    # unscoped COUNT(*) over a multi-season DB returns the total across every
+    # season (227 here), not this season's 38.
+    if season is None:
+        return _DEFAULT_SEASON_GWS
     db = get_session()
     try:
-        if season is not None:
-            return (
-                db.execute(
-                    text("SELECT COUNT(*) FROM gameweeks WHERE season = :season"),
-                    {"season": season},
-                ).scalar()
-                or 38
-            )
-        return db.execute(text("SELECT COUNT(*) FROM gameweeks")).scalar() or 38
+        return (
+            db.execute(
+                text("SELECT COUNT(*) FROM gameweeks WHERE season = :season"),
+                {"season": season},
+            ).scalar()
+            or _DEFAULT_SEASON_GWS
+        )
     except Exception:
-        return 38
+        return _DEFAULT_SEASON_GWS
     finally:
         db.close()
 
@@ -153,7 +163,16 @@ def chips_used_this_season(decision_log: pd.DataFrame) -> list[tuple[Chip, int]]
         except (TypeError, ValueError, KeyError):
             continue
         used.append((chip, int(row["gameweek"])))
-    return used
+    # P1.8 (2026-08-16): de-duplicate on (chip, gameweek). A chip can only be
+    # played ONCE in a given gameweek, but `_record_decision` appends a row
+    # every run -- so re-running a gameweek's decision (a dry-run rehearsal, a
+    # crash and retry, refining the squad as news lands) wrote N rows for the
+    # same chip in the same gameweek, and `_chip_uses_remaining` counts rows.
+    # Three reruns therefore consumed a chip that was never actually played
+    # twice, permanently, for the rest of the half. Preserves order and still
+    # represents the legitimate "used once per half" multiplicity, since those
+    # are genuinely different gameweeks.
+    return list(dict.fromkeys(used))
 
 
 def _chip_uses_remaining(

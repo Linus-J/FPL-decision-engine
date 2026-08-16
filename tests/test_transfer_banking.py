@@ -387,3 +387,73 @@ def test_get_latest_projections_degrades_on_a_nonsense_horizon(monkeypatch, hori
 
     pipeline.get_latest_projections(horizon=horizon)
     assert captured["params"] == {"gw": 5, "last_gw": 5}
+
+
+# --- P1.8 chip usage must not be consumed by re-running a gameweek --------
+
+
+def test_chips_used_deduplicates_reruns_of_the_same_gameweek():
+    """`_record_decision` appends a row every run, and
+    `_chip_uses_remaining` counts rows -- so re-running a gameweek's
+    decision (a dry-run rehearsal, a crash and retry, refining the squad as
+    news lands) consumed a chip that was only ever played once."""
+    import json as _json
+
+    from optimiser.chips import Chip, _chip_uses_remaining, chips_used_this_season
+
+    log = pd.DataFrame([
+        {"decision_type": "chip", "gameweek": 7, "details": _json.dumps({"chip": "3xc"})},
+        {"decision_type": "chip", "gameweek": 7, "details": _json.dumps({"chip": "3xc"})},
+        {"decision_type": "chip", "gameweek": 7, "details": _json.dumps({"chip": "3xc"})},
+    ])
+    used = chips_used_this_season(log)
+    assert used == [(Chip.TRIPLE_CAPTAIN, 7)]
+    # still available in the SECOND half -- one use per half, not per season
+    assert _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, used, current_gw=30, season=None) == 1
+    # and correctly spent for the first half
+    assert _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, used, current_gw=7, season=None) == 0
+
+
+def test_chips_used_keeps_genuinely_separate_gameweeks():
+    """The dedupe must not collapse the legitimate once-per-half multiplicity."""
+    import json as _json
+
+    from optimiser.chips import Chip, chips_used_this_season
+
+    log = pd.DataFrame([
+        {"decision_type": "chip", "gameweek": 7, "details": _json.dumps({"chip": "3xc"})},
+        {"decision_type": "chip", "gameweek": 30, "details": _json.dumps({"chip": "3xc"})},
+    ])
+    assert chips_used_this_season(log) == [
+        (Chip.TRIPLE_CAPTAIN, 7), (Chip.TRIPLE_CAPTAIN, 30),
+    ]
+
+
+# --- P1.9 squad age, so the wildcard's min-managed-gameweeks gate binds ----
+
+
+def test_squad_age_counts_from_the_last_wildcard():
+    from agent.decision_engine import _squad_age_gws
+    from optimiser.chips import Chip
+
+    log = pd.DataFrame([{"decision_type": "lineup", "gameweek": 1}])
+    chips = [(Chip.WILDCARD, 12)]
+    assert _squad_age_gws(log, chips, next_gw=14) == 2
+
+
+def test_squad_age_counts_from_the_first_lineup_when_no_wildcard_played():
+    from agent.decision_engine import _squad_age_gws
+
+    log = pd.DataFrame([
+        {"decision_type": "lineup", "gameweek": 1},
+        {"decision_type": "lineup", "gameweek": 2},
+    ])
+    assert _squad_age_gws(log, [], next_gw=8) == 7
+
+
+def test_squad_age_is_zero_with_no_history():
+    """A fresh bot must read as age 0, not the 99 the parameter defaults to
+    -- which is what made the wildcard gate inert live."""
+    from agent.decision_engine import _squad_age_gws
+
+    assert _squad_age_gws(pd.DataFrame(), [], next_gw=1) == 0

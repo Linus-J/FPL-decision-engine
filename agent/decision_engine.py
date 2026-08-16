@@ -140,6 +140,30 @@ def _record_decision(
         db.close()
 
 
+def _squad_age_gws(
+    decision_log: pd.DataFrame, chips_used: list[tuple[Chip, int]], next_gw: int
+) -> int:
+    """How many gameweeks this squad has been managed since it was last
+    rebuilt from scratch (P1.9, 2026-08-16).
+
+    ``recommend_chip`` gates the wildcard behind
+    ``wildcard_min_managed_gws`` using this, and defaults it to 99 when the
+    caller omits it. ``scripts/backtest.py`` tracks and passes it; this
+    module never did, so the gate was inert live and a wildcard could fire
+    against a one-week-old squad. Counts from the last wildcard (which is
+    exactly "rebuilt from scratch"), else from the first gameweek this bot
+    ever recorded a lineup for."""
+    wildcard_gws = [gw for chip, gw in chips_used if chip == Chip.WILDCARD]
+    if wildcard_gws:
+        return max(0, next_gw - max(wildcard_gws))
+    if decision_log.empty or "decision_type" not in decision_log.columns:
+        return 0
+    lineups = decision_log[decision_log["decision_type"] == "lineup"]
+    if lineups.empty or "gameweek" not in lineups.columns:
+        return 0
+    return max(0, next_gw - int(lineups["gameweek"].min()))
+
+
 def _bench_xpts(squad_ids: list[int], projections: pd.DataFrame, gw: int) -> float:
     gw_proj = projections[
         (projections["gameweek"] == gw) & projections["player_id"].isin(squad_ids)
@@ -285,15 +309,26 @@ def _run_decision_cycle(
 
     dgw_gws = _get_dgw_gameweeks(config.transfer_planning_horizon_gws)
     bgw_gws = _get_bgw_gameweeks(config.transfer_planning_horizon_gws)
+    # P1.5 (2026-08-16): count blanks in the gameweek being DECIDED, not
+    # anywhere in the lookahead window. Free Hit's eligibility gate consumes
+    # this to justify playing the chip THIS week, so a blank two gameweeks
+    # away used to trigger it two gameweeks early. (The lookahead window is
+    # still the right input for transferring blanking players out ahead of
+    # time -- that planning does not exist yet; see plan P3.4.)
+    #
+    # This was also trivially 15/15 before P1.1: with only the current
+    # gameweek in `projections`, every future gameweek had no rows at all, so
+    # `.sum() == 0` was true for every player.
+    bgw_now = {gw for gw in bgw_gws if gw == next_gw}
     bgw_affected = sum(
         1 for pid in squad_ids
         if any(
             projections[
                 (projections["gameweek"] == gw) & (projections["player_id"] == pid)
             ]["xpts"].sum() == 0
-            for gw in bgw_gws
+            for gw in bgw_now
         )
-    ) if bgw_gws and squad_ids else 0
+    ) if bgw_now and squad_ids else 0
 
     decision_log = _load_own_decision_log(sim_manager_id)
     chips_used = chips_used_this_season(decision_log)
@@ -315,6 +350,7 @@ def _run_decision_cycle(
             bench_xpts=bench_pts,
             dgw_gws=dgw_gws,
             bgw_affected_count=bgw_affected,
+            squad_age_gws=_squad_age_gws(decision_log, chips_used, next_gw),
             season=season,
             chip_timing=chip_timing,
             config=config,

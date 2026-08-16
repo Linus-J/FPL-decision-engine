@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from config.strategy import CHIPS
 from data.models import Base, Gameweek, ProjectionSample
 from optimiser import captaincy, chips
 
@@ -443,7 +444,12 @@ def test_get_wc_half_boundary_is_scoped_by_season_not_global(tmp_path, monkeypat
     _real_get_wc_half_boundary.cache_clear()
     try:
         assert _real_get_wc_half_boundary(season="2025-26") == 19
-        assert _real_get_wc_half_boundary(season=None) == (38 * 3) // 2  # old, unscoped behaviour
+        # P3.10 (2026-08-16): season=None used to run the SAME unscoped
+        # COUNT(*) that caused the bug above, returning (38 * 3) // 2 = 57
+        # here and 113 against the real 6-season DB. There is no safe query
+        # without a season, so it now falls back to the configured first-half
+        # deadline instead of a number derived from unrelated seasons.
+        assert _real_get_wc_half_boundary(season=None) == CHIPS.wildcard_first_half_deadline_gw
     finally:
         _real_get_wc_half_boundary.cache_clear()
 

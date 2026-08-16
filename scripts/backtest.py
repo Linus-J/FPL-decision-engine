@@ -540,7 +540,12 @@ def run_backtest(
                     pass
 
                 dgw_gws, bgw_gws = _dgw_bgw_gws_in_window(fixture_counts, gw, horizon)
-                bgw_affected_count = _bgw_affected_count(current_squad_ids, bgw_gws, projections)
+                # P1.5: only THIS gameweek's blanks justify playing a Free Hit
+                # this gameweek -- mirrors agent/decision_engine.py, which is
+                # the behaviour the live agent uses.
+                bgw_affected_count = _bgw_affected_count(
+                    current_squad_ids, {g for g in bgw_gws if g == gw}, projections
+                )
                 chip_rec = recommend_chip(
                     current_gw=gw,
                     current_squad_ids=current_squad_ids,
