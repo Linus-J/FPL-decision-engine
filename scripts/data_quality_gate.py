@@ -174,6 +174,33 @@ def run_dead_column_checks(season: str = "2026-27") -> list:
     return issues
 
 
+def run_copied_column_checks() -> list:
+    """Columns that should differ from each other but do not.
+
+    npxg was a verbatim copy of xg for all 11,306 rows: real, plausible,
+    non-zero values that happened to be the same numbers. Nothing flagged it
+    because nothing was empty or out of range — it only surfaced when a
+    decomposition built on the pair (non-penalty xG + penalty duty) turned
+    out to be double-counting.
+    """
+    from sqlalchemy import text
+
+    from data.db import get_session
+    from data.quality_checks import check_column_is_not_a_copy
+
+    db = get_session()
+    try:
+        total = db.execute(text("SELECT COUNT(*) FROM player_xg_stats")).scalar() or 0
+        differing = db.execute(
+            text("SELECT COUNT(*) FROM player_xg_stats WHERE npxg < xg - 1e-9")
+        ).scalar() or 0
+    finally:
+        db.close()
+    return check_column_is_not_a_copy(
+        "player_xg_stats.npxg vs xg", int(differing), int(total)
+    )
+
+
 def run_referential_integrity_checks() -> list:
     """Rows pointing at a player that does not exist. An orphan is silent --
     it simply never joins, so that player's data vanishes from projections
@@ -243,6 +270,7 @@ def main() -> int:
     issues += run_understat_coverage_check()
     issues += run_source_coverage_checks()
     issues += run_dead_column_checks()
+    issues += run_copied_column_checks()
     issues += run_referential_integrity_checks()
     issues += run_projection_sanity_checks()
 

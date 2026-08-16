@@ -238,3 +238,34 @@ def check_referential_integrity(
             ),
         )
     ]
+
+
+def check_column_is_not_a_copy(
+    label: str, distinct_count: int, total: int, *, min_distinct_fraction: float = 0.01
+) -> list[QualityIssue]:
+    """Flag a column that is supposed to carry DIFFERENT information from
+    another but is byte-identical to it (2026-08-16).
+
+    Distinct from ``check_stat_column_not_dead``: a copied column is not
+    empty and not obviously wrong. ``player_xg_stats.npxg`` held real,
+    plausible, non-zero values for every row — they were simply the ``xg``
+    values verbatim, because the per-gameweek Understat feed has no penalty
+    split. Anything treating the pair as a decomposition (non-penalty xG plus
+    penalties) then silently double-counts.
+    """
+    if total == 0:
+        return []
+    fraction = distinct_count / total
+    if fraction < min_distinct_fraction:
+        return [
+            QualityIssue(
+                check="column_is_not_a_copy",
+                severity="warning",
+                message=(
+                    f"{label}: differs on only {distinct_count}/{total} rows "
+                    f"({fraction:.2%}) — it is effectively a copy, so anything "
+                    f"treating the pair as a decomposition will double-count."
+                ),
+            )
+        ]
+    return []

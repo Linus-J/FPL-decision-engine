@@ -159,3 +159,25 @@ def test_referential_integrity_flags_orphans():
     assert len(issues) == 1
     assert issues[0].severity == "error"
     assert "silently never join" in issues[0].message
+
+
+def test_copied_column_is_flagged_even_though_it_looks_healthy():
+    """The failure mode check_stat_column_not_dead cannot see: npxg held
+    real, plausible, non-zero values for all 11,306 rows — they were the xg
+    values verbatim. Nothing was empty or out of range, so nothing flagged
+    it until a decomposition built on the pair turned out to double-count."""
+    from data.quality_checks import check_column_is_not_a_copy
+
+    # identical on every row
+    issues = check_column_is_not_a_copy("npxg vs xg", 0, 11306)
+    assert len(issues) == 1
+    assert "double-count" in issues[0].message
+
+    # genuinely different data is fine
+    assert check_column_is_not_a_copy("npxg vs xg", 4000, 11306) == []
+
+
+def test_copied_column_check_ignores_an_empty_table():
+    from data.quality_checks import check_column_is_not_a_copy
+
+    assert check_column_is_not_a_copy("npxg vs xg", 0, 0) == []

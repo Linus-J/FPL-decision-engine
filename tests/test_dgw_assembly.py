@@ -234,3 +234,49 @@ def test_cs_probability_combines_across_a_double_gameweek(monkeypatch):
         "two fixtures must beat any single-fixture chance"
     )
     assert p1["cs_probability"] < 1.0
+
+
+# --- penalty-duty decomposition guard (2026-08-16) -----------------------
+#
+# goal_weight = rolling non-penalty xG + this season's penalty duty is exact
+# ONLY when npxg is genuinely non-penalty xG. It is not always:
+# data/ingestors/understat_xg.py's per-gameweek feed has no penalty split and
+# stores npxg = xg verbatim, and it wins the upsert against the season-level
+# ingest that does carry real npxG. Applied against a copy, the decomposition
+# adds a taker's penalties on top of an xG that already contains them.
+
+
+def _history_with(xg: float, npxg: float):
+    return pd.DataFrame([
+        {"player_id": 1, "gameweek": g, "season": "2099-00", "position": "FWD",
+         "team_id_season": 10, "xg": xg, "npxg": npxg, "xa": 0.1,
+         "key_passes": 1, "yellow_cards": 0, "red_cards": 0}
+        for g in (1, 2)
+    ])
+
+
+def test_penalty_duty_is_applied_when_npxg_is_real():
+    feat = assemble._build_rolling_features(
+        _history_with(xg=0.5, npxg=0.3), pd.DataFrame(), penalty_duty={1: 0.08}
+    )
+    # 0.3 non-penalty + 0.08 duty, NOT 0.5 + 0.08
+    assert feat.loc[1, "goal_weight"] == pytest.approx(0.38)
+
+
+def test_penalty_duty_is_ignored_when_npxg_is_a_copy_of_xg(caplog):
+    """The guard. With no real penalty split, keeping the total-xG basis is
+    correct; adding duty on top would double-count it."""
+    with caplog.at_level("WARNING"):
+        feat = assemble._build_rolling_features(
+            _history_with(xg=0.5, npxg=0.5), pd.DataFrame(), penalty_duty={1: 0.08}
+        )
+    assert feat.loc[1, "goal_weight"] == pytest.approx(0.5), "no duty added"
+    assert "npxg is not distinct from xg" in caplog.text
+
+
+def test_no_penalty_duty_keeps_the_total_xg_basis():
+    """Historical seasons have no depth chart; they must be unaffected."""
+    feat = assemble._build_rolling_features(
+        _history_with(xg=0.5, npxg=0.3), pd.DataFrame(), penalty_duty=None
+    )
+    assert feat.loc[1, "goal_weight"] == pytest.approx(0.5)

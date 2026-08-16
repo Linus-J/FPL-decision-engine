@@ -462,10 +462,27 @@ def _build_rolling_features(
     # which is exact rather than a correction -- npxg and xg differ by
     # precisely the penalty component. With no depth chart loaded the frame
     # keeps its previous `xg` basis, so historical backtests are unaffected.
-    if penalty_duty:
+    # The decomposition is only VALID if npxg is genuinely non-penalty xG.
+    # It is not always: data/ingestors/understat_xg.py's per-gameweek feed has
+    # no penalty split and stores npxg = xg verbatim (its own docstring says
+    # so), and it wins the upsert against the season-level ingest that does
+    # carry real npxG. Applying the decomposition against a copy would ADD a
+    # taker's penalty expectation on top of an xG that already contains it --
+    # double-counting precisely the premium players the optimiser's curse
+    # already over-selects, which is worse than not decomposing at all.
+    has_real_npxg = bool((df["npxg"] < df["xg"] - 1e-9).any())
+    if penalty_duty and has_real_npxg:
         last["goal_weight"] = last["npxg_rate"].fillna(0.0) + [
             penalty_duty.get(int(pid), 0.0) for pid in last.index
         ]
+    elif penalty_duty:
+        logger.warning(
+            "Penalty duty is known for %d players but npxg is not distinct from "
+            "xg in this history, so goal_weight keeps its total-xG basis — the "
+            "penalty component cannot be separated out without double-counting. "
+            "Fix by giving player_xg_stats a real non-penalty xG.",
+            len(penalty_duty),
+        )
 
     last["defcon_rate"] = np.where(
         last["position"] == "DEF", last["cbit_rate"], last["cbirt_rate"]
