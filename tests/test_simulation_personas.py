@@ -1,4 +1,10 @@
-"""simulation/personas.py"""
+"""simulation/personas.py — the P2.4 one-factor-at-a-time cohort.
+
+Replaces the tests for the original random sweep. The properties that matter
+are different now: the cohort is a designed experiment, not a sample, so what
+needs guarding is that each persona isolates exactly one axis and that the
+baseline really is the real bot's configuration.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +12,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from config.strategy import OPTIMISER, TRANSFERS
 from data.models import Base, SimManager
 from simulation.personas import (
-    _CHIP_AGGRESSIVENESS_RANGE,
-    _MAX_OWNERSHIP_DIFFERENTIAL_RANGE,
-    _RISK_LEVEL_RANGE,
+    SIM_COUNT,
+    SWEPT_AXES,
     generate_personas,
     load_or_create_personas,
 )
@@ -26,62 +32,108 @@ def session(tmp_path):
     s.close()
 
 
+_PARAM_FIELDS = (
+    "risk_level",
+    "max_ownership_differential",
+    "chip_aggressiveness",
+    "transfer_switching_cost",
+    "ft_terminal_value",
+    "bench_value_weight",
+    "transfer_planning_horizon_gws",
+    "mu_baseline",
+)
+
+
 def test_generate_personas_is_deterministic():
-    a = generate_personas("2026-27", n=20, seed=42)
-    b = generate_personas("2026-27", n=20, seed=42)
-    assert a == b
+    assert generate_personas("2026-27") == generate_personas("2026-27")
 
 
-def test_generate_personas_different_seed_differs():
-    a = generate_personas("2026-27", n=20, seed=42)
-    b = generate_personas("2026-27", n=20, seed=43)
-    assert a != b
+def test_cohort_size_matches_the_declared_design():
+    personas = generate_personas("2026-27")
+    assert len(personas) == SIM_COUNT
+    assert SIM_COUNT == 1 + sum(len(v) for v in SWEPT_AXES.values())
 
 
-def test_generate_personas_values_within_configured_ranges():
-    personas = generate_personas("2026-27", n=50, seed=1)
-    for p in personas:
-        assert _RISK_LEVEL_RANGE[0] <= p["risk_level"] <= _RISK_LEVEL_RANGE[1]
-        assert (
-            _MAX_OWNERSHIP_DIFFERENTIAL_RANGE[0]
-            <= p["max_ownership_differential"]
-            <= _MAX_OWNERSHIP_DIFFERENTIAL_RANGE[1]
+def test_labels_are_unique_so_no_persona_is_a_duplicate():
+    """A duplicated persona is wasted cohort -- it costs a full season's
+    compute and contributes no new information."""
+    labels = [p["label"] for p in generate_personas("2026-27")]
+    assert len(set(labels)) == len(labels)
+
+
+def test_baseline_persona_is_exactly_the_real_bot_configuration():
+    """The control. Its decisions should match the real bot's, which makes
+    it both the reference every swept persona is read against and a live
+    check that the simulation path has not drifted from the real one."""
+    baseline = generate_personas("2026-27")[0]
+    assert baseline["swept_axis"] == "baseline"
+    assert baseline["risk_level"] == OPTIMISER.risk_level
+    assert baseline["bench_value_weight"] == OPTIMISER.bench_value_weight
+    assert baseline["mu_baseline"] == OPTIMISER.mu_baseline
+    assert baseline["transfer_planning_horizon_gws"] == OPTIMISER.transfer_planning_horizon_gws
+    assert baseline["transfer_switching_cost"] == TRANSFERS.transfer_switching_cost
+    assert baseline["ft_terminal_value"] == TRANSFERS.ft_terminal_value
+
+
+def test_every_swept_persona_differs_from_the_baseline_in_exactly_one_axis():
+    """The defining property of a one-factor-at-a-time design. If a persona
+    varied two things at once its result could not be attributed to either,
+    and a single noisy season has no power to disentangle them."""
+    personas = generate_personas("2026-27")
+    baseline = personas[0]
+    for persona in personas[1:]:
+        differing = {
+            field for field in _PARAM_FIELDS if persona[field] != baseline[field]
+        }
+        assert differing <= {persona["swept_axis"]}, (
+            f"{persona['label']} varies {differing}, not just its own axis"
         )
-        assert (
-            _CHIP_AGGRESSIVENESS_RANGE[0]
-            <= p["chip_aggressiveness"]
-            <= _CHIP_AGGRESSIVENESS_RANGE[1]
-        )
-        assert p["season"] == "2026-27"
-        assert p["label"]
 
 
-def test_generate_personas_count_and_labels_are_unique():
-    personas = generate_personas("2026-27", n=30, seed=7)
-    assert len(personas) == 30
-    assert len({p["label"] for p in personas}) == 30
+def test_each_axis_actually_moves_off_the_default_somewhere():
+    """A sweep whose range happens to sit entirely on the default value
+    would look fine but measure nothing."""
+    personas = generate_personas("2026-27")
+    baseline = personas[0]
+    for axis in SWEPT_AXES:
+        values = {p[axis] for p in personas if p["swept_axis"] == axis}
+        assert values - {baseline[axis]}, f"{axis} never leaves its default"
+
+
+def test_planning_horizon_never_exceeds_what_the_pipeline_persists():
+    """Personas read the persisted projection frame rather than building
+    their own, so a horizon beyond it silently does nothing -- the persona
+    would look like a distinct experiment and quietly be a duplicate."""
+    personas = generate_personas("2026-27")
+    horizons = [
+        p["transfer_planning_horizon_gws"]
+        for p in personas
+        if p["swept_axis"] == "transfer_planning_horizon_gws"
+    ]
+    assert horizons, "the horizon axis must actually be swept"
+    assert max(horizons) <= OPTIMISER.projection_horizon_gws
 
 
 def test_load_or_create_personas_persists_once(session):
-    first = load_or_create_personas(session, "2026-27", n=10, seed=5)
-    assert len(first) == 10
-    assert session.query(SimManager).filter_by(season="2026-27").count() == 10
+    first = load_or_create_personas(session, "2026-27")
+    assert len(first) == SIM_COUNT
+    assert session.query(SimManager).filter_by(season="2026-27").count() == SIM_COUNT
 
-    second = load_or_create_personas(session, "2026-27", n=10, seed=5)
+    second = load_or_create_personas(session, "2026-27")
     assert [p.id for p in second] == [p.id for p in first]
-    assert session.query(SimManager).filter_by(season="2026-27").count() == 10
+    assert session.query(SimManager).filter_by(season="2026-27").count() == SIM_COUNT
 
 
-def test_load_or_create_personas_does_not_regenerate_with_different_args(session):
-    """Once personas exist for a season, later calls return the SAME rows
-    even if n/seed differ -- persona identity must never change mid-season."""
-    first = load_or_create_personas(session, "2026-27", n=10, seed=5)
-    second = load_or_create_personas(session, "2026-27", n=999, seed=999)
-    assert len(second) == len(first) == 10
+def test_load_or_create_personas_never_regenerates_mid_season(session):
+    """Persona identity and configuration must stay fixed for a whole
+    season, or its decision history stops being interpretable."""
+    first = load_or_create_personas(session, "2026-27")
+    second = load_or_create_personas(session, "2026-27", seed=999)
+    assert [p.id for p in second] == [p.id for p in first]
 
 
 def test_load_or_create_personas_scoped_per_season(session):
-    load_or_create_personas(session, "2026-27", n=5, seed=1)
-    load_or_create_personas(session, "2027-28", n=7, seed=1)
-    assert session.query(SimManager).filter_by(season="2026-27").count() == 5
-    assert session.query(SimManager).filter_by(season="2027-28").count() == 7
+    load_or_create_personas(session, "2026-27")
+    load_or_create_personas(session, "2027-28")
+    assert session.query(SimManager).filter_by(season="2026-27").count() == SIM_COUNT
+    assert session.query(SimManager).filter_by(season="2027-28").count() == SIM_COUNT

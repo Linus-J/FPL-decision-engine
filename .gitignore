@@ -84,3 +84,6 @@ fpl_gw_reminders.zip
 
 # Scraped/derived data (not version-controlled -- regenerate on demand)
 config/transfer_overrides_candidates.yaml
+
+# Ad-hoc DB table dumps taken before destructive migrations (P2.4 etc.)
+backups/

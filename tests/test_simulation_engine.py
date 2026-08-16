@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 import agent.decision_engine as decision_engine
 import simulation.engine as engine_module
 from data.models import Base
+from simulation.personas import SIM_COUNT
 
 
 @pytest.fixture
@@ -26,7 +27,7 @@ def test_run_all_personas_records_a_result_per_persona(session_factory, monkeypa
         lambda persona, season: {"gameweek": 1, "persona_id": persona.id},
     )
     results = engine_module.run_all_personas("2026-27")
-    assert len(results) == 100  # default SIM_COUNT
+    assert len(results) == SIM_COUNT
     for pid, result in results.items():
         assert result == {"gameweek": 1, "persona_id": pid}
 
@@ -43,7 +44,7 @@ def test_run_all_personas_isolates_a_failing_persona(session_factory, monkeypatc
     assert results[3] == {"error": "exception"}
     others = [r for pid, r in results.items() if pid != 3]
     assert all(r == {"ok": True} for r in others)
-    assert len(others) == 99
+    assert len(others) == SIM_COUNT - 1
 
 
 def test_run_all_personas_reuses_persisted_personas_across_calls(session_factory, monkeypatch):

@@ -229,7 +229,9 @@ def run_projections(
     cold-start harness / P11's prior-league priors exist to fill, tracked
     separately, not addressed by this live-serving rewiring.
     """
-    horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
+    # P3.5: build the LONGEST horizon any consumer slices, not just the
+    # transfer planner's -- see config.strategy.assert_horizons_consistent.
+    horizon = horizon or OPTIMISER.projection_horizon_gws
     n_scenarios = n_scenarios or assemble.DEFAULT_N_SCENARIOS
     _, next_gw = _get_current_and_next_gw()
     target_gws = list(range(next_gw, next_gw + horizon))

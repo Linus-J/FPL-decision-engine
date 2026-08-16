@@ -317,6 +317,16 @@ class ChipTimingThresholds:
 
 @dataclass(frozen=True)
 class OptimiserConfig:
+    # How many GWs the projection pipeline actually BUILDS and persists.
+    # Must be >= every downstream consumer's own horizon, since each of them
+    # slices this frame rather than requesting its own (P3.5, 2026-08-16).
+    # Previously the pipeline built transfer_planning_horizon_gws (3) while
+    # CHIP_TIMING.wildcard_eval_horizon_gws asked for 5, so the wildcard's
+    # 25-point threshold was compared against a 3-gameweek gain -- and the
+    # simulation personas cannot sweep a longer planning horizon than this.
+    # Checked by assert_horizons_consistent() below.
+    projection_horizon_gws: int = 5
+
     # Number of GWs to project ahead for transfer decisions
     transfer_planning_horizon_gws: int = 3
 
@@ -506,3 +516,33 @@ CHIP_TIMING = ChipTimingThresholds()
 OPTIMISER = OptimiserConfig()
 DEPARTURE_RISK = DepartureRiskRules()
 PRIOR_LEAGUE = PriorLeagueRules()
+
+
+def assert_horizons_consistent(
+    optimiser: OptimiserConfig | None = None,
+    chip_timing: ChipTimingThresholds | None = None,
+) -> None:
+    """Every consumer SLICES the persisted projection frame rather than
+    building its own, so a consumer asking for more gameweeks than the
+    pipeline persists silently gets fewer -- and then compares the result
+    against a threshold calibrated for the longer window. That is exactly
+    how the wildcard came to evaluate a 3-gameweek gain against a
+    5-gameweek bar. Raises rather than warns: a silently short horizon is
+    indistinguishable from a genuine decision not to act.
+    """
+    cfg = optimiser or OPTIMISER
+    timing = chip_timing or CHIP_TIMING
+    consumers = {
+        "transfer_planning_horizon_gws": cfg.transfer_planning_horizon_gws,
+        "wildcard_eval_horizon_gws": timing.wildcard_eval_horizon_gws,
+    }
+    too_long = {name: gws for name, gws in consumers.items() if gws > cfg.projection_horizon_gws}
+    if too_long:
+        raise ValueError(
+            f"projection_horizon_gws={cfg.projection_horizon_gws} is shorter than "
+            f"{too_long} — those consumers would silently see fewer gameweeks "
+            f"than their thresholds assume"
+        )
+
+
+assert_horizons_consistent()

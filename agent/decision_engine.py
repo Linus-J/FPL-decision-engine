@@ -11,8 +11,10 @@ from config.strategy import (
     CHIP_TIMING,
     OPTIMISER,
     SQUAD,
+    TRANSFERS,
     ChipTimingThresholds,
     OptimiserConfig,
+    TransferRules,
 )
 from data.db import get_session
 from data.models import DecisionLog, SimDecisionLog, SimManager
@@ -284,6 +286,7 @@ def _run_decision_cycle(
     chip_timing: ChipTimingThresholds,
     team_id: int | None,
     sim_manager_id: int | None,
+    transfer_rules: TransferRules | None = None,
     refresh_projections: bool = True,
 ) -> dict:
     """The actual decision loop, shared by the real bot (``run()``) and every
@@ -312,7 +315,10 @@ def _run_decision_cycle(
     # P1.1: the multi-period transfer ILP, the chip evaluator and the
     # blank-gameweek count all read this frame -- it must span the whole
     # planning horizon, not just the gameweek being decided.
-    projections = get_latest_projections(horizon=config.transfer_planning_horizon_gws)
+    # Read the FULL persisted frame; each consumer slices it to its own
+    # horizon (evaluate_transfers, recommend_chip), so handing them a
+    # short frame silently shortens their planning instead.
+    projections = get_latest_projections(horizon=config.projection_horizon_gws)
     # Feature B (plan 2026-08-10): rumour-discount tier, real data for the
     # first time (previously always an empty dict).
     projections = apply_departure_discount(projections, load_p_leave_overrides())
@@ -497,6 +503,7 @@ def _run_decision_cycle(
             wildcard_active=wildcard_active,
             dgw_gws=dgw_gws,
             config=config,
+            transfer_rules=transfer_rules,
             # P1.6: real affordability. Without these the optimiser priced
             # every owned player at their current cost and spent from a
             # budget frozen at 100.0 since the cold start.
@@ -585,6 +592,7 @@ def _run_decision_cycle(
                 len(transfer_plan.transfers_in),
                 wildcard_played=wildcard_active,
                 free_hit_played=free_hit_active,
+                transfer_rules=transfer_rules,
             ),
             # P1.6: a Free Hit's squad is reverted after the gameweek, so its
             # transfers must not move the bank or the purchase-price ledger.
@@ -647,6 +655,17 @@ def run_for_persona(persona: SimManager, season: str = "2026-27") -> dict:
         OPTIMISER,
         risk_level=persona.risk_level,
         max_ownership_differential=persona.max_ownership_differential,
+        # P2.4: the knobs the cohort exists to test. Previously pinned to the
+        # real bot's values across every persona, so the sweep could say
+        # nothing about any of them.
+        transfer_planning_horizon_gws=persona.transfer_planning_horizon_gws,
+        bench_value_weight=persona.bench_value_weight,
+        mu_baseline=persona.mu_baseline,
+    )
+    transfer_rules = dataclasses.replace(
+        TRANSFERS,
+        transfer_switching_cost=persona.transfer_switching_cost,
+        ft_terminal_value=persona.ft_terminal_value,
     )
     chip_timing = dataclasses.replace(
         CHIP_TIMING,
@@ -671,5 +690,6 @@ def run_for_persona(persona: SimManager, season: str = "2026-27") -> dict:
         chip_timing=chip_timing,
         team_id=None,
         sim_manager_id=persona.id,
+        transfer_rules=transfer_rules,
         refresh_projections=False,
     )

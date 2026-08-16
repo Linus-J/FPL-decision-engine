@@ -615,6 +615,22 @@ class SimManager(Base):
     risk_level: Mapped[float] = mapped_column(Float, nullable=False)
     max_ownership_differential: Mapped[float] = mapped_column(Float, nullable=False)
     chip_aggressiveness: Mapped[float] = mapped_column(Float, nullable=False)
+    # P2.4 (2026-08-16): the knobs the cohort actually exists to test.
+    # Before this the sweep varied risk_level, max_ownership_differential
+    # (completely inert -- no call site passes ownership, and the table is
+    # empty) and chip_aggressiveness, while every genuinely untuned,
+    # load-bearing parameter was pinned to the real bot's value across all
+    # 100 personas. A season is one experiment; it should be spent on the
+    # parameters actually in question.
+    transfer_switching_cost: Mapped[float] = mapped_column(Float, nullable=False, default=1.5)
+    ft_terminal_value: Mapped[float] = mapped_column(Float, nullable=False, default=2.0)
+    bench_value_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.15)
+    transfer_planning_horizon_gws: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    mu_baseline: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Which axis this persona varies ("baseline" for the all-defaults
+    # control). Makes the post-season analysis a group-by rather than an
+    # archaeology exercise.
+    swept_axis: Mapped[str] = mapped_column(String, nullable=False, default="baseline")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
