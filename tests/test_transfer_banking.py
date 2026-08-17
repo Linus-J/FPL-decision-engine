@@ -183,6 +183,61 @@ def test_wildcard_produces_a_full_rebuild_not_an_empty_plan():
     assert plan.hits_taken == 0, "a wildcard is free -- it must never book hits"
 
 
+def _marginal_upgrades() -> tuple[pd.DataFrame, list[int], pd.DataFrame]:
+    """A squad where three non-owned players are worth slightly more than the
+    men they would replace — a per-week edge of 0.3 over a 3-gameweek horizon,
+    so ~0.9 total, comfortably UNDER the 1.5 switching cost.
+
+    One owned player is pinned far above everyone so captaincy never moves;
+    otherwise upgrading the top scorer would add a second copy of the gain and
+    muddy what is being measured.
+    """
+    players, squad = _pool()
+    proj = _flat_projections(players, squad)
+    owned = set(squad)
+    proj.loc[proj["player_id"] == squad[0], "xpts"] = 20.0          # permanent captain
+    upgrades = [r.id for r in players.itertuples() if r.id not in owned][:3]
+    proj.loc[proj["player_id"].isin(upgrades), "xpts"] = 4.3
+    return players, squad, proj
+
+
+def test_switching_cost_still_suppresses_marginal_churn_on_a_normal_week():
+    """The control for the test below: with a real switching cost and plenty
+    of free transfers, a sub-threshold edge must NOT trigger churn. This is
+    the behaviour `transfer_switching_cost` exists to produce."""
+    players, squad, proj = _marginal_upgrades()
+    plan = evaluate_transfers(
+        squad, proj, players, free_transfers=5, available_budget=200.0,
+        wildcard_active=False,
+        transfer_rules=dataclasses.replace(TRANSFERS, ft_terminal_value=0.0),
+    )
+    assert plan.transfers_in == []
+
+
+def test_a_wildcard_is_not_taxed_by_the_switching_cost():
+    """Regression, 2026-08-18 (engine review §11).
+
+    `transfer_switching_cost` exists to stop a noise-sized edge triggering
+    churn WITHIN the free allowance. A wildcard has no allowance to churn
+    against — unlimited transfers are the whole point of the chip — but the
+    objective charged the tax on wildcard weeks anyway, docking a ten-player
+    rebuild 15 points and making the solver under-use a chip it had just
+    decided to spend. The hit term was already zeroed for the same reason
+    (`hit[0] == 0`); this was the missing half.
+
+    Same squad and same marginal edges as the control above: taxed, they are
+    correctly declined; on a wildcard they must be taken.
+    """
+    players, squad, proj = _marginal_upgrades()
+    plan = evaluate_transfers(
+        squad, proj, players, free_transfers=1, available_budget=200.0,
+        wildcard_active=True,
+        transfer_rules=dataclasses.replace(TRANSFERS, ft_terminal_value=0.0),
+    )
+    assert plan.transfers_in != [], "a wildcard must not be taxed into inaction"
+    assert plan.hits_taken == 0, "a wildcard is free -- it must never book hits"
+
+
 # --- P1.4 hits ------------------------------------------------------------
 
 

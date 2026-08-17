@@ -351,6 +351,24 @@ def evaluate_transfers(
         prob += ft[w + 1] <= trules.max_banked_free_transfers
         prob += ft[w + 1] >= trules.free_transfers_per_gw
 
+    def _switching_cost(w: int) -> float:
+        """The flat per-transfer cost, zeroed on a wildcard week (2026-08-18,
+        engine review §11).
+
+        ``transfer_switching_cost`` exists for one specific purpose, set out at
+        length in ``strategy.py``: stop a noise-sized edge triggering churn
+        WITHIN the free allowance. A wildcard has no allowance to churn against
+        — unlimited transfers are the entire point of the chip, and it is
+        scarce (one per half). Charging the tax anyway docked a ten-player
+        rebuild 15 points against its own objective, so the solver
+        systematically under-used a chip it had just decided to spend.
+
+        The hit term is already disabled for exactly this reason a few lines
+        above (``hit[0] == 0``); this is the other half of the same idea, which
+        was missed.
+        """
+        return 0.0 if (wildcard_active and w == 0) else trules.transfer_switching_cost
+
     # P1.7: bench players contributed exactly nothing here, so every transfer
     # treated bench quality as worthless and eroded it to fodder over a season
     # -- optimise_squad already weights the bench (bench_value_weight) and this
@@ -367,7 +385,7 @@ def evaluate_transfers(
         # a single hit cost `4 * len(pid_list)` (~900+ points at real pool
         # sizes) rather than 4. Masked while hits were structurally impossible;
         # it would have made them impossible again the moment they were legal.
-        hit[w] * abs(trules.hit_cost_points) + trules.transfer_switching_cost * n_trans[w]
+        hit[w] * abs(trules.hit_cost_points) + _switching_cost(w) * n_trans[w]
         for w in range(H)
     )
 
