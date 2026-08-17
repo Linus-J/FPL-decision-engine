@@ -12,7 +12,9 @@ hypothesis did not survive checking it is recorded as refuted rather than
 dropped, because several plausible-sounding concerns turned out to be sound
 design.
 
-**Nine defects, two of them in the same failure class the last audit closed.**
+**Seventeen defects, two of them in the same failure class the last audit
+closed.** Sections 1–9 cover projection, ingest and measurement; sections 10–17
+cover the optimiser, transfer and chip layer.
 
 ---
 
@@ -223,6 +225,185 @@ swallowed the exit code would look like success.
 
 ---
 
+# The optimiser, transfer and chip layer
+
+## 10. A wildcard throws away every banked free transfer
+
+`optimiser/transfers.py:52-53`:
+
+```python
+if wildcard_played:
+    return trules.free_transfers_per_gw      # 1
+```
+
+FPL's actual rule, confirmed against the Premier League's own guidance and
+Fantasy Football Scout: **saved free transfers are retained through a Wildcard
+or a Free Hit.** Two saved before a GW6 wildcard means three available in GW7 —
+the two saved plus GW7's allotment. You simply do not get an extra one in the
+week you play it.
+
+The Free Hit branch immediately below gets this right (it zeroes
+`transfers_made` and lets the normal carry run). The wildcard branch does not.
+A wildcard played on a full bank drops the engine from 5 free transfers to 1 —
+**four transfers destroyed, up to 16 points of avoidable hits, twice a
+season.** `ft[0]` in the multi-period ILP is seeded from this value, so every
+subsequent week plans against an allowance that is wrong.
+
+**Fix:** treat the wildcard exactly like the free hit — one line.
+
+## 11. The wildcard rebuild is taxed by the anti-churn switching cost
+
+`transfers.py:360` subtracts `transfer_switching_cost * n_trans[w]` from the
+objective for **every** week, including `w = 0` under an active wildcard.
+
+`transfer_switching_cost` (1.5) exists for a specific reason, documented at
+length in `strategy.py:186-198`: to stop a noise-sized edge triggering churn
+*within the free allowance*. On a wildcard that rationale is void — unlimited
+transfers are the entire point of the chip, and it is scarce (one per half).
+
+Charging it anyway means a 10-player rebuild is docked 15 points against its
+own objective, so the solver systematically under-uses the wildcard it just
+decided to play. The hit term is correctly disabled under a wildcard
+(`hit[0] == 0`, line 329); the switching cost was missed.
+
+## 12. The squad that justifies the wildcard is not the squad that gets built
+
+`chips.py::_try_wc` decides whether to play the chip by calling
+`optimise_squad(..., free_transfers=15, horizon=5)` — a single-period build,
+untaxed, unconstrained by the bank.
+
+`decision_engine.py:538` then *executes* the wildcard through
+`evaluate_transfers(wildcard_active=True)` — a different optimiser: multi-period,
+switching-cost-taxed (§11), and constrained by real bank and purchase prices.
+
+So the gain that cleared the 25-point bar is not the gain that will be
+realised. Two optimisers with different objectives decide and act.
+
+`docs/decision-engine.md` also describes this incorrectly — it says
+*"wildcard/free hit? → optimise_squad"*, but only Free Hit takes that path.
+
+## 13. Chip gains are computed over 15 players, ignoring the XI and the captain
+
+`transfers._squad_xpts` gets this right — `nlargest(11)` plus a captain bonus.
+`chips.py` does not. Both `_try_wc` and `_try_fh` use raw 15-man sums:
+
+```python
+projections[...isin(wc_squad_ids)]["xpts"].sum()      # chips.py:343-347
+```
+
+A Free Hit plays eleven players, not fifteen. So the Free Hit gain credits four
+bench players who will not play, and neither chip credits captaincy at all —
+two errors pulling in opposite directions, against thresholds (25.0, 12.0)
+that were never calibrated against either definition. Bench Boost is the one
+case where a 15-man sum is right.
+
+## 14. The payoff-probability gate does not do what its config says
+
+`config/strategy.py:283-288` states the intent precisely:
+
+> *"minimum **P(gain >= 0)** over real persisted MC scenarios required, **IN
+> ADDITION to** the point-estimate thresholds above, before a chip is
+> recommended."*
+
+`_clears_threshold` (chips.py:22-38) implements neither half:
+
+```python
+if scenario_values.empty:
+    return point_value >= threshold
+return float((scenario_values >= threshold).mean()) >= min_probability
+```
+
+Two divergences from the stated design:
+
+1. It tests `P(value >= threshold)`, not `P(gain >= 0)`.
+2. It applies that **instead of** the point-estimate test, not in addition —
+   `point_value` is discarded entirely whenever samples exist.
+
+The consequence is a far stricter bar than either the config or the constants
+intend. "Mean gain ≥ 25" and "60% chance of a gain ≥ 25" are wildly different
+tests; for a right-skewed FPL distribution the latter is much harder. A
+wildcard requiring a 60% probability of a ≥25-point five-gameweek gain will
+essentially never fire.
+
+And it matters most because **samples exist in live serving and never in the
+backtest** (P3-1 does not persist them there), so the gate that runs in
+production is not the gate that runs in any tuning run. That is a live/backtest
+divergence pointing in exactly the direction of the original complaint that
+chips go unused all season — and it is a plausible primary cause of it.
+
+## 15. Bench Boost and Free Hit cannot fire in the first half of the season
+
+`_try_bb` returns `None` unless `dgw_active_now`. `_try_fh` returns `None`
+unless `bgw_affected_count >= 5 or dgw_active_now`.
+
+The 26/27 fixture list currently has **zero** doubles and blanks — all 38
+gameweeks hold exactly 10 fixtures. Doubles and blanks only arise from
+postponements, which cluster in the second half of the season.
+
+`_panic_shrink` lowers *thresholds* as the half expires, but it does not relax
+these hard structural gates, and the panic force-play at the boundary covers
+**only Triple Captain**. So if no DGW or 5-blank BGW materialises before GW19 —
+the normal case — two of the four first-half chips expire unused by
+construction, and nothing reports it.
+
+## 16. The entire risk and variance layer is inert at the default config
+
+`mu_baseline` was calibrated to **0.0** (`strategy.py:393`), and
+`mu = mu_baseline + risk_level * mu_range` with `risk_level = 0` gives `mu = 0`.
+Consequences, all confirmed by reading the code paths:
+
+- `risk_adjusted_score` reduces to plain `xpts` — no variance term.
+- `differential_multiplier` is 1 for everyone — no EO effect.
+- `scenario_based_captain` short-circuits at `mu == 0.0`
+  (`captaincy.py:176`) and returns a plain mean argmax **without touching the
+  database**.
+
+That last one matters: `captaincy.py` is a genuinely sophisticated piece of
+work — it recovers fixture groups from `scenario_id` spans and computes true
+joint team-total variance under each captaincy choice. It never runs.
+
+Two pieces of documentation now assert the opposite. `captaincy.py`'s own
+docstring says *"mu is no longer 0 by default … so this short-circuit is now
+the exception rather than the common case"*, and `decision-engine.md`'s
+limitations table says teammate covariance is unmodelled in the optimiser
+*"(captaincy does model it)"*. Both were true when written and were falsified
+by the `mu_baseline` calibration.
+
+This is not necessarily a bug — 0.0 won its calibration sweep. But the engine
+is carrying three layers of unused machinery whose documentation claims they
+are live.
+
+## 17. Triple Captain will very likely be spent in the first few gameweeks
+
+`_try_tc` is **first** in the evaluation order on any non-DGW week
+(chips.py:370). Its threshold is the captain's *absolute* projected points
+against `triple_captain_min_gain = 4.0`. The `triple_captain_dgw_wait_multiplier`
+that would raise that bar only applies when `dgw_visible_ahead` — and no DGW is
+visible, because none exist in the fixture list yet (§15).
+
+So from GW2 the gate reduces to *P(captain scores ≥ 4) ≥ 0.6*, which a premium
+captain clears comfortably in a good fixture. There is no mechanism to hold the
+chip for a better week other than a visible DGW.
+
+The rebasing from "gap over the second-best captain" to "absolute points" was
+correct — TC really is worth one extra copy of the captain's points. But the
+scarcity side of the trade (two uses all season) is now guarded only by a DGW
+lookahead that is empty for most of the first half. Mark this SUSPECTED on
+magnitude: it depends on the realised sample distribution, which does not exist
+until GW2. It is worth instrumenting before it fires.
+
+## 18. Smaller items in this layer
+
+- `max_hits_per_gw = 2` (`transfers.py:331`) is **not** an FPL rule — FPL
+  allows unlimited hits. Rarely binding, but it is enforced as though it were a
+  rule.
+- `_bench_player_ids` approximates the bench as "outside the top 11 by xpts",
+  ignoring formation legality, so `bench_xpts` can name a player who would
+  actually start. Documented as an approximation and consistent with
+  `_bench_xpts`, but it gates a real chip decision.
+
+---
+
 ## Structural, not a defect: nothing has been validated for 26/27
 
 `decision_log` and `sim_decision_log` contain **zero scored rows** (180 sim rows
@@ -290,24 +471,36 @@ Recorded so they are not re-investigated:
 - **Fixture data** — 380 fixtures, 38 gameweeks, 10 per gameweek, no doubles or
   blanks yet, GW1 deadline 2026-08-21 17:30. Correct.
 
+In the optimiser layer specifically:
+
+- **The free-transfer carry constraint** —
+  `ft[w+1] <= ft[w] - n_trans[w] + hit[w] + 1`, floored at 1 and capped at 5.
+  Algebraically correct in all three regimes (bank, spend exactly, take hits).
+- **The bank flow** — `bank[w+1] = bank[w] + Σ sell·out − Σ cost·in` with
+  `bank ≥ 0`, and it does collapse to the old `Σ cost ≤ budget` when no
+  purchase prices are supplied, exactly as claimed.
+- **Squad and formation constraints** — 2/5/5/3, max 3 per club, XI of 11 with
+  exactly 1 GK, 3–5 DEF, 2–5 MID, 1–3 FWD. Matches FPL, including that 5-2-3
+  is legal.
+- **Captaincy in the ILP** — a second copy of the score with
+  `captain <= starting` and exactly one captain per week. Correct doubling.
+- **`_squad_xpts`** — `nlargest(11)` plus captain bonus, the right definition
+  of squad value (which is what makes §13 visible as a divergence).
+- **`chips_used_this_season`** — de-duplicates on `(chip, gameweek)`, so
+  re-running a gameweek no longer consumes a chip.
+- **`_get_wc_half_boundary`** — season-scoped, so the multi-season database no
+  longer yields a boundary of 113.
+- **`load_latest_samples`** — filters to a single `created_at`, so a re-run's
+  fresh draws are never paired scenario-by-scenario with another run's.
+
 ---
 
-## Suggested order of work before the deadline
+## Sequenced remediation
 
-Only §1 and §2 plausibly change the GW1 squad, and §2 only via four of ten
-fixtures. §3 changes it directly.
-
-1. **§1** — a two-line SQL fix, and it silently degrades every week until FPL
-   publishes strengths.
-2. **§3** — decide whether the cold start should shrink. It changes the squad
-   you are about to enter.
-3. **§8** — cheap, and it protects the only validation instrument that will
-   exist by October.
-4. **§2** — the largest modelling gain, but a real change; better done in the
-   first international break than four days before GW1.
-5. **§5/§4** — re-scrape tackles from one source, or take WhoScored's outcome
-   type into account, and fix `source` so this is measurable next time.
-6. **§6/§7** — re-calibrate goalkeeper bonus once 26/27 BPS is observable.
+See `docs/superpowers/plans/engine-fix-plan-2026-08-18.md`. In short: only §3
+changes the GW1 squad, so it is the only item that must be decided before
+Friday's deadline. §10 and §11 are one-line fixes with rule-verified answers.
+§1 is two lines of SQL. Everything else is post-GW1 work.
 
 ## The pattern
 
@@ -329,3 +522,31 @@ Preflight already computes `degenerate` for constant features; the natural
 extension is a per-feature train/serve distribution comparison that fails when
 a live column's range falls outside its training range. That single check would
 have caught §1 outright, and defects 9, 12 and 14 from the previous audit.
+
+The optimiser layer fails differently, in two shapes of its own.
+
+**Two implementations of one concept, drifting.** §12 (one optimiser decides
+the wildcard, another executes it), §13 (two definitions of "squad points" in
+adjacent modules), §10 (wildcard and free hit handled inconsistently in the
+same function). This is the same root cause the project already named when it
+retired the backtest as a validation instrument — *"a second implementation of
+the decision loop… that divergence is how a whole class of live-only defects
+survived a green test suite"* — reappearing inside the optimiser rather than
+beside it. The countermeasure is the one already used for
+`roll_forward_free_transfers`: one shared function, so the two paths cannot
+drift.
+
+**A guard whose premise has expired.** §16 (three risk layers inert because a
+calibration set `mu_baseline` to 0, with docstrings still asserting they are
+live), §14 (thresholds written as means, now serving as probabilities), §17 (a
+scarcity guard that depends on DGW data which does not yet exist), §15 (chip
+gates conditioned on fixture structure that has not materialised). Each was
+correct when written. What changed was the world around it, and nothing
+re-checks the premise.
+
+That second shape has no test-shaped answer, because nothing is broken — the
+code does exactly what it says. What would catch it is asserting the
+*consequence* rather than the mechanism: a preflight check that each chip is
+reachable given current data, and that the risk layer is either active or
+declared inactive. A chip that cannot fire under any input this season is a
+fact worth failing on, and today nothing computes it.
