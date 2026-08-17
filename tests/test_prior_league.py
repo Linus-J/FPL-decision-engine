@@ -166,3 +166,33 @@ def test_prior_league_projection_prefers_non_penalty_goals_over_raw_goals():
     with_npg = _prior_league_projection("FWD", {**base, "goals90": 0.8, "npg90": 0.5})
 
     assert with_npg[0] < raw_only[0], "penalties must not inflate the projection"
+
+
+def test_penalty_duty_reaches_a_prior_league_player_on_penalty_free_input():
+    """The tier was excluded from the cold-start penalty bonus because raw
+    goals90 baked in penalties taken abroad, unattributably. npxg90 and npg90
+    are non-penalty by construction, so for those rows the double-count risk
+    is gone and withholding the bonus just under-rates a designated taker."""
+    from projection.cold_start import _prior_league_projection
+
+    row = {"league": "ESP-La Liga", "npxg90": 0.5, "xa90": 0.2,
+           "goals90": 0.6, "npg90": 0.5, "assists90": 0.2,
+           "minutes": 2700, "matches": 30}
+    without = _prior_league_projection("FWD", row)
+    with_duty = _prior_league_projection("FWD", row, penalty_duty_rate=0.0806)
+    assert with_duty[0] > without[0]
+    assert with_duty[1] > without[1], "the extra goals carry extra variance too"
+
+
+def test_penalty_duty_is_withheld_when_only_penalty_inclusive_goals_exist():
+    """A Championship player has no Understat coverage and, if G-PK is also
+    missing, projects from raw goals that already contain his penalties.
+    Adding duty there would pay him twice."""
+    from projection.cold_start import _prior_league_projection
+
+    row = {"league": "ENG-Championship", "npxg90": 0.0, "xa90": 0.0,
+           "goals90": 0.6, "npg90": 0.0, "assists90": 0.2,
+           "minutes": 2700, "matches": 30}
+    without = _prior_league_projection("FWD", row)
+    with_duty = _prior_league_projection("FWD", row, penalty_duty_rate=0.0806)
+    assert with_duty[0] == without[0]

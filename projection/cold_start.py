@@ -618,7 +618,9 @@ def _season_length(league: str) -> int:
     return _SEASON_MATCHES.get(league, _DEFAULT_SEASON_MATCHES)
 
 
-def _prior_league_projection(position: str, pl_row: dict) -> tuple[float, float, float]:
+def _prior_league_projection(
+    position: str, pl_row: dict, penalty_duty_rate: float = 0.0
+) -> tuple[float, float, float]:
     """(xpts, xpts_var, start_probability) for a matched prior-league
     player (P11). xpts is built from translated npxG90/xA90 (the smoother,
     luck-adjusted quality metrics -- one prior season's raw goals/assists is
@@ -653,20 +655,34 @@ def _prior_league_projection(position: str, pl_row: dict) -> tuple[float, float,
     #              the cold-start penalty bonus.
     npxg90 = float(pl_row.get("npxg90") or 0.0)
     xa90 = float(pl_row.get("xa90") or 0.0)
-    if npxg90 <= 0.0 and xa90 <= 0.0:
-        npxg90 = float(pl_row.get("npg90") or 0.0) or float(pl_row.get("goals90") or 0.0)
+    penalty_free = npxg90 > 0.0 or xa90 > 0.0
+    if not penalty_free:
+        npg90 = float(pl_row.get("npg90") or 0.0)
+        penalty_free = npg90 > 0.0
+        npxg90 = npg90 or float(pl_row.get("goals90") or 0.0)
         xa90 = float(pl_row.get("assists90") or 0.0)
     translated_npxg90 = npxg90 * factor
     translated_xa90 = xa90 * factor
     # Per-MATCH (conditional on featuring): per-90 rates plus the appearance
     # points a player only collects by playing.
+    # Penalty duty is additive here ONLY when the input carried no penalties.
+    # The tier used to be excluded outright because raw goals90 baked in
+    # whatever penalties the player took abroad, unattributably. npxg90 (from
+    # Understat) and npg90 (FBref "G-PK") are both non-penalty by
+    # construction, so for those rows the double-count risk is gone and
+    # withholding the bonus would simply under-rate a designated taker. On
+    # 2026-08-17 all six prior-league players holding 26/27 duty qualified.
+    pen_mean = pen_var = 0.0
+    if penalty_free and penalty_duty_rate > 0.0:
+        pen_mean, pen_var = penalty_bonus(position, penalty_duty_rate, 0.0)
+
     xpts_played = max(
         _MIN_XPTS,
         expected_goal_points(translated_npxg90, position)
         + expected_assist_points(translated_xa90)
         + SCORING.points_full_appearance,
-    )
-    var_played = PRIOR_LEAGUE.translation_variance(pl_row["league"])
+    ) + pen_mean
+    var_played = PRIOR_LEAGUE.translation_variance(pl_row["league"]) + pen_var
     season_matches = _season_length(pl_row["league"])
     # P0.1: matches played out of their league's own season length -- the
     # prior-league analogue of ``p_appear``. Unlike the PL tier there is no
@@ -817,7 +833,7 @@ def project_cold_start(
             )
             if pl_row is not None:
                 pl_xpts, pl_xpts_var, pl_start_prob = _prior_league_projection(
-                    r.position, pl_row
+                    r.position, pl_row, float(penalty_duty.get(int(r.id), 0.0))
                 )
                 # the prior-league tier has no defensive/bonus signal, so it
                 # must never score a matched player below what the existing
