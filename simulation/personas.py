@@ -151,6 +151,34 @@ def generate_personas(season: str, seed: int = SIM_SEED) -> list[dict]:
     return personas
 
 
+def _assert_persisted_axes_still_readable(
+    existing: list[SimManager], season: str
+) -> None:
+    """``swept_axis`` is an unversioned free-text string written once, at the
+    season's first run, and read months later by ``simulation.analysis``.
+
+    Renaming or removing an axis mid-season leaves the persisted rows pointing
+    at a name the code no longer knows. ``axis_effect`` groups on that string
+    and looks the value up as a column of the joined lineup frame, so a stale
+    name either raises in November against a cohort that cannot be regenerated,
+    or -- worse -- splits one axis into two groups that each look like a
+    smaller, noisier experiment. Fail at load, where the message can still say
+    what happened.
+    """
+    persisted = {p.swept_axis for p in existing}
+    expected = set(SWEPT_AXES) | {"baseline"}
+    stale = persisted - expected
+    if stale:
+        raise ValueError(
+            f"season {season} has personas on axes {sorted(stale)}, which are no "
+            f"longer in SWEPT_AXES {sorted(SWEPT_AXES)}. An axis was renamed or "
+            f"removed after the cohort was created; simulation/analysis.py reads "
+            f"the axis name as a column, so this season's results would be "
+            f"unreadable or silently split. Restore the old name, or start a "
+            f"fresh cohort under a new season key."
+        )
+
+
 def load_or_create_personas(
     db: Session, season: str, seed: int = SIM_SEED
 ) -> list[SimManager]:
@@ -165,6 +193,7 @@ def load_or_create_personas(
         .all()
     )
     if existing:
+        _assert_persisted_axes_still_readable(existing, season)
         return existing
 
     rows = [SimManager(**p) for p in generate_personas(season, seed)]

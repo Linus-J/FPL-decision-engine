@@ -156,6 +156,26 @@ def test_every_swept_axis_is_readable_by_the_season_analysis():
         )
 
 
+def test_a_renamed_axis_is_caught_at_load_not_months_later(session, monkeypatch):
+    """``swept_axis`` is written once and read at season's end. If an axis is
+    renamed in between, the persisted rows keep the old name and the analysis
+    groups on a string that is no longer a column -- either raising in November
+    against a cohort that cannot be regenerated, or splitting one experiment
+    into two smaller ones. Fail at load instead."""
+    load_or_create_personas(session, "2026-27")
+
+    import simulation.personas as personas_mod
+
+    renamed = {
+        ("risk_appetite" if k == "risk_level" else k): v
+        for k, v in personas_mod.SWEPT_AXES.items()
+    }
+    monkeypatch.setattr(personas_mod, "SWEPT_AXES", renamed)
+
+    with pytest.raises(ValueError, match="risk_level"):
+        load_or_create_personas(session, "2026-27")
+
+
 def test_swept_axes_are_real_simmanager_columns():
     """Asserted at import too; pinned here so the reason survives."""
     from data.models import SimManager
