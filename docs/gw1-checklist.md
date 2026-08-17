@@ -187,3 +187,18 @@ What genuinely remains is a data limitation rather than a decision:
 - **The prior-league tier cannot see penalty duty.** A foreign signing's
   goals already include penalties taken abroad, and nothing in the data says
   whether he was on them, so no correction is safe either way.
+- **Prior-league expected-goals data is missing** — `npxg90`/`xa90` are zero
+  on all 15,323 rows, so the tier projects from raw goals and assists. Every
+  cached FBref `standard` table lacks the `Expected` column group entirely,
+  so this needs a re-scrape **with a display** (Cloudflare blocks headless):
+
+  ```bash
+  FBREF_HEADED=1 DB_PATH=fpl_bot_v2.db uv run --with soccerdata \
+      python scripts/scrape_prior_league.py 'ESP-La Liga' 2025-2026
+  ```
+
+  Worth capturing `G-PK` (non-penalty goals) at the same time — the cached
+  tables already carry it, it is what the in-season engine uses, and it would
+  let the prior-league tier join the cold-start penalty bonus instead of being
+  excluded for ambiguity. Not urgent: it affects 57 players, none in the GW1
+  squad.
