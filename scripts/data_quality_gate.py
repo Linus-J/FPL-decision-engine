@@ -276,6 +276,56 @@ def run_projection_sanity_checks() -> list:
     )
 
 
+def run_odds_feature_liveness_check(season: str = "2026-27") -> list:
+    """Do the odds features carry real values in the season being PLAYED?
+
+    They are the only model inputs whose two sources differ by season:
+    ``historical_fixture_odds`` is a backfill of finished seasons, so it can
+    only ever end before the current one, while ``fixture_odds`` is written
+    live. When the live leg is missing, ``load_fixture_odds`` still returns a
+    full frame -- every row on its COALESCE default. The model then applies
+    coefficients fitted on five seasons of real variation to three constants,
+    and nothing anywhere raises, because a defaulted column is indistinguishable
+    from a populated one at every point downstream.
+
+    That is not hypothetical: it was the live state on 2026-08-17, with the
+    backfill ending at 2025-26 and the bot about to play 2026-27.
+    """
+    from data.quality_checks import QualityIssue
+    from projection.features import ODDS_FEATURE_COLS, load_fixture_odds
+    from projection.pipeline import season_has_played_history
+
+    # Pre-season there are no player-gameweek rows to carry odds at all; the
+    # cold start does not read these features. Checking then would fail the
+    # gate every week for a correct state.
+    if not season_has_played_history(season):
+        return []
+
+    df = load_fixture_odds(season)
+    if df.empty:
+        return []
+
+    issues = []
+    for column in ODDS_FEATURE_COLS:
+        if df[column].nunique() > 1:
+            continue
+        issues.append(
+            QualityIssue(
+                check="odds_feature_liveness",
+                severity="error",
+                message=(
+                    f"{column} is the same value ({df[column].iloc[0]}) on all "
+                    f"{len(df)} {season} rows — the live fixture_odds leg is not "
+                    f"reaching the minutes model, so this feature is inert for "
+                    f"the whole season while the model was fitted on real "
+                    f"variation. Check that scripts/run_weekly.py is ingesting "
+                    f"odds and that fixtures resolve to the right team pair."
+                ),
+            )
+        )
+    return issues
+
+
 def main() -> int:
     issues = []
     issues += run_team_id_freshness_check()
@@ -285,6 +335,7 @@ def main() -> int:
     issues += run_copied_column_checks()
     issues += run_referential_integrity_checks()
     issues += run_projection_sanity_checks()
+    issues += run_odds_feature_liveness_check()
 
     if not issues:
         logger.info("data quality gate: all checks passed")

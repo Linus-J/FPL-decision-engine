@@ -190,8 +190,8 @@ def add_enrichment_features(df: pd.DataFrame, enrichment: pd.DataFrame) -> pd.Da
 
 
 def load_fixture_odds(season: str | None = None) -> pd.DataFrame:
-    """Per player-GW odds features (my/opp clean-sheet + BTTS prob) for the
-    historical training/backtest path.
+    """Per player-GW odds features (my/opp clean-sheet + over-2.5) for BOTH the
+    historical training path and the live in-season path.
 
     Sourced from ``historical_fixture_odds`` via the point-in-time context on
     the stat row (``team_id_season``/``opponent_team_id``/``was_home``) — NOT
@@ -200,21 +200,54 @@ def load_fixture_odds(season: str | None = None) -> pd.DataFrame:
     matched on ``(season, gameweek)`` and the season-correct home/away team pair,
     and only counts when ``fetched_at < deadline(season, gw)`` — proving the
     closing odds were stamped at the deadline, not kickoff (finding C2). Missing
-    odds default to 0.2 CS / 0.5 BTTS via ``add_odds_features``."""
+    odds default to 0.2 CS / 0.5 over-2.5 via ``add_odds_features``.
+
+    **Live seasons fall back to ``fixture_odds``.** ``historical_fixture_odds``
+    is a football-data.co.uk backfill, so it only ever covers *finished*
+    seasons — it ran to 2025-26 while the bot was about to play 2026-27. This
+    function is the only odds reader ``minutes_model._build_features`` calls, on
+    the training AND the prediction pass alike, so without the fallback every
+    2026-27 row would take the ``COALESCE`` defaults: all three odds features
+    pinned to a constant for the entire live season, in a model fitted on five
+    seasons where they varied. The features would look present and be inert.
+
+    The live leg applies the same as-of discipline as
+    ``load_live_odds_asof``: the latest snapshot per fixture stamped at or
+    before that gameweek's deadline, never after. Historical wins where both
+    exist — it is the settled closing line.
+    """
     db = get_session()
     try:
         season_filter = "AND s.season = :season" if season else ""
         params = {"season": season} if season else {}
         query = text(f"""
+            WITH live AS (
+                SELECT fo.fixture_id, fo.home_cs_prob, fo.away_cs_prob,
+                       fo.over25_prob, f.season, f.gameweek,
+                       f.team_h_id, f.team_a_id
+                FROM fixture_odds fo
+                JOIN fixtures f ON f.id = fo.fixture_id
+                LEFT JOIN gameweeks lg
+                    ON lg.id = f.gameweek AND lg.season = f.season
+                WHERE (lg.deadline_time IS NULL OR fo.fetched_at <= lg.deadline_time)
+                  AND fo.fetched_at = (
+                      SELECT MAX(fo2.fetched_at) FROM fixture_odds fo2
+                      WHERE fo2.fixture_id = fo.fixture_id
+                        AND (lg.deadline_time IS NULL
+                             OR fo2.fetched_at <= lg.deadline_time)
+                  )
+            )
             SELECT
                 s.player_id,
                 s.gameweek,
                 s.season,
-                CASE WHEN s.was_home THEN COALESCE(o.home_cs_prob, 0.2)
-                     ELSE COALESCE(o.away_cs_prob, 0.2) END AS my_cs_prob,
-                CASE WHEN s.was_home THEN COALESCE(o.away_cs_prob, 0.2)
-                     ELSE COALESCE(o.home_cs_prob, 0.2) END AS opp_cs_prob,
-                COALESCE(o.btts_prob, 0.5) AS btts_prob
+                CASE WHEN s.was_home
+                     THEN COALESCE(o.home_cs_prob, l.home_cs_prob, 0.2)
+                     ELSE COALESCE(o.away_cs_prob, l.away_cs_prob, 0.2) END AS my_cs_prob,
+                CASE WHEN s.was_home
+                     THEN COALESCE(o.away_cs_prob, l.away_cs_prob, 0.2)
+                     ELSE COALESCE(o.home_cs_prob, l.home_cs_prob, 0.2) END AS opp_cs_prob,
+                COALESCE(o.over25_prob, l.over25_prob, 0.5) AS over25_prob
             FROM player_gw_stats s
             LEFT JOIN gameweeks g ON g.id = s.gameweek AND g.season = s.season
             LEFT JOIN historical_fixture_odds o
@@ -226,6 +259,14 @@ def load_fixture_odds(season: str | None = None) -> pd.DataFrame:
                         AND o.home_team_id = s.opponent_team_id)
                 )
                 AND (g.deadline_time IS NULL OR o.fetched_at < g.deadline_time)
+            LEFT JOIN live l
+                ON l.season = s.season AND l.gameweek = s.gameweek
+                AND (
+                    (s.was_home = 1 AND l.team_h_id = s.team_id_season
+                        AND l.team_a_id = s.opponent_team_id)
+                    OR (s.was_home = 0 AND l.team_a_id = s.team_id_season
+                        AND l.team_h_id = s.opponent_team_id)
+                )
             WHERE 1 = 1 {season_filter}
         """)
         return pd.read_sql(query, db.bind, params=params)
@@ -266,11 +307,11 @@ def load_live_odds_asof(season: str, gameweek: int) -> pd.DataFrame:
 
 def add_odds_features(df: pd.DataFrame, odds: pd.DataFrame) -> pd.DataFrame:
     odds_dedup = odds.drop_duplicates(subset=["player_id", "gameweek", "season"])
-    merged = df.merge(odds_dedup[["player_id", "gameweek", "season", "my_cs_prob", "opp_cs_prob", "btts_prob"]],
+    merged = df.merge(odds_dedup[["player_id", "gameweek", "season", *ODDS_FEATURE_COLS]],
                       on=["player_id", "gameweek", "season"], how="left")
     merged["my_cs_prob"] = merged["my_cs_prob"].fillna(0.2)
     merged["opp_cs_prob"] = merged["opp_cs_prob"].fillna(0.2)
-    merged["btts_prob"] = merged["btts_prob"].fillna(0.5)
+    merged["over25_prob"] = merged["over25_prob"].fillna(0.5)
     return merged
 
 
@@ -294,10 +335,18 @@ FDR_FEATURE_COLS = [
     "defence_vs_attack",
 ]
 
+# ``btts_prob`` was here until 2026-08-17 and was never a real feature. The
+# training table stored the over-2.5 probability under that name -- a documented
+# proxy, and byte-for-byte identical on all 1900 rows -- while the live API
+# rejects the BTTS market outright (HTTP 422), leaving the column NULL and the
+# served value pinned at the 0.5 default. So the model fitted a coefficient
+# against a variable spanning 0.341-0.81 and applied it to a constant. Using
+# ``over25_prob`` directly keeps the identical signal, is populated on both
+# sides, and stops the column claiming to be something it never was.
 ODDS_FEATURE_COLS = [
     "my_cs_prob",
     "opp_cs_prob",
-    "btts_prob",
+    "over25_prob",
 ]
 
 ENRICHMENT_FEATURE_COLS = [

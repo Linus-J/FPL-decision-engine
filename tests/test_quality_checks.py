@@ -194,3 +194,65 @@ def test_copied_column_check_ignores_an_empty_table():
     from data.quality_checks import check_column_is_not_a_copy
 
     assert check_column_is_not_a_copy("npxg vs xg", 0, 0) == []
+
+
+# --- odds feature liveness (2026-08-17) -------------------------------------
+def _patch_odds_gate(monkeypatch, frame, *, played=True):
+    """Point the gate's two imports at fixtures. It imports inside the
+    function, so patch the source modules rather than the gate's namespace."""
+    import projection.features as feats
+    import projection.pipeline as pipe
+
+    monkeypatch.setattr(pipe, "season_has_played_history", lambda season: played)
+    monkeypatch.setattr(feats, "load_fixture_odds", lambda season=None: frame)
+
+
+def test_odds_liveness_fires_when_a_feature_is_stuck_on_its_default(monkeypatch):
+    """The whole point of the check. A season whose live odds never arrive
+    still yields a full, plausible-looking frame -- every row on the COALESCE
+    default -- so only a constancy test can tell the difference."""
+    import pandas as pd
+
+    from scripts.data_quality_gate import run_odds_feature_liveness_check
+
+    dead = pd.DataFrame({
+        "my_cs_prob": [0.2] * 50,
+        "opp_cs_prob": [0.2] * 50,
+        "over25_prob": [0.5] * 50,
+    })
+    _patch_odds_gate(monkeypatch, dead)
+
+    issues = run_odds_feature_liveness_check("2026-27")
+    assert len(issues) == 3, "all three defaulted columns should be flagged"
+    assert all(i.severity == "error" for i in issues)
+    assert "inert for the whole season" in issues[0].message
+
+
+def test_odds_liveness_passes_on_real_variation(monkeypatch):
+    import pandas as pd
+
+    from scripts.data_quality_gate import run_odds_feature_liveness_check
+
+    live = pd.DataFrame({
+        "my_cs_prob": [0.41, 0.12, 0.33],
+        "opp_cs_prob": [0.12, 0.41, 0.28],
+        "over25_prob": [0.63, 0.63, 0.51],
+    })
+    _patch_odds_gate(monkeypatch, live)
+    assert run_odds_feature_liveness_check("2026-27") == []
+
+
+def test_odds_liveness_is_silent_pre_season(monkeypatch):
+    """Pre-season there are no player-gameweek rows and the cold start does
+    not read these features; flagging then would cry wolf every week."""
+    import pandas as pd
+
+    from scripts.data_quality_gate import run_odds_feature_liveness_check
+
+    dead = pd.DataFrame({
+        "my_cs_prob": [0.2] * 5,
+        "opp_cs_prob": [0.2] * 5,
+        "over25_prob": [0.5] * 5,
+    })
+    _patch_odds_gate(monkeypatch, dead, played=False)
+    assert run_odds_feature_liveness_check("2026-27") == []

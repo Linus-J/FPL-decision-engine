@@ -35,12 +35,36 @@ def test_implied_and_normalise():
     assert bo.normalise_1x2(0, 0, 0) == (0.0, 0.0, 0.0)
 
 
-def test_cs_probs_from_1x2():
-    # mirrors the live odds_api heuristic exactly, for scale-consistency:
-    # home_cs = draw + away_win*0.3; away_cs = draw + home_win*0.3
-    home_cs, away_cs = bo.cs_probs_from_1x2(0.5, 0.25, 0.25)
-    assert home_cs == 0.325
-    assert away_cs == 0.40
+def test_cs_probs_go_to_the_better_side_not_the_worse_one():
+    """A clean sheet belongs to the DEFENCE.
+
+    This test previously pinned the inverted heuristic in place
+    (``home_cs = draw + away_win * 0.3``), asserting 0.325/0.40 -- i.e. that
+    the *weaker* side was the more likely to keep a clean sheet. It passed
+    because it restated the implementation rather than the meaning.
+    """
+    home_cs, away_cs = bo.cs_probs_from_1x2(0.70, 0.20, 0.10, over25=0.5)
+    assert home_cs > away_cs, "the dominant side should keep more clean sheets"
+    assert 0.0 < away_cs < home_cs < 1.0
+
+
+def test_historical_and_live_cs_derivations_are_the_same_function():
+    """The train/serve invariant.
+
+    ``load_fixture_odds`` funnels ``historical_fixture_odds`` (training) and
+    ``fixture_odds`` (serving) into the SAME ``my_cs_prob``/``opp_cs_prob``
+    columns, so any divergence is skew the minutes model cannot see. The two
+    sites drifted apart once already, on 2026-08-16, when only the live one was
+    corrected. Assert equality directly rather than trusting a comment.
+    """
+    from data.ingestors.odds_api import _cs_from_h2h
+
+    for h, d, a, o in [
+        (0.70, 0.20, 0.10, 0.50),
+        (0.20, 0.25, 0.55, 0.62),
+        (0.33, 0.34, 0.33, 0.0),
+    ]:
+        assert bo.cs_probs_from_1x2(h, d, a, o) == _cs_from_h2h(h, d, a, o)
 
 
 def test_over25_prob():
@@ -123,7 +147,7 @@ def _seed_historical(Local, odds_fetched_at):
         s.add(HistoricalFixtureOdds(season="2024-25", gameweek=1,
                                     home_team_id=2, away_team_id=1,
                                     home_cs_prob=0.35, away_cs_prob=0.20,
-                                    btts_prob=0.55, fetched_at=odds_fetched_at))
+                                    over25_prob=0.55, fetched_at=odds_fetched_at))
         s.commit()
     finally:
         s.close()
@@ -138,7 +162,7 @@ def test_historical_odds_read_home_and_away(session):
     # away player: my_cs = away_cs, opp_cs = home_cs
     assert df.loc[200, "my_cs_prob"] == 0.20
     assert df.loc[200, "opp_cs_prob"] == 0.35
-    assert df.loc[100, "btts_prob"] == 0.55
+    assert df.loc[100, "over25_prob"] == 0.55
 
 
 def test_historical_odds_after_deadline_excluded_C2(session):
@@ -146,7 +170,7 @@ def test_historical_odds_after_deadline_excluded_C2(session):
     _seed_historical(session, datetime(2024, 8, 10, 12, 0))  # after 11:30 deadline
     df = features.load_fixture_odds("2024-25").set_index("player_id")
     assert df.loc[100, "my_cs_prob"] == 0.2   # defaulted, not 0.35
-    assert df.loc[100, "btts_prob"] == 0.5
+    assert df.loc[100, "over25_prob"] == 0.5
 
 
 def test_live_odds_asof_picks_latest_before_deadline(session):
@@ -170,3 +194,82 @@ def test_live_odds_asof_picks_latest_before_deadline(session):
     df = features.load_live_odds_asof("2025-26", 1)
     assert len(df) == 1
     assert df.iloc[0]["home_cs_prob"] == 0.40
+
+
+def _seed_live_only_season(Local):
+    """A season with LIVE odds and no historical backfill -- i.e. the one the
+    bot is actually playing."""
+    s = Local()
+    try:
+        s.add(Gameweek(id=1, season="2026-27", name="GW1",
+                       deadline_time=datetime(2026, 8, 21, 16, 30)))
+        s.add(Fixture(id=10, fpl_id=1, season="2026-27", gameweek=1,
+                      team_h_id=2, team_a_id=1))
+        s.add(PlayerGameweekStats(player_id=100, gameweek=1, season="2026-27",
+                                  team_id_season=2, opponent_team_id=1, was_home=True))
+        s.add(PlayerGameweekStats(player_id=200, gameweek=1, season="2026-27",
+                                  team_id_season=1, opponent_team_id=2, was_home=False))
+        s.add(FixtureOdds(fixture_id=10, home_cs_prob=0.41, away_cs_prob=0.12,
+                          over25_prob=0.63,
+                          fetched_at=datetime(2026, 8, 21, 9, 0)))
+        s.commit()
+    finally:
+        s.close()
+
+
+def test_a_live_season_gets_real_odds_not_the_defaults(session):
+    """The defect this guards against would have been invisible all season.
+
+    ``historical_fixture_odds`` is a backfill of FINISHED seasons, so it ended
+    at 2025-26 while the bot was about to play 2026-27. Every odds feature
+    would have taken its COALESCE default for all 38 gameweeks -- constant
+    inputs to a model fitted on five seasons where they varied -- and nothing
+    would have raised, because a defaulted column looks exactly like a
+    populated one.
+    """
+    _seed_live_only_season(session)
+    df = features.load_fixture_odds("2026-27").set_index("player_id")
+
+    assert df.loc[100, "my_cs_prob"] == 0.41      # not the 0.2 default
+    assert df.loc[100, "opp_cs_prob"] == 0.12
+    assert df.loc[200, "my_cs_prob"] == 0.12      # away player, mirrored
+    assert df.loc[200, "opp_cs_prob"] == 0.41
+    assert df.loc[100, "over25_prob"] == 0.63     # not the 0.5 default
+
+
+def test_live_odds_after_the_deadline_never_reach_the_features(session):
+    """The as-of discipline (finding L4) must hold on the live leg too --
+    otherwise the fallback would reintroduce the leakage the historical leg
+    was carefully built to avoid."""
+    _seed_live_only_season(session)
+    s = session()
+    try:
+        s.add(FixtureOdds(fixture_id=10, home_cs_prob=0.99, away_cs_prob=0.99,
+                          over25_prob=0.99,
+                          fetched_at=datetime(2026, 8, 21, 18, 0)))  # post-deadline
+        s.commit()
+    finally:
+        s.close()
+
+    df = features.load_fixture_odds("2026-27").set_index("player_id")
+    assert df.loc[100, "my_cs_prob"] == 0.41, "post-deadline odds leaked in"
+
+
+def test_historical_odds_win_where_both_sources_exist(session):
+    """Settled closing lines beat a live snapshot, and -- more importantly --
+    a row must not be double-counted into two different values."""
+    _seed_historical(session, datetime(2024, 8, 10, 11, 29))
+    s = session()
+    try:
+        s.add(Fixture(id=20, fpl_id=2, season="2024-25", gameweek=1,
+                      team_h_id=2, team_a_id=1))
+        s.add(FixtureOdds(fixture_id=20, home_cs_prob=0.99, away_cs_prob=0.99,
+                          over25_prob=0.99,
+                          fetched_at=datetime(2024, 8, 10, 10, 0)))
+        s.commit()
+    finally:
+        s.close()
+
+    df = features.load_fixture_odds("2024-25")
+    assert len(df) == 2, "a player-GW must not fan out into duplicate rows"
+    assert df.set_index("player_id").loc[100, "my_cs_prob"] == 0.35
