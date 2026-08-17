@@ -85,13 +85,42 @@ def _backfill_table(
     one persona (required, and only meaningful, for ``sim_decision_log``:
     each persona has its own independent chip-usage history)."""
     assert table in _VALID_TABLES
+    # Enforced rather than merely documented: the latest-per-gameweek subquery
+    # below takes MAX(created_at) within the given scope, so an unscoped call
+    # on sim_decision_log would resolve to the single globally-latest row and
+    # silently score ONE persona out of ninety.
+    if table == "sim_decision_log" and sim_manager_id is None:
+        raise ValueError(
+            "sim_decision_log must be scored one persona at a time; an "
+            "unscoped call would score only the globally-latest row"
+        )
     sim_filter = " AND sim_manager_id = :sim_manager_id" if sim_manager_id is not None else ""
     params = {"sim_manager_id": sim_manager_id} if sim_manager_id is not None else {}
 
+    # Only the LATEST lineup per gameweek is scored -- the decision that
+    # actually stood at the deadline.
+    #
+    # Re-running a gameweek is documented as safe, and appends a new lineup row
+    # each time rather than replacing the old one (every read elsewhere takes
+    # ORDER BY created_at DESC LIMIT 1, so that is correct storage). But this
+    # scorer selected EVERY unscored lineup row, so seven re-runs of GW1 on
+    # 2026-08-17 left 8 rows in decision_log and 689 in sim_decision_log for 90
+    # real (persona, gameweek) pairs -- a 7.7x inflation. simulation.analysis
+    # groups on gameweek, so those would have counted as independent
+    # observations and skewed both the persona ranking and the calibration
+    # sample, from superseded decisions that were never live.
+    #
+    # Superseded rows are simply left unscored: actual_outcome IS NULL already
+    # means "not scored", and every consumer filters on it.
+    scope = " AND t2.sim_manager_id = :sim_manager_id" if sim_manager_id is not None else ""
     pending = db.execute(
         text(
-            f"SELECT id, gameweek, details FROM {table} "
-            f"WHERE decision_type = 'lineup' AND actual_outcome IS NULL{sim_filter}"
+            f"SELECT id, gameweek, details FROM {table} AS t1 "
+            f"WHERE decision_type = 'lineup' AND actual_outcome IS NULL{sim_filter} "
+            f"AND created_at = ("
+            f"    SELECT MAX(t2.created_at) FROM {table} AS t2 "
+            f"    WHERE t2.decision_type = 'lineup' AND t2.gameweek = t1.gameweek{scope}"
+            f")"
         ),
         params,
     ).fetchall()

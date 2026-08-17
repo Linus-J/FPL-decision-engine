@@ -332,3 +332,64 @@ def test_decisions_recorded_before_p2_1_still_score_without_autosubs(session, ca
     outcome = session.query(DecisionLog).one().actual_outcome
     assert outcome == 20 + 2, "no substitute applied"
     assert "WITHOUT auto-substitutions" in caplog.text
+
+
+# --- re-runs must not multiply a gameweek (2026-08-17) ----------------------
+def test_only_the_last_lineup_of_a_gameweek_is_scored(session):
+    """Re-running a gameweek APPENDS a lineup row -- every read elsewhere
+    takes the latest, so that is correct storage. The scorer, though, picked up
+    every unscored row: seven re-runs of GW1 left 8 rows in decision_log and
+    689 in sim_decision_log for 90 real (persona, gameweek) pairs. Those would
+    have counted as independent observations in the season analysis, skewing
+    the persona ranking and the calibration sample with decisions that were
+    never live.
+    """
+    _gw(session, 12, finished=True)
+    _stats(session, 1, 12, points=10)
+    _stats(session, 2, 12, points=4)
+    _stats(session, 3, 12, points=7)
+
+    superseded = _lineup(session, 12, [1, 2, 3], [1, 2], captain_id=1)
+    stood = _lineup(session, 12, [1, 2, 3], [1, 3], captain_id=3)
+
+    assert backfill_module.backfill("2026-27") == 1, "one gameweek, one score"
+
+    rows = {r.id: r.actual_outcome for r in session.query(DecisionLog).all()}
+    assert rows[superseded] is None, "a superseded decision was never live"
+    assert rows[stood] == 10 + 7 + 7, "the decision that stood is the one scored"
+
+
+def test_each_persona_still_gets_its_own_gameweek_scored(session):
+    """The de-duplication is per (persona, gameweek). Taking the latest row
+    globally would score one persona out of ninety."""
+    _gw(session, 13, finished=True)
+    _stats(session, 1, 13, points=6)
+    for sim_id in (1, 2):
+        session.add(SimManager(
+            id=sim_id, season="2026-27", label=f"p{sim_id}",
+            risk_level=0.0, max_ownership_differential=0.5, chip_aggressiveness=1.0,
+        ))
+    session.commit()
+    for sim_id in (1, 2):
+        for _ in range(3):            # three re-runs each
+            session.add(SimDecisionLog(
+                sim_manager_id=sim_id, gameweek=13, decision_type="lineup",
+                details=json.dumps({"squad_ids": [1], "starting_ids": [1],
+                                    "captain_id": 1, "vice_captain_id": None}),
+                projected_gain=0.0,
+            ))
+        session.commit()
+
+    backfill_module.backfill("2026-27")
+
+    scored = [r for r in session.query(SimDecisionLog).all()
+              if r.actual_outcome is not None]
+    assert len(scored) == 2, "exactly one scored row per persona"
+    assert {r.sim_manager_id for r in scored} == {1, 2}
+
+
+def test_unscoped_sim_scoring_is_refused_rather_than_scoring_one_persona(session):
+    """The subquery resolves MAX(created_at) within its scope, so an unscoped
+    call would silently collapse ninety personas to one."""
+    with pytest.raises(ValueError, match="one persona at a time"):
+        backfill_module._backfill_table(session, "2026-27", "sim_decision_log")
