@@ -256,3 +256,49 @@ def test_odds_liveness_is_silent_pre_season(monkeypatch):
     })
     _patch_odds_gate(monkeypatch, dead, played=False)
     assert run_odds_feature_liveness_check("2026-27") == []
+
+
+# --- degenerate model features (2026-08-17) ---------------------------------
+def test_constant_training_features_are_detected():
+    """Six of eight enrichment features are identically zero across all five
+    backfilled seasons, because their sources only exist for the season being
+    played."""
+    import pandas as pd
+
+    from projection.minutes_model import _degenerate_features
+
+    X = pd.DataFrame({
+        "real": [1.0, 2.0, 3.0],
+        "always_zero": [0.0, 0.0, 0.0],
+        "always_one": [1.0, 1.0, 1.0],
+    })
+    assert _degenerate_features(X) == {"always_zero": 0.0, "always_one": 1.0}
+
+
+def test_a_constant_feature_cannot_become_a_hidden_season_indicator():
+    """The actual risk. A column that is zero for five seasons and non-zero
+    only for the season being played is a perfect 'this row is 2026-27' flag;
+    the model would attribute current-season effects to a variable carrying
+    none. Pinning it to the training constant makes that impossible."""
+    import pandas as pd
+
+    from projection.minutes_model import _pin_degenerate
+
+    serve = pd.DataFrame({
+        "real": [5.0, 6.0],
+        "press_sentiment": [-1.0, 1.0],   # populated live, absent in history
+    })
+    pinned = _pin_degenerate(serve, {"press_sentiment": 0.0})
+
+    assert list(pinned["press_sentiment"]) == [0.0, 0.0]
+    assert list(pinned["real"]) == [5.0, 6.0], "real features must be untouched"
+    assert list(serve["press_sentiment"]) == [-1.0, 1.0], "must not mutate caller"
+
+
+def test_pinning_is_a_no_op_when_nothing_is_degenerate():
+    import pandas as pd
+
+    from projection.minutes_model import _pin_degenerate
+
+    X = pd.DataFrame({"a": [1.0, 2.0]})
+    assert _pin_degenerate(X, {}) is X

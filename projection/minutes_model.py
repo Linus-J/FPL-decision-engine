@@ -345,12 +345,62 @@ def _fit_calibrated(base, X, y):
     return Pipeline([("scaler", scaler), ("clf", cal)])
 
 
+def _degenerate_features(X: pd.DataFrame) -> dict[str, float]:
+    """Features that are CONSTANT in the training data -> their one value.
+
+    Six of the eight enrichment features are identically zero across all five
+    backfilled seasons (2026-08-17): is_penalty_taker, penalty_xg_per_game,
+    is_set_piece_taker, key_passes_per_game, injury_severity, press_sentiment.
+    Their sources only exist for the season being played -- the depth chart is
+    written per-season and the press scraper started in July 2026 -- so history
+    has nothing to put in them.
+
+    A constant feature is merely useless while it stays constant. It becomes
+    harmful the moment the current season starts filling it in: the model
+    retrains on all seasons every run, and a column that is zero for five
+    seasons and non-zero only for 2026-27 is a perfect indicator of "this row
+    is the current season". Gradient boosting will happily split on it and
+    attribute current-season effects to a variable that carries none, which is
+    exactly the train/serve skew that made the odds features dangerous -- in
+    the opposite direction.
+
+    Pinning them to their training value on both paths means the model can
+    never see a value it could not have learned from. When a source is
+    genuinely backfilled the column stops being constant and starts being used
+    again, with no change here.
+    """
+    return {
+        col: float(X[col].iloc[0])
+        for col in X.columns
+        if X[col].nunique(dropna=False) <= 1
+    }
+
+
+def _pin_degenerate(X: pd.DataFrame, pinned: dict[str, float]) -> pd.DataFrame:
+    if not pinned:
+        return X
+    X = X.copy()
+    for col, value in pinned.items():
+        if col in X.columns:
+            X[col] = value
+    return X
+
+
 def train(save: bool = True, df_override: pd.DataFrame | None = None, fast: bool = False) -> Pipeline:
     df = df_override if df_override is not None else _load_training_data()
     df = _build_features(df)
 
     y = df["minutes"].apply(minutes_band)
     X = df[FEATURE_COLS].astype(float)
+
+    pinned = _degenerate_features(X)
+    if pinned:
+        logger.warning(
+            "%d model features are constant in training and will be pinned at "
+            "prediction time so the current season cannot become a hidden "
+            "season indicator: %s",
+            len(pinned), sorted(pinned),
+        )
 
     n_estimators = 50 if fast else 200
     base = GradientBoostingClassifier(
@@ -361,6 +411,7 @@ def train(save: bool = True, df_override: pd.DataFrame | None = None, fast: bool
         random_state=42,
     )
     pipeline = _fit_calibrated(base, X, y)
+    pipeline.degenerate_features_ = pinned
 
     if not fast:
         proba = pipeline.predict_proba(X)
@@ -399,7 +450,13 @@ def _bands_frame(all_stats: pd.DataFrame, model: Pipeline | None) -> pd.DataFram
     if model is None:
         model = load()
     df = _build_features(all_stats).copy()
-    proba = model.predict_proba(df[FEATURE_COLS].astype(float))
+    # Features that were constant while the model was fitted must stay at that
+    # constant here, or the current season's newly-populated enrichment would
+    # be fed to a model that never saw it vary. See _degenerate_features.
+    X = _pin_degenerate(
+        df[FEATURE_COLS].astype(float), getattr(model, "degenerate_features_", {})
+    )
+    proba = model.predict_proba(X)
     classes = list(model.classes_)
 
     statuses = (df["status"] if "status" in df.columns
