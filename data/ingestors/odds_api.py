@@ -106,13 +106,14 @@ def _cs_from_h2h(
     ``over25`` is what lets the total be split from the result; without it
     ``team_goals_from_odds`` cannot separate a 1-0 from a 3-2, so the caller
     should pass it whenever the totals market was available.
-    """
-    from projection.team_goals import team_goals_from_odds
 
-    lam_home, lam_away = team_goals_from_odds(home_win, draw, away_win, over25)
-    home_cs = math.exp(-max(0.0, lam_away))
-    away_cs = math.exp(-max(0.0, lam_home))
-    return round(home_cs, 3), round(away_cs, 3)
+    Delegates to ``projection.team_goals`` so this (the live path) and
+    ``scripts.backfill_odds`` (the training path) cannot drift apart — see that
+    function's docstring for why they must not.
+    """
+    from projection.team_goals import clean_sheet_probs_from_odds
+
+    return clean_sheet_probs_from_odds(home_win, draw, away_win, over25)
 
 
 def _extract_over25(bookmakers: list[dict]) -> float:

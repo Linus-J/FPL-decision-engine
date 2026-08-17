@@ -98,12 +98,22 @@ def normalise_1x2(home: float, draw: float, away: float) -> tuple[float, float, 
     return home / total, draw / total, away / total
 
 
-def cs_probs_from_1x2(home_win: float, draw: float, away_win: float) -> tuple[float, float]:
-    """Clean-sheet proxy from the match result probabilities — mirrors the live
-    odds_api heuristic so historical and live features are on the same scale."""
-    home_cs = min(draw + away_win * 0.3, 0.6)
-    away_cs = min(draw + home_win * 0.3, 0.6)
-    return round(home_cs, 3), round(away_cs, 3)
+def cs_probs_from_1x2(
+    home_win: float, draw: float, away_win: float, over25: float | None = None
+) -> tuple[float, float]:
+    """Clean-sheet probabilities for the TRAINING rows, on exactly the scale the
+    live path writes.
+
+    Delegates to ``projection.team_goals.clean_sheet_probs_from_odds`` — the
+    single canonical derivation — rather than mirroring it. The previous
+    implementation *said* it mirrored the live heuristic and then stopped doing
+    so the moment that heuristic was corrected, which is precisely the failure a
+    shared function removes. Pass ``over25`` whenever the totals market is
+    available; it pins the goal total that 1X2 alone cannot.
+    """
+    from projection.team_goals import clean_sheet_probs_from_odds
+
+    return clean_sheet_probs_from_odds(home_win, draw, away_win, over25)
 
 
 def over25_prob(over_odds: float, under_odds: float) -> float:
@@ -190,9 +200,11 @@ def build_odds_rows(
             continue
 
         hw, dr, aw = normalise_1x2(*(implied_prob(x) for x in triple))
-        home_cs, away_cs = cs_probs_from_1x2(hw, dr, aw)
         ou = _pick_ou(r)
         over25 = over25_prob(*ou) if ou else 0.0
+        # over25 first: it is what separates a 1-0 from a 3-2, so the clean
+        # sheet derivation needs it rather than inferring the total from 1X2.
+        home_cs, away_cs = cs_probs_from_1x2(hw, dr, aw, over25)
         rows.append({
             "season": season,
             "gameweek": gw,

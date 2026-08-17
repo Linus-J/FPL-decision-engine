@@ -81,3 +81,40 @@ def clean_sheet_prob(lam_opponent: float) -> float:
     """P(opponent scores 0) = Poisson(0; λ) — the odds-anchored clean-sheet
     probability for P5 (retires the capped 1X2 heuristic)."""
     return float(np.exp(-max(0.0, lam_opponent)))
+
+
+def clean_sheet_probs_from_odds(
+    home_win: float, draw: float, away_win: float, over25: float | None = None
+) -> tuple[float, float]:
+    """(P(home keeps a clean sheet), P(away keeps a clean sheet)) from 1X2 + O/U.
+
+    THE canonical derivation. It lives here — not in an ingestor — because two
+    separate call sites need it and they must agree:
+
+    - ``data.ingestors.odds_api`` writes ``fixture_odds`` (the LIVE path), and
+    - ``scripts.backfill_odds`` writes ``historical_fixture_odds`` (the TRAINING
+      path).
+
+    ``projection.features`` reads both into the same ``my_cs_prob``/
+    ``opp_cs_prob`` columns and hands them to the minutes model, so any
+    difference between the two is train/serve skew: the model would learn a
+    coefficient on one scale and apply it on another.
+
+    That is not hypothetical — it is exactly what happened. Both sites used a
+    capped 1X2 heuristic that was inverted (``home_cs = draw + away_win * 0.3``
+    is P(the *home* team fails to score)); fixing only the live one on
+    2026-08-16 left the model training on inverted clean sheets and predicting
+    on correct ones, which is worse than a consistent error because the sign
+    flips between fit and inference. The old backfill helper documented itself
+    as "mirrors the live odds_api heuristic so historical and live features are
+    on the same scale" — a comment cannot enforce that, so a shared function
+    does instead.
+
+    A clean sheet belongs to the DEFENCE: ``home_cs`` is the AWAY side failing
+    to score, hence ``exp(-λ_away)``.
+    """
+    lam_home, lam_away = team_goals_from_odds(home_win, draw, away_win, over25)
+    return (
+        round(clean_sheet_prob(lam_away), 3),
+        round(clean_sheet_prob(lam_home), 3),
+    )
