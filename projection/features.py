@@ -33,7 +33,21 @@ _PLAUSIBLE_STRENGTH_FLOOR = 100
 
 
 def _usable(expr: str) -> str:
-    """SQL: the strength expression, or NULL when it is a placeholder."""
+    """SQL: the strength expression, or NULL when it is a placeholder.
+
+    Must wrap EVERY read of a raw strength column, including the ones inside
+    the lookahead subqueries below. That was missed when this was introduced
+    (fixed 2026-08-18, engine review §1): the six direct columns were guarded
+    and the two ``next_3gw_avg_*`` aggregates were not, so they averaged raw
+    placeholders. ``AVG(0,0,0)`` is 0, not NULL, so their ``COALESCE(..., 1200)``
+    never fired and both features read 0 for an entire pre-publication season.
+    Wrapping the aggregate's INPUT is what makes the COALESCE reachable: AVG
+    skips NULLs, and returns NULL when they are all NULL.
+
+    See ``test_team_fdr.py::test_lookahead_strengths_are_not_zero_when_fpl_
+    serves_placeholders`` — the bug is invisible in any season with real
+    strengths, so that test is the guard, not this comment.
+    """
     return f"CASE WHEN ({expr}) >= {_PLAUSIBLE_STRENGTH_FLOOR} THEN ({expr}) END"
 
 
@@ -88,8 +102,8 @@ def load_fixture_difficulty(season: str | None = None) -> pd.DataFrame:
                 {_usable("CASE WHEN s.was_home THEN tss_own.strength_overall_home "
                          "ELSE tss_own.strength_overall_away END")} AS own_overall_strength,
                 COALESCE((
-                    SELECT AVG(CASE WHEN s2.was_home THEN t2.strength_defence_away
-                                    ELSE t2.strength_defence_home END)
+                    SELECT AVG({_usable("CASE WHEN s2.was_home THEN t2.strength_defence_away "
+                                        "ELSE t2.strength_defence_home END")})
                     FROM player_gw_stats s2
                     JOIN team_season_strength t2
                         ON t2.season = s2.season AND t2.team_id = s2.opponent_team_id
@@ -97,8 +111,8 @@ def load_fixture_difficulty(season: str | None = None) -> pd.DataFrame:
                         AND s2.gameweek > s.gameweek AND s2.gameweek <= s.gameweek + 3
                 ), 1200) AS next_3gw_avg_opp_defence,
                 COALESCE((
-                    SELECT AVG(CASE WHEN s2.was_home THEN t2.strength_attack_away
-                                    ELSE t2.strength_attack_home END)
+                    SELECT AVG({_usable("CASE WHEN s2.was_home THEN t2.strength_attack_away "
+                                        "ELSE t2.strength_attack_home END")})
                     FROM player_gw_stats s2
                     JOIN team_season_strength t2
                         ON t2.season = s2.season AND t2.team_id = s2.opponent_team_id

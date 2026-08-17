@@ -97,3 +97,62 @@ def test_load_fixture_difficulty_uses_season_context(temp_session):
     assert row["opp_attack_strength"] == 1280     # Chelsea attack_away
     assert row["own_attack_strength"] == 1390     # Arsenal attack_home
     assert row["own_defence_strength"] == 1310    # Arsenal defence_home
+
+
+def _seed_placeholder_strengths(s, season):
+    """What FPL's bootstrap actually serves before a season starts: attack and
+    defence 0, overall on the 1-5 tier. Stored as-is because 0 is this
+    project's 'not published' signal (see features._PLAUSIBLE_STRENGTH_FLOOR
+    and cold_start.load_current_defence_strength)."""
+    for r in _teams_df().itertuples():
+        s.add(TeamSeasonStrength(
+            season=season, team_id=int(r.id), code=int(r.code),
+            strength_overall_home=4, strength_overall_away=3,
+            strength_attack_home=0, strength_attack_away=0,
+            strength_defence_home=0, strength_defence_away=0,
+        ))
+
+
+def test_lookahead_strengths_are_not_zero_when_fpl_serves_placeholders(temp_session):
+    """Regression, 2026-08-18 (engine review §1).
+
+    ``_usable()`` was applied to the six single-fixture strength columns but
+    NOT inside the two lookahead subqueries, which averaged the raw columns.
+    ``AVG(0,0,0)`` is 0, not NULL, so ``COALESCE(..., 1200)`` never fired and
+    both features read 0 for a whole pre-publication season -- against ~1200
+    in every training season, making them a perfect "this row is the current
+    season" split for a boosted tree.
+
+    This is the exact failure mode the file's own comment describes ("NaN is
+    missing, 0 is present"), and it is invisible in any season with real
+    strengths, so this test IS the guard.
+    """
+    season = "2026-27"
+    s = temp_session()
+    try:
+        s.add(Player(fpl_id=1, code=1, first_name="A", second_name="A",
+                     web_name="P", team_id=1, position="MID", now_cost=5.0))
+        s.commit()
+        pid = s.query(Player.id).filter_by(fpl_id=1).scalar()
+        _seed_placeholder_strengths(s, season)
+        # A run of gameweeks so the 3-GW lookahead subquery has rows to average.
+        for gw in (5, 6, 7, 8):
+            s.add(PlayerGameweekStats(
+                player_id=pid, gameweek=gw, season=season, minutes=90,
+                total_points=6, team_id_season=1, opponent_team_id=2,
+                was_home=True,
+            ))
+        s.commit()
+    finally:
+        s.close()
+
+    fdr = features.load_fixture_difficulty(season)
+    row = fdr[fdr["gameweek"] == 5].iloc[0]
+
+    # The bug: these came back 0.0 because AVG over placeholders is not NULL.
+    assert row["next_3gw_avg_opp_defence"] == 1200
+    assert row["next_3gw_avg_opp_attack"] == 1200
+    # The six direct columns were already guarded — NULL, for add_fdr_features
+    # to fill — and must stay that way.
+    assert pd.isna(row["opp_defence_strength"])
+    assert pd.isna(row["own_overall_strength"])
