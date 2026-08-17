@@ -95,8 +95,37 @@ def test_roll_forward_caps_at_the_banking_limit():
     ) == TRANSFERS.max_banked_free_transfers
 
 
-def test_roll_forward_resets_after_a_wildcard():
-    assert roll_forward_free_transfers(4, 11, wildcard_played=True) == 1
+def test_roll_forward_keeps_banked_transfers_through_a_wildcard():
+    """Regression, 2026-08-18 (engine review §10).
+
+    This used to assert ``== 1`` — that a wildcard RESET the allowance. That
+    is not FPL's rule: saved free transfers are retained across both a
+    Wildcard and a Free Hit. The Premier League's own worked example: two
+    saved before a GW6 wildcard leaves three for GW7 (two saved + GW7's
+    allotment). You just do not earn an extra one in the week you play it.
+
+    The old behaviour destroyed up to four banked transfers per wildcard,
+    twice a season, and seeded ``ft[0]`` in the multi-period ILP with the
+    wrong number for every week after.
+    """
+    # The PL's worked example, exactly.
+    assert roll_forward_free_transfers(2, 15, wildcard_played=True) == 3
+    # A full bank survives, subject to the cap.
+    assert roll_forward_free_transfers(4, 11, wildcard_played=True) == 5
+    assert roll_forward_free_transfers(5, 15, wildcard_played=True) == 5
+    # And a manager on the bare allowance is unchanged.
+    assert roll_forward_free_transfers(1, 15, wildcard_played=True) == 2
+
+
+def test_roll_forward_treats_both_free_squad_chips_alike():
+    """Wildcard and Free Hit both put their transfers outside the allowance,
+    so for any state they must roll forward identically. The two used to
+    diverge, which is what made §10 visible."""
+    for ft in range(1, 6):
+        assert (
+            roll_forward_free_transfers(ft, 15, wildcard_played=True)
+            == roll_forward_free_transfers(ft, 15, free_hit_played=True)
+        )
 
 
 def test_roll_forward_free_hit_transfers_do_not_spend_the_allowance():

@@ -45,13 +45,23 @@ def roll_forward_free_transfers(
 
     ``transfers_made`` may exceed ``free_transfers`` (hits were taken); the
     surplus is paid in points, not in next week's allowance, so the result
-    still floors at the weekly allowance. A wildcard resets to the weekly
-    allowance. A Free Hit's transfers are reverted with the squad and never
-    counted against the allowance at all."""
+    still floors at the weekly allowance.
+
+    **Wildcard and Free Hit behave identically here** (fixed 2026-08-18,
+    engine review §10). Both chips' transfers are outside the allowance
+    entirely, and FPL RETAINS your saved free transfers across either one —
+    confirmed against the Premier League's own worked example: two saved
+    before a Gameweek 6 wildcard leaves THREE for Gameweek 7 (the two saved,
+    plus GW7's allotment). You simply do not earn an extra one in the week you
+    play the chip, which is what ``transfers_made = 0`` expresses.
+
+    This previously returned the bare weekly allowance after a wildcard,
+    destroying up to four banked transfers — roughly 16 points of avoidable
+    hits, twice a season — while the Free Hit branch directly below already
+    had it right. ``ft[0]`` in the multi-period ILP is seeded from this value,
+    so every subsequent week planned against a wrong allowance too."""
     trules = transfer_rules or TRANSFERS
-    if wildcard_played:
-        return trules.free_transfers_per_gw
-    if free_hit_played:
+    if wildcard_played or free_hit_played:
         transfers_made = 0
     carried = free_transfers - transfers_made + trules.free_transfers_per_gw
     return min(trules.max_banked_free_transfers, max(trules.free_transfers_per_gw, carried))
