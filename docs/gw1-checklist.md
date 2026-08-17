@@ -30,7 +30,7 @@ print('BEN:', [info[int(p)][1] for p, _ in sorted(d['bench_order'].items(), key=
 print('C  :', info[d['captain_id']][1], '| V:', info[d['vice_captain_id']][1])"
 ```
 
-**Starting XI** — 1-4-5-1
+**Starting XI** — 3-5-2
 
 | Pos | Player | Price |
 |---|---|---|
@@ -38,16 +38,16 @@ print('C  :', info[d['captain_id']][1], '| V:', info[d['vice_captain_id']][1])"
 | DEF | Gabriel | £8.0m |
 | DEF | Senesi | £6.0m |
 | DEF | Tarkowski | £6.0m |
-| DEF | Guéhi | £6.0m |
 | MID | B.Fernandes **(C)** | £12.0m |
 | MID | Semenyo | £8.5m |
 | MID | Gibbs-White | £8.0m |
-| MID | Wilson | £6.5m |
 | MID | Anderson | £6.5m |
+| MID | Groß | £5.5m |
 | FWD | Thiago | £8.0m |
+| FWD | João Pedro | £7.5m |
 
 **Bench, in order** — 1. Dubravka (GKP) £4.0m · 2. Disasi (DEF) £4.5m ·
-3. Hirst (FWD) £5.0m · 4. Simms (FWD) £5.0m
+3. Mitchell (DEF) £4.5m · 4. Simms (FWD) £5.0m
 
 Bench order matters: it decides which substitute comes on if a starter
 blanks, and the outcome scorer replays FPL's real auto-substitution rules
@@ -188,17 +188,30 @@ What genuinely remains is a data limitation rather than a decision:
   goals already include penalties taken abroad, and nothing in the data says
   whether he was on them, so no correction is safe either way.
 - **Prior-league expected-goals data is missing** — `npxg90`/`xa90` are zero
-  on all 15,323 rows, so the tier projects from raw goals and assists. Every
-  cached FBref `standard` table lacks the `Expected` column group entirely,
-  so this needs a re-scrape **with a display** (Cloudflare blocks headless):
+  on all 15,323 rows; every cached FBref `standard` table lacks the `Expected`
+  column group entirely.
+
+  **Non-penalty goals (`npg90`) are now captured and used instead**, backfilled
+  offline from the existing cache — 7,329 rows, 1,043 of which raw goals had
+  inflated with penalties. That was the part that mattered; the tier no longer
+  over-rates a foreign penalty taker.
+
+  If you still want the expected metrics, the re-scrape needs **both** a
+  display *and* `--no-cache` — without the flag it silently re-parses the
+  2026-08-01 cache and reports success, which is exactly what happened on
+  2026-08-17:
 
   ```bash
   FBREF_HEADED=1 DB_PATH=fpl_bot_v2.db uv run --with soccerdata \
-      python scripts/scrape_prior_league.py 'ESP-La Liga' 2025-2026
+      python scripts/scrape_prior_league.py 'ESP-La Liga' 2025-2026 --no-cache
   ```
 
-  Worth capturing `G-PK` (non-penalty goals) at the same time — the cached
-  tables already carry it, it is what the in-season engine uses, and it would
-  let the prior-league tier join the cold-start penalty bonus instead of being
-  excluded for ambiguity. Not urgent: it affects 57 players, none in the GW1
-  squad.
+  The ingest now names any metric that comes back zero on every row, so you
+  will be told plainly whether it worked. It may simply not be available
+  through this API surface. Low value now that `npg90` is in.
+
+- **Team strengths are neutral until FPL publishes.** FPL serves pre-season
+  placeholders; storing them verbatim would have put every FDR feature
+  off-scale for the season, so they are held at the neutral 1200 and carry no
+  signal. They self-correct on the first ingest after FPL publishes real
+  values — the gate fails if they ever land off-scale again.
