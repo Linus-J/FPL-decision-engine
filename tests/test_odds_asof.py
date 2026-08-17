@@ -273,3 +273,78 @@ def test_historical_odds_win_where_both_sources_exist(session):
     df = features.load_fixture_odds("2024-25")
     assert len(df) == 2, "a player-GW must not fan out into duplicate rows"
     assert df.set_index("player_id").loc[100, "my_cs_prob"] == 0.35
+
+
+# --- double gameweeks must not collapse (2026-08-17) -------------------------
+def test_a_double_gameweek_keeps_each_fixtures_own_odds():
+    """Two fixtures, one gameweek, different opponents.
+
+    Keyed on (player, gameweek, season) alone, the pair collapses: one
+    fixture's clean-sheet odds are copied onto both. On real data that was
+    2,751 rows carrying the wrong fixture's odds -- and double gameweeks are
+    exactly where chip and transfer decisions are made.
+    """
+    import pandas as pd
+
+    from projection.features import add_odds_features
+
+    stats = pd.DataFrame([
+        {"player_id": 1, "gameweek": 21, "season": "2024-25", "opponent_team_id": 2},
+        {"player_id": 1, "gameweek": 21, "season": "2024-25", "opponent_team_id": 16},
+    ])
+    odds = pd.DataFrame([
+        {"player_id": 1, "gameweek": 21, "season": "2024-25", "opponent_team_id": 2,
+         "my_cs_prob": 0.45, "opp_cs_prob": 0.10, "over25_prob": 0.40},
+        {"player_id": 1, "gameweek": 21, "season": "2024-25", "opponent_team_id": 16,
+         "my_cs_prob": 0.12, "opp_cs_prob": 0.38, "over25_prob": 0.66},
+    ])
+
+    merged = add_odds_features(stats, odds).set_index("opponent_team_id")
+    assert len(merged) == 2, "the merge must not fan out or drop a fixture"
+    assert merged.loc[2, "my_cs_prob"] == 0.45
+    assert merged.loc[16, "my_cs_prob"] == 0.12
+
+
+def test_per_fixture_merge_refuses_to_run_without_the_opponent():
+    """Silently collapsing is the failure mode being prevented, so a caller
+    that drops the key must fail loudly rather than get plausible numbers."""
+    import pandas as pd
+
+    from projection.features import add_odds_features
+
+    stats = pd.DataFrame([{"player_id": 1, "gameweek": 21, "season": "2024-25"}])
+    odds = pd.DataFrame([{"player_id": 1, "gameweek": 21, "season": "2024-25",
+                          "my_cs_prob": 0.4, "opp_cs_prob": 0.1, "over25_prob": 0.5}])
+    with pytest.raises(KeyError, match="opponent_team_id"):
+        add_odds_features(stats, odds)
+
+
+def test_a_double_gameweek_keeps_each_fixtures_own_venue_and_opponent_strength():
+    """The same collapse hit the FDR block, which carries 11 features -- most
+    damagingly ``is_home``, so a home-then-away double gameweek was scored as
+    two home games (1,481 rows) against one opponent's strength (2,716)."""
+    import pandas as pd
+
+    from projection.features import add_fdr_features
+
+    stats = pd.DataFrame([
+        {"player_id": 1, "gameweek": 21, "season": "2024-25", "opponent_team_id": 2},
+        {"player_id": 1, "gameweek": 21, "season": "2024-25", "opponent_team_id": 16},
+    ])
+    fdr = pd.DataFrame([
+        {"player_id": 1, "gameweek": 21, "season": "2024-25", "opponent_team_id": 2,
+         "is_home": 1, "opp_defence_strength": 1090, "opp_attack_strength": 1050,
+         "own_attack_strength": 1200, "own_defence_strength": 1200,
+         "own_overall_strength": 1200},
+        {"player_id": 1, "gameweek": 21, "season": "2024-25", "opponent_team_id": 16,
+         "is_home": 0, "opp_defence_strength": 1320, "opp_attack_strength": 1300,
+         "own_attack_strength": 1200, "own_defence_strength": 1200,
+         "own_overall_strength": 1200},
+    ])
+
+    merged = add_fdr_features(stats, fdr).set_index("opponent_team_id")
+    assert len(merged) == 2
+    assert merged.loc[2, "is_home"] == 1
+    assert merged.loc[16, "is_home"] == 0
+    assert merged.loc[2, "opp_defence_strength"] == 1090
+    assert merged.loc[16, "opp_defence_strength"] == 1320

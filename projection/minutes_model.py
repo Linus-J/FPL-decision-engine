@@ -39,6 +39,7 @@ def _load_training_data() -> pd.DataFrame:
                 s.player_id,
                 s.gameweek,
                 s.season,
+                s.opponent_team_id,
                 s.minutes,
                 s.total_points,
                 s.goals_scored,

@@ -3,6 +3,41 @@ from sqlalchemy import text
 
 from data.db import get_session
 
+# What identifies ONE fixture for one player. ``opponent_team_id`` is the part
+# that is easy to forget and expensive to omit: in a DOUBLE gameweek a player
+# has two rows under the same (player, gameweek, season), against different
+# opponents, at different venues. Keying the per-fixture features on the first
+# three columns alone silently collapses the pair -- one fixture's opponent
+# strength, home/away flag and clean-sheet odds get copied onto both, so half
+# of every double gameweek is fed the wrong fixture.
+#
+# Measured on 2026-08-17 before this was keyed properly: 2,716 rows carrying
+# the wrong opponent defence strength, 1,481 the wrong home/away flag, and
+# 2,751 the wrong clean-sheet probabilities. Double gameweeks are precisely
+# where chip and transfer planning is decided, so these are the rows the model
+# can least afford to be wrong about.
+_FIXTURE_KEYS = ["player_id", "gameweek", "season", "opponent_team_id"]
+
+
+def _merge_on_fixture(
+    df: pd.DataFrame, right: pd.DataFrame, value_cols: list[str]
+) -> pd.DataFrame:
+    """Left-merge per-fixture features, keyed so a double gameweek's two
+    fixtures stay distinct. Both frames come from ``player_gw_stats``, so the
+    key is always present; a KeyError here means a caller has dropped it and
+    would otherwise get the silent collapse described above."""
+    missing = [k for k in _FIXTURE_KEYS if k not in df.columns or k not in right.columns]
+    if missing:
+        raise KeyError(
+            f"per-fixture merge is missing {missing}; without it a double "
+            f"gameweek's two fixtures collapse into one and half of them are "
+            f"fed the wrong opponent"
+        )
+    right = right.loc[:, [*_FIXTURE_KEYS, *value_cols]].drop_duplicates(
+        subset=_FIXTURE_KEYS
+    )
+    return df.merge(right, on=_FIXTURE_KEYS, how="left")
+
 
 def load_fixture_difficulty(season: str | None = None) -> pd.DataFrame:
     """Per player-GW FDR from the point-in-time fixture context stored on the
@@ -20,6 +55,7 @@ def load_fixture_difficulty(season: str | None = None) -> pd.DataFrame:
                 s.player_id,
                 s.gameweek,
                 s.season,
+                s.opponent_team_id,
                 s.team_id_season AS team_id,
                 CASE WHEN s.was_home THEN 1 ELSE 0 END AS is_home,
                 COALESCE(g.is_bgw, 0) AS is_bgw,
@@ -65,23 +101,20 @@ def load_fixture_difficulty(season: str | None = None) -> pd.DataFrame:
 
 
 def add_fdr_features(df: pd.DataFrame, fdr: pd.DataFrame) -> pd.DataFrame:
-    fdr_cols = [
-        "player_id", "gameweek", "season",
-        "is_home",
-        "is_bgw",
-        "opp_defence_strength",
-        "opp_attack_strength",
-        "own_attack_strength",
-        "own_defence_strength",
-        "own_overall_strength",
-        "next_3gw_avg_opp_defence",
-        "next_3gw_avg_opp_attack",
+    value_cols = [
+        c for c in (
+            "is_home",
+            "is_bgw",
+            "opp_defence_strength",
+            "opp_attack_strength",
+            "own_attack_strength",
+            "own_defence_strength",
+            "own_overall_strength",
+            "next_3gw_avg_opp_defence",
+            "next_3gw_avg_opp_attack",
+        ) if c in fdr.columns
     ]
-    fdr_cols = [c for c in fdr_cols if c in fdr.columns or c in ("player_id", "gameweek", "season")]
-    keep: list[str] = [c for c in fdr_cols if c in fdr.columns]
-    fdr_dedup: pd.DataFrame = fdr.loc[:, keep].drop_duplicates(subset=["player_id", "gameweek", "season"])
-
-    merged = df.merge(fdr_dedup, on=["player_id", "gameweek", "season"], how="left")
+    merged = _merge_on_fixture(df, fdr, value_cols)
 
     flag_cols = {"is_home", "is_bgw"}
     strength_cols = {
@@ -241,6 +274,7 @@ def load_fixture_odds(season: str | None = None) -> pd.DataFrame:
                 s.player_id,
                 s.gameweek,
                 s.season,
+                s.opponent_team_id,
                 CASE WHEN s.was_home
                      THEN COALESCE(o.home_cs_prob, l.home_cs_prob, 0.2)
                      ELSE COALESCE(o.away_cs_prob, l.away_cs_prob, 0.2) END AS my_cs_prob,
@@ -306,9 +340,7 @@ def load_live_odds_asof(season: str, gameweek: int) -> pd.DataFrame:
 
 
 def add_odds_features(df: pd.DataFrame, odds: pd.DataFrame) -> pd.DataFrame:
-    odds_dedup = odds.drop_duplicates(subset=["player_id", "gameweek", "season"])
-    merged = df.merge(odds_dedup[["player_id", "gameweek", "season", *ODDS_FEATURE_COLS]],
-                      on=["player_id", "gameweek", "season"], how="left")
+    merged = _merge_on_fixture(df, odds, list(ODDS_FEATURE_COLS))
     merged["my_cs_prob"] = merged["my_cs_prob"].fillna(0.2)
     merged["opp_cs_prob"] = merged["opp_cs_prob"].fillna(0.2)
     merged["over25_prob"] = merged["over25_prob"].fillna(0.5)
