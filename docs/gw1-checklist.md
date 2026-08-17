@@ -53,6 +53,33 @@ Bench order matters: it decides which substitute comes on if a starter
 blanks, and the outcome scorer replays FPL's real auto-substitution rules
 against it.
 
+### 1b. Verify before you type it in
+
+```bash
+DB_PATH=fpl_bot_v2.db .venv/bin/python scripts/preflight.py
+```
+
+Checks the squad against FPL's own rules (15 players, 2/5/5/3, £100m, max 3
+per club, legal XI shape, captain in the XI), confirms nothing leaked past the
+deadline, that the site export matches `decision_log`, that the fallbacks are
+engaging, and — most importantly — **diffs the whole decision surface against
+`config/preflight_baseline.json`**.
+
+That last part is the one that matters. Five defects on 2026-08-17 were
+introduced by fixes made the same day; every one passed the tests and the data
+gate, because each changed stored state that some other consumer read. Drift
+against the baseline is the only signal that catches that class.
+
+If it reports DRIFT, read the was/now and decide whether you meant it. If you
+did:
+
+```bash
+DB_PATH=fpl_bot_v2.db .venv/bin/python scripts/preflight.py --update-baseline
+```
+
+Re-running a gameweek is expected and does **not** trip it — superseded rows
+are reported as harmless, not failed.
+
 ### 2. Re-run if anything changes
 
 Prices move and injuries land right up to the deadline. Re-running is safe

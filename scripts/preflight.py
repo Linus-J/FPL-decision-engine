@@ -147,21 +147,45 @@ def check_squad_is_legal(db, result: Result) -> dict:
 
 
 def check_no_duplicate_live_decisions(db, result: Result) -> None:
-    """A re-run appends rather than replaces. Every READ takes the latest, but
-    the outcome scorer once took them all and counted seven re-runs of GW1 as
-    seven observations."""
+    """At most one SCORED lineup per gameweek.
+
+    Note what is NOT asserted: that only one row exists. Re-running a gameweek
+    appends, deliberately -- the checklist tells the user to re-run whenever
+    prices or injuries move, and every read takes the latest. Failing on extra
+    rows would cry wolf on the exact workflow the project recommends.
+
+    The real defect was double-SCORING: the outcome scorer took every unscored
+    row, so seven re-runs of GW1 became seven observations in the season
+    analysis. That is what this guards, and it is the invariant that survives
+    a legitimate re-run.
+    """
     from sqlalchemy import text
 
     print("\n[decision log]")
     for table, extra in (("decision_log", ""), ("sim_decision_log", ", sim_manager_id")):
-        rows = db.execute(
+        scored_dupes = db.execute(
             text(
                 f"SELECT COUNT(*) FROM (SELECT gameweek{extra}, COUNT(*) n "
                 f"FROM {table} WHERE decision_type = 'lineup' "
+                f"AND actual_outcome IS NOT NULL "
                 f"GROUP BY gameweek{extra} HAVING n > 1)"
             )
         ).scalar() or 0
-        result.check(rows == 0, f"{table}: one lineup per gameweek", f"{rows} duplicated")
+        result.check(
+            scored_dupes == 0,
+            f"{table}: at most one SCORED lineup per gameweek",
+            f"{scored_dupes} gameweeks scored more than once",
+        )
+        superseded = db.execute(
+            text(
+                f"SELECT COUNT(*) FROM {table} AS t1 WHERE decision_type = 'lineup' "
+                f"AND created_at <> (SELECT MAX(t2.created_at) FROM {table} AS t2 "
+                f"WHERE t2.decision_type = 'lineup' AND t2.gameweek = t1.gameweek"
+                f"{' AND t2.sim_manager_id = t1.sim_manager_id' if extra else ''})"
+            )
+        ).scalar() or 0
+        if superseded:
+            result.note(f"{table}: superseded rows from re-runs (harmless)", superseded)
 
     chips = db.execute(
         text("SELECT COUNT(*) FROM decision_log WHERE decision_type = 'chip'")

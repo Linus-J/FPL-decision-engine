@@ -17,8 +17,14 @@ A Fantasy Premier League system with three parts:
 > what to run before/after the deadline.
 >
 > **[Database audit](docs/db-audit-2026-08-16.md)** — full pre-season data
-> interrogation: seven defects found, entity resolution measured, every
-> all-null column explained.
+> interrogation across four passes: nineteen defects found, entity resolution
+> measured, every all-null column explained.
+>
+> **Before trusting a change**, run `python scripts/preflight.py`. It checks
+> the squad against FPL's rules and diffs the whole decision surface against a
+> committed baseline. Five of those nineteen defects were introduced by fixes
+> made the same day, each passing the tests and the data gate — drift against
+> the baseline is what catches that class.
 
 ---
 
