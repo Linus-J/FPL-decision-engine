@@ -1,0 +1,53 @@
+{
+  "bench_order": [
+    "Verbruggen",
+    "Disasi",
+    "Simms",
+    "Furo"
+  ],
+  "captain": "B.Fernandes",
+  "cost": 100.0,
+  "degenerate": [
+    "injury_severity",
+    "is_bgw",
+    "is_penalty_taker",
+    "is_set_piece_taker",
+    "key_passes_per_game",
+    "penalty_xg_per_game",
+    "press_sentiment"
+  ],
+  "n_features": 37,
+  "squad": [
+    "Anderson",
+    "B.Fernandes",
+    "Disasi",
+    "Furo",
+    "Gabriel",
+    "Gibbs-White",
+    "Gu\u00e9hi",
+    "Raya",
+    "Semenyo",
+    "Senesi",
+    "Simms",
+    "Tarkowski",
+    "Thiago",
+    "Verbruggen",
+    "Wilson"
+  ],
+  "starting_xi": [
+    "Anderson",
+    "B.Fernandes",
+    "Gabriel",
+    "Gibbs-White",
+    "Gu\u00e9hi",
+    "Raya",
+    "Semenyo",
+    "Senesi",
+    "Tarkowski",
+    "Thiago",
+    "Wilson"
+  ],
+  "teams_on_prior_strength": 17,
+  "teams_with_live_strength": 0,
+  "vice_captain": "Raya"
+}

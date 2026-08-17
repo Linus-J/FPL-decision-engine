@@ -161,6 +161,19 @@ def main() -> None:
         [sys.executable, "scripts/data_quality_gate.py"],
     )
 
+    # P4 (2026-08-17): the decision SURFACE, after the gate has checked the
+    # data it was built from. The gate answers "is the data plausible"; this
+    # answers "is the answer legal, and did it change". Five defects that day
+    # were introduced by fixes made the same day, every one passing both the
+    # suite and the gate, because each altered stored state that some other
+    # consumer read. Drift against the committed baseline is the only signal
+    # that catches that class. Warn-only for the same reason as the gate: a
+    # blocked week is worse than a week that needs a look.
+    _run_or_warn(
+        "scripts/preflight.py",
+        [sys.executable, "scripts/preflight.py"],
+    )
+
     sim_code = _run([sys.executable, "scripts/run_simulations.py", "--season", args.season])
     logger.info("run_simulations.py exited with code %d", sim_code)
     if sim_code != 0:
