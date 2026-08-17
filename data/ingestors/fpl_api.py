@@ -26,6 +26,44 @@ _STRENGTH_COLS = (
     "strength_defence_home", "strength_defence_away",
 )
 
+# TeamSeasonStrength's own column default, and the value features.py falls back
+# to for a missing row (projection/fixture_adjust.LEAGUE_AVG_STRENGTH).
+NEUTRAL_STRENGTH = 1200
+# Real published strengths sit around 900-1400. Anything this small is not a
+# strength on that scale.
+_PLAUSIBLE_STRENGTH_FLOOR = 100
+
+
+def _is_placeholder_strength(row: dict) -> bool:
+    """Is this FPL's PRE-SEASON placeholder rather than a real strength?
+
+    Before a season starts the bootstrap returns ``strength_attack_*`` and
+    ``strength_defence_*`` as 0 and ``strength_overall_*`` on the 1-5 tier
+    scale -- Arsenal came back as overall_home=4, attack_home=0 on 2026-08-17.
+    Copied verbatim, that put the live season's FDR features on a completely
+    different scale from the five seasons the model trains on (975-1390), with
+    four of the six pinned to zero. ``load_fixture_difficulty`` could not
+    rescue it either: its COALESCE only fires for a MISSING row, and a row full
+    of zeros is present.
+
+    Writing the neutral value instead costs nothing real -- a placeholder
+    carries no signal either way -- and keeps the column on the scale the model
+    understands. It self-corrects the moment FPL publishes, because real values
+    are not placeholders.
+    """
+    overall = [row[c] for c in ("strength_overall_home", "strength_overall_away")]
+    others = [
+        row[c] for c in (
+            "strength_attack_home", "strength_attack_away",
+            "strength_defence_home", "strength_defence_away",
+        )
+    ]
+    if any(v is None for v in overall + others):
+        return True
+    return all(v == 0 for v in others) or any(
+        v < _PLAUSIBLE_STRENGTH_FLOOR for v in overall
+    )
+
 
 async def _get(session: aiohttp.ClientSession, path: str) -> dict | list:
     url = f"{FPL_BASE}{path}"
@@ -108,9 +146,13 @@ def upsert_teams(bootstrap: dict, season: str = "2026-27") -> None:
     # strength values every sync; this just also copies them into the
     # season-scoped table under the current season.
     db = get_session()
+    placeholders = 0
     try:
         for t in bootstrap["teams"]:
             row = {col: t[col] for col in _STRENGTH_COLS}
+            if _is_placeholder_strength(row):
+                row = dict.fromkeys(_STRENGTH_COLS, NEUTRAL_STRENGTH)
+                placeholders += 1
             stmt = (
                 insert(TeamSeasonStrength)
                 .values(season=season, team_id=t["id"], code=t.get("code"), **row)
@@ -122,6 +164,15 @@ def upsert_teams(bootstrap: dict, season: str = "2026-27") -> None:
             db.execute(stmt)
         db.commit()
         logger.info("Upserted %d team_season_strength rows for %s", len(bootstrap["teams"]), season)
+        if placeholders:
+            logger.warning(
+                "%d/%d %s teams had PLACEHOLDER strengths in the bootstrap "
+                "(attack/defence 0, overall on FPL's 1-5 tier); stored the "
+                "neutral %d instead. FDR features carry no signal until FPL "
+                "publishes real strengths -- but they are at least on the same "
+                "scale the model was trained on.",
+                placeholders, len(bootstrap["teams"]), season, NEUTRAL_STRENGTH,
+            )
     finally:
         db.close()
 

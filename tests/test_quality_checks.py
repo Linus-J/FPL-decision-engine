@@ -302,3 +302,40 @@ def test_pinning_is_a_no_op_when_nothing_is_degenerate():
 
     X = pd.DataFrame({"a": [1.0, 2.0]})
     assert _pin_degenerate(X, {}) is X
+
+
+# --- FPL pre-season placeholder strengths (2026-08-17) ----------------------
+def test_placeholder_strengths_are_recognised():
+    """FPL's real pre-season bootstrap on 2026-08-17: attack/defence 0 and
+    overall on the 1-5 tier, not the ~1200 scale the model trains on."""
+    from data.ingestors.fpl_api import _is_placeholder_strength
+
+    arsenal_preseason = {
+        "strength_overall_home": 4, "strength_overall_away": 5,
+        "strength_attack_home": 0, "strength_attack_away": 0,
+        "strength_defence_home": 0, "strength_defence_away": 0,
+    }
+    assert _is_placeholder_strength(arsenal_preseason)
+
+
+def test_real_published_strengths_are_left_alone():
+    """The guard must not touch genuine values, or it would erase the signal
+    the moment FPL publishes."""
+    from data.ingestors.fpl_api import _is_placeholder_strength
+
+    real = {
+        "strength_overall_home": 1350, "strength_overall_away": 1340,
+        "strength_attack_home": 1340, "strength_attack_away": 1330,
+        "strength_defence_home": 1320, "strength_defence_away": 1310,
+    }
+    assert not _is_placeholder_strength(real)
+
+
+def test_missing_strengths_count_as_placeholder():
+    from data.ingestors.fpl_api import _is_placeholder_strength
+
+    assert _is_placeholder_strength({
+        "strength_overall_home": None, "strength_overall_away": None,
+        "strength_attack_home": None, "strength_attack_away": None,
+        "strength_defence_home": None, "strength_defence_away": None,
+    })

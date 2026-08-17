@@ -326,8 +326,65 @@ def run_odds_feature_liveness_check(season: str = "2026-27") -> list:
     return issues
 
 
+def run_team_strength_scale_check(season: str = "2026-27") -> list:
+    """Are the season's team strengths on the SAME SCALE the model trained on?
+
+    FPL serves pre-season placeholders -- attack/defence 0, overall on the 1-5
+    tier -- and copying them verbatim put 2026-27 on a scale five seasons of
+    training data never saw, with four of six columns pinned to zero. Nothing
+    downstream could notice: ``load_fixture_difficulty``'s COALESCE only fires
+    for a MISSING row, and a row full of zeros is present.
+
+    Compared against the other seasons in the table rather than a hard-coded
+    range, so this keeps working if FPL ever rescales.
+    """
+    from sqlalchemy import text
+
+    from data.db import get_session
+    from data.quality_checks import QualityIssue
+
+    db = get_session()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT season, MIN(strength_overall_home), MAX(strength_overall_home), "
+                "       SUM(strength_attack_home != 0) "
+                "FROM team_season_strength GROUP BY season"
+            )
+        ).fetchall()
+    finally:
+        db.close()
+
+    current = [r for r in rows if r[0] == season]
+    others = [r for r in rows if r[0] != season]
+    if not current or not others:
+        return []
+
+    _, lo, hi, attack_nonzero = current[0]
+    ref_lo = min(r[1] for r in others)
+    ref_hi = max(r[2] for r in others)
+    if lo >= ref_lo * 0.5 and hi <= ref_hi * 2 and attack_nonzero:
+        return []
+
+    return [
+        QualityIssue(
+            check="team_strength_scale",
+            severity="error",
+            message=(
+                f"{season} team strengths are overall=[{lo},{hi}] with "
+                f"{attack_nonzero}/20 non-zero attack ratings, against "
+                f"[{ref_lo},{ref_hi}] in every other season. FPL's pre-season "
+                f"placeholders have been stored as if they were real "
+                f"strengths, so every FDR feature is off-scale for the live "
+                f"season. Re-run the bootstrap ingest once FPL publishes."
+            ),
+        )
+    ]
+
+
 def main() -> int:
     issues = []
+    issues += run_team_strength_scale_check()
     issues += run_team_id_freshness_check()
     issues += run_understat_coverage_check()
     issues += run_source_coverage_checks()
