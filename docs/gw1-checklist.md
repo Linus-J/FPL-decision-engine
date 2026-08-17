@@ -12,8 +12,23 @@ when.
 
 ### 1. Enter the squad on the FPL site
 
-The bot decides; you enter. This is the recorded decision as of 2026-08-16
-(GW1, cold start, £100.0m spent, £0.0m bank):
+The bot decides; you enter. This is the recorded decision as of 2026-08-17
+(GW1, cold start, £100.0m spent, £0.0m bank).
+
+**Regenerate this table from the database rather than trusting it.** An
+earlier version of this file listed a bench that `decision_log` did not
+contain, which would have put three wrong players on it:
+
+```bash
+DB_PATH=fpl_bot_v2.db .venv/bin/python -c "
+import sqlite3, json
+c = sqlite3.connect('fpl_bot_v2.db')
+d = json.loads(c.execute(\"SELECT details FROM decision_log WHERE decision_type='lineup' ORDER BY created_at DESC LIMIT 1\").fetchone()[0])
+info = {r[0]: r for r in c.execute('SELECT id, web_name, now_cost, position FROM players')}
+print('XI :', [(info[i][1], info[i][3]) for i in d['starting_ids']])
+print('BEN:', [info[int(p)][1] for p, _ in sorted(d['bench_order'].items(), key=lambda kv: kv[1])])
+print('C  :', info[d['captain_id']][1], '| V:', info[d['vice_captain_id']][1])"
+```
 
 **Starting XI** — 1-4-5-1
 
@@ -31,8 +46,8 @@ The bot decides; you enter. This is the recorded decision as of 2026-08-16
 | MID | Anderson | £6.5m |
 | FWD | Thiago | £8.0m |
 
-**Bench, in order** — 1. Kelleher (GKP) £5.0m · 2. Disasi £4.5m ·
-3. Furo £4.5m · 4. Scarlett £4.5m
+**Bench, in order** — 1. Dubravka (GKP) £4.0m · 2. Disasi (DEF) £4.5m ·
+3. Hirst (FWD) £5.0m · 4. Simms (FWD) £5.0m
 
 Bench order matters: it decides which substitute comes on if a starter
 blanks, and the outcome scorer replays FPL's real auto-substitution rules
@@ -153,18 +168,22 @@ not, the multi-week horizon is weaker than its length suggests.
 
 ## Known open decisions
 
-Not blocking, but worth a call at some point:
+All three items previously listed here were closed on 2026-08-17:
 
-- **Cold-start penalty duty.** Penalty attribution reaches the in-season
-  engine (`assemble.py`) but not the cold start, which projects from
-  prior-season points per appearance. So the GW1 squad was built without it.
-  The clean case is new signings with no PL penalty history, where adding
-  duty is purely additive; for established takers the penalties are already
-  inside their prior-season points and adding more would double-count.
-- **Cold-start distributions on the site.** `p10`/`median`/`p90` collapse to
-  the same value pre-season, because they come from `projection_samples` and
-  the cold start produces no Monte Carlo draws. It does carry `xpts_var`, so
-  a normal approximation would give a real spread. Display only — no decision
-  reads it.
-- **`swept_axis` is an unversioned string.** The season analysis groups on
-  it, so renaming an axis mid-season would silently split the grouping.
+- **Cold-start penalty duty** — implemented, for takers *new* to the duty
+  only. Established takers are excluded because their prior-season points
+  already contain their penalties. It did not change the GW1 squad.
+- **Cold-start distributions on the site** — fixed in `089e9de`; the interval
+  is derived from `xpts_var` by normal approximation when there are no Monte
+  Carlo draws.
+- **`swept_axis` is an unversioned string** — a rename is now caught at
+  cohort load rather than at season's end.
+
+What genuinely remains is a data limitation rather than a decision:
+
+- **Odds beyond the near term.** Bookmakers price roughly one gameweek ahead,
+  so the back half of the planning horizon projects on a flat league-average
+  scoreline. Tracked by the coverage log in step 8 above.
+- **The prior-league tier cannot see penalty duty.** A foreign signing's
+  goals already include penalties taken abroad, and nothing in the data says
+  whether he was on them, so no correction is safe either way.
