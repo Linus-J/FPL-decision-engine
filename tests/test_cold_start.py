@@ -915,3 +915,68 @@ def test_prior_league_with_no_output_at_all_still_floors_safely():
            "goals90": 0.0, "assists90": 0.0, "minutes": 900, "matches": 10}
     xpts, var, sp = cs._prior_league_projection("DEF", row)
     assert xpts >= 0.0 and var >= 0.0 and 0.0 <= sp <= 1.0
+
+
+# --- penalty duty in the cold start (2026-08-17) ----------------------------
+def test_penalty_bonus_skips_a_taker_who_was_already_on_penalties():
+    """The double-count guard. An established taker's prior-season points
+    already contain his penalties; adding the duty again would pay him twice
+    for the same spot-kicks."""
+    from projection.cold_start import penalty_bonus
+
+    assert penalty_bonus("FWD", 0.0806, prior_penalty_xg=3.2) == (0.0, 0.0)
+
+
+def test_penalty_bonus_applies_to_a_taker_new_to_the_duty():
+    """The case it exists for: on penalties now, none last season, so the
+    prior-season record carries no penalty component at all."""
+    from projection.cold_start import penalty_bonus
+
+    mean, var = penalty_bonus("FWD", 0.0806, prior_penalty_xg=0.0)
+    assert mean == pytest.approx(0.0806 * 4)
+    assert var == pytest.approx(0.0806 * 16)
+    assert var > mean, "Poisson goal points are over-dispersed in points terms"
+
+
+def test_penalty_bonus_scales_with_position_scoring():
+    """A defender's goal is worth more than a forward's, so the same duty is
+    worth more to him."""
+    from projection.cold_start import penalty_bonus
+
+    fwd, _ = penalty_bonus("FWD", 0.0806, 0.0)
+    dfd, _ = penalty_bonus("DEF", 0.0806, 0.0)
+    assert dfd > fwd
+
+
+def test_penalty_bonus_is_nothing_without_a_duty():
+    from projection.cold_start import penalty_bonus
+
+    assert penalty_bonus("MID", 0.0, prior_penalty_xg=0.0) == (0.0, 0.0)
+
+
+def test_cold_start_lifts_a_newly_appointed_taker_and_no_one_else():
+    """End to end through project_cold_start: the bonus reaches xpts, and a
+    player without the duty is byte-for-byte unchanged."""
+    import pandas as pd
+
+    from projection.cold_start import project_cold_start
+
+    players = pd.DataFrame([
+        {"id": 1, "position": "FWD", "now_cost": 90.0, "code": 111},
+        {"id": 2, "position": "FWD", "now_cost": 90.0, "code": 222},
+    ])
+    prior = pd.DataFrame([
+        {"player_id": 1, "appearances": 30, "ppg_played": 5.0,
+         "starts_rate": 0.9, "p_appear": 1.0},
+        {"player_id": 2, "appearances": 30, "ppg_played": 5.0,
+         "starts_rate": 0.9, "p_appear": 1.0},
+    ])
+
+    without = project_cold_start(players, prior)
+    with_duty = project_cold_start(players, prior, penalty_duty={1: 0.0806})
+
+    x_without = without.set_index("player_id")["xpts"]
+    x_with = with_duty.set_index("player_id")["xpts"]
+
+    assert x_with[1] == pytest.approx(x_without[1] + 0.0806 * 4)
+    assert x_with[2] == x_without[2], "a non-taker must not move"

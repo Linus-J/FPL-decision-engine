@@ -162,6 +162,52 @@ def unconditional_moments(
     return mean, var
 
 
+_POINTS_PER_GOAL = {"GKP": 10, "DEF": 6, "MID": 5, "FWD": 4}
+
+
+def penalty_bonus(
+    position: str, penalty_xg_per_game: float, prior_penalty_xg: float
+) -> tuple[float, float]:
+    """Per-APPEARANCE (mean, variance) that a newly-appointed penalty taker's
+    prior-season record does not already contain.
+
+    The in-season engine (``projection/assemble.py``) reads penalty duty from
+    the depth chart; the cold start never did, because it works from prior-
+    season points per appearance and those points ALREADY include whatever
+    penalties the player took last year. Adding duty on top for an established
+    taker would double-count -- Haaland's 25/26 points contain his 25/26
+    penalties, and he is still on them.
+
+    The exception is a player who is on penalties NOW and was not before. Their
+    prior-season points contain no penalty component at all, so the duty is
+    purely additive and they are genuinely under-projected. On 2026-08-17 that
+    was six players -- Isak, Solanke, Buendía, Iwobi, Kluivert and Groß -- all
+    with 25/26 PL minutes and zero penalty xG in them.
+
+    ``prior_penalty_xg`` (the player's prior-season ``xg - npxg``) is what
+    separates the two cases. It is only trustworthy because the shot-level
+    npxG ingest landed on 2026-08-16; before that npxg was a verbatim copy of
+    xg and this difference was zero for everyone, which would have handed the
+    bonus to every taker including the ones already carrying it.
+
+    Penalty goals are modelled as Poisson(rate), so the goal-point
+    contribution has mean ``rate * G`` and variance ``rate * G^2``. Assists,
+    bonus and the small chance of a miss-driven swing are ignored: this is a
+    correction to a known-missing component, not a second scoring model.
+    """
+    if penalty_xg_per_game <= 0.0 or prior_penalty_xg > _PRIOR_PENALTY_EPS:
+        return 0.0, 0.0
+    goal_points = _POINTS_PER_GOAL.get(position, 4)
+    rate = float(penalty_xg_per_game)
+    return rate * goal_points, rate * goal_points ** 2
+
+
+# Prior-season penalty xG at or below this counts as "took no penalties". A
+# single penalty is worth ~0.79 xG, so anything this small is rounding, not a
+# spot-kick.
+_PRIOR_PENALTY_EPS = 0.05
+
+
 def _price_bucket(position: str, now_cost: float) -> tuple[str, float]:
     return position, round(now_cost / _PRICE_BUCKET_ROUND) * _PRICE_BUCKET_ROUND
 
@@ -345,6 +391,47 @@ def load_prior_league_lookup(season: str) -> dict[int, dict]:
     # transfer somehow produced two rows, keep the one with more minutes.
     df = df.sort_values("minutes", ascending=False).drop_duplicates(subset="code", keep="first")
     return df.set_index("code").to_dict("index")
+
+
+def load_new_penalty_duty(season: str, prior_season: str) -> dict[int, float]:
+    """player_id -> expected penalty GOALS per game, for takers whose prior
+    season contains no penalties of their own.
+
+    Established takers are deliberately absent: their prior-season points
+    already carry their penalties, so ``project_cold_start`` must not add them
+    a second time. See ``penalty_bonus`` for the full argument.
+
+    A player with a depth-chart duty and no prior-season xG row at all (a new
+    signing, a promoted player) is included — there is no prior penalty
+    component to double-count.
+    """
+    from sqlalchemy import text
+
+    from data.db import get_session
+
+    db = get_session()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT r.player_id, r.penalty_xg_per_game, "
+                "       COALESCE(x.pen_xg, 0.0) AS prior_pen_xg "
+                "FROM player_setpiece_roles r "
+                "LEFT JOIN ("
+                "    SELECT player_id, SUM(xg) - SUM(npxg) AS pen_xg "
+                "    FROM player_xg_stats WHERE season = :prior GROUP BY player_id"
+                ") x ON x.player_id = r.player_id "
+                "WHERE r.season = :season AND r.penalty_order IS NOT NULL"
+            ),
+            {"season": season, "prior": prior_season},
+        ).fetchall()
+    finally:
+        db.close()
+
+    return {
+        int(pid): float(rate or 0.0)
+        for pid, rate, prior_pen_xg in rows
+        if float(rate or 0.0) > 0.0 and float(prior_pen_xg or 0.0) <= _PRIOR_PENALTY_EPS
+    }
 
 
 def load_current_defence_strength(season: str) -> dict[int, float]:
@@ -596,6 +683,7 @@ def project_cold_start(
     prior_league_lookup: dict[int, dict] | None = None,
     horizon: int = 1,
     season: str | None = None,
+    penalty_duty: dict[int, float] | None = None,
 ) -> pd.DataFrame:
     """GW1 xPts + xpts_var + start probability per player, tagged with its
     source.
@@ -618,6 +706,20 @@ def project_cold_start(
     entry) falls through to the existing peer_bucket_prior /
     position_price_prior cascade, unchanged.
 
+    ``penalty_duty`` (optional, from ``load_new_penalty_duty``): player_id ->
+    expected penalty goals per game, for takers NEW to the duty only. It must
+    not contain established takers, whose prior-season points already include
+    their penalties — the loader is what enforces that, and passing a raw
+    depth chart here would double-count them. ``None`` reproduces the previous
+    behaviour exactly.
+
+    The ``prior_league_prior`` tier is deliberately left untouched by it. That
+    tier projects from a translated foreign record whose goals already include
+    whatever penalties the player took abroad, and nothing in the data says
+    whether he was on them — so a bonus there is as likely to double-count as
+    to correct. Two players were affected on 2026-08-17, neither near
+    selection; the ambiguity was not worth buying.
+
     ``horizon``/``season`` (default 1/None, preserving today's exact
     single-row-per-player, unscaled-by-fixture behaviour for every existing
     caller, since those never pass ``season``): with ``season`` given, emits
@@ -634,6 +736,8 @@ def project_cold_start(
         raw_appearances = pd.DataFrame(columns=["player_id", "total_points"])
     if prior_league_lookup is None:
         prior_league_lookup = {}
+    if penalty_duty is None:
+        penalty_duty = {}
 
     merged = players.merge(
         prior_features, left_on="id", right_on="player_id", how="left"
@@ -651,14 +755,22 @@ def project_cold_start(
 
     rows: list[dict] = []
     for r in merged.itertuples():
+        # Per-APPEARANCE penalty component, non-zero only for a player who is
+        # on penalties now and was not last season (``load_new_penalty_duty``
+        # filters out everyone whose prior points already include them).
+        pen_mean, pen_var = penalty_bonus(
+            r.position, float(penalty_duty.get(int(r.id), 0.0)), 0.0
+        )
+
         has_prior = r.appearances >= MIN_PRIOR_APPEARANCES
         if has_prior:
-            mean_played = max(_MIN_XPTS, float(r.ppg_played))
+            mean_played = max(_MIN_XPTS, float(r.ppg_played)) + pen_mean
             if r.id in own_appearances.groups:
                 own_points = own_appearances.get_group(r.id)
                 var_played = float(own_points.var(ddof=1)) if len(own_points) > 1 else 0.0
             else:
                 var_played = 0.0
+            var_played += pen_var
             p_appear = 1.0
             if has_p_appear and not pd.isna(r.p_appear):
                 p_appear = float(r.p_appear)
@@ -675,14 +787,16 @@ def project_cold_start(
             )
             if peer_stats is not None:
                 fallback_xpts, fallback_xpts_var = unconditional_moments(
-                    peer_stats[2], max(_MIN_XPTS, peer_stats[0]), peer_stats[1]
+                    peer_stats[2],
+                    max(_MIN_XPTS, peer_stats[0]) + pen_mean,
+                    peer_stats[1] + pen_var,
                 )
                 fallback_source = "peer_bucket_prior"
             else:
                 fallback_xpts, fallback_xpts_var = unconditional_moments(
                     NEW_PLAYER_APPEARANCE_PROB,
-                    _price_prior(r.position, float(r.now_cost)),
-                    _FALLBACK_VAR,
+                    _price_prior(r.position, float(r.now_cost)) + pen_mean,
+                    _FALLBACK_VAR + pen_var,
                 )
                 fallback_source = "position_price_prior"
 
@@ -805,6 +919,7 @@ def build_initial_squad(
         players, prior, raw_appearances=raw_appearances,
         prior_league_lookup=prior_league_lookup,
         horizon=cfg.cold_start_lookahead_gws, season=season,
+        penalty_duty=load_new_penalty_duty(season, prior_season),
     )
     # Feature B (plan 2026-08-10): the rumour-discount tier of the
     # already-existing departure-risk gate, fed with real data for the
