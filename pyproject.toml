@@ -81,3 +81,10 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# `tool.uv.package = false` means the project's own packages are never
+# installed into the venv, and there is no conftest.py to implicitly add the
+# root. So a bare `pytest` collected NOTHING -- 55 ModuleNotFoundError
+# collection errors -- while `python -m pytest` (which puts cwd on sys.path)
+# passed 755. The docs name `pytest` as the gate, so the gate as documented
+# did not run. pythonpath makes both invocations equivalent.
+pythonpath = ["."]
