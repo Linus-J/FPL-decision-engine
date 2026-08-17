@@ -339,3 +339,60 @@ def test_missing_strengths_count_as_placeholder():
         "strength_attack_home": None, "strength_attack_away": None,
         "strength_defence_home": None, "strength_defence_away": None,
     })
+
+
+def test_placeholder_strengths_must_stay_readable_as_absent():
+    """A regression guard, for a regression that actually happened.
+
+    On 2026-08-17 the placeholder fix was applied at the WRONG layer: the
+    ingest was changed to store the neutral 1200 instead of FPL's zeros. That
+    put the FDR features on the right scale but silently disabled
+    cold_start.load_current_defence_strength, which treats a zero row as
+    ABSENT precisely so it can fall back to PRIOR-season strengths -- real
+    data for 17 of 20 teams, replaced by a flat constant.
+
+    0 is the "not published" signal. Consumers honour it on READ; the ingest
+    must not launder it into a plausible-looking number.
+    """
+    from data.ingestors.fpl_api import _is_placeholder_strength
+
+    placeholder = {
+        "strength_overall_home": 4, "strength_overall_away": 5,
+        "strength_attack_home": 0, "strength_attack_away": 0,
+        "strength_defence_home": 0, "strength_defence_away": 0,
+    }
+    assert _is_placeholder_strength(placeholder)
+    # and the neutral value must NOT be mistaken for a placeholder, or the
+    # warning would fire forever once FPL publishes
+    assert not _is_placeholder_strength(dict.fromkeys(placeholder, 1200))
+
+
+def test_cold_start_treats_zero_strengths_as_absent(tmp_path, monkeypatch):
+    """The behaviour the regression broke, asserted end to end."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import projection.cold_start as cs
+    from data.models import Base, TeamSeasonStrength
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'strength.db'}")
+    Base.metadata.create_all(bind=engine)
+    Local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    s = Local()
+    try:
+        s.add(TeamSeasonStrength(season="2026-27", team_id=1, code=3,
+                                 strength_overall_home=4, strength_overall_away=5,
+                                 strength_attack_home=0, strength_attack_away=0,
+                                 strength_defence_home=0, strength_defence_away=0))
+        s.add(TeamSeasonStrength(season="2026-27", team_id=2, code=7,
+                                 strength_overall_home=1300, strength_overall_away=1290,
+                                 strength_attack_home=1280, strength_attack_away=1270,
+                                 strength_defence_home=1260, strength_defence_away=1250))
+        s.commit()
+    finally:
+        s.close()
+    monkeypatch.setattr(cs, "get_session", lambda: Local())
+
+    usable = cs.load_current_defence_strength("2026-27")
+    assert 1 not in usable, "a placeholder row must read as ABSENT, not as 0 or 1200"
+    assert usable[2] == 1255.0, "a real row must still be used"

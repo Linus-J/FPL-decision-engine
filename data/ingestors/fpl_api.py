@@ -26,11 +26,9 @@ _STRENGTH_COLS = (
     "strength_defence_home", "strength_defence_away",
 )
 
-# TeamSeasonStrength's own column default, and the value features.py falls back
-# to for a missing row (projection/fixture_adjust.LEAGUE_AVG_STRENGTH).
-NEUTRAL_STRENGTH = 1200
 # Real published strengths sit around 900-1400. Anything this small is not a
-# strength on that scale.
+# strength on that scale. Mirrored by projection.features._PLAUSIBLE_STRENGTH_FLOOR,
+# which is where the convention is actually enforced on read.
 _PLAUSIBLE_STRENGTH_FLOOR = 100
 
 
@@ -151,7 +149,6 @@ def upsert_teams(bootstrap: dict, season: str = "2026-27") -> None:
         for t in bootstrap["teams"]:
             row = {col: t[col] for col in _STRENGTH_COLS}
             if _is_placeholder_strength(row):
-                row = dict.fromkeys(_STRENGTH_COLS, NEUTRAL_STRENGTH)
                 placeholders += 1
             stmt = (
                 insert(TeamSeasonStrength)
@@ -166,12 +163,14 @@ def upsert_teams(bootstrap: dict, season: str = "2026-27") -> None:
         logger.info("Upserted %d team_season_strength rows for %s", len(bootstrap["teams"]), season)
         if placeholders:
             logger.warning(
-                "%d/%d %s teams had PLACEHOLDER strengths in the bootstrap "
-                "(attack/defence 0, overall on FPL's 1-5 tier); stored the "
-                "neutral %d instead. FDR features carry no signal until FPL "
-                "publishes real strengths -- but they are at least on the same "
-                "scale the model was trained on.",
-                placeholders, len(bootstrap["teams"]), season, NEUTRAL_STRENGTH,
+                "%d/%d %s teams have PLACEHOLDER strengths in the bootstrap "
+                "(attack/defence 0, overall on FPL's 1-5 tier). Stored as-is: "
+                "0 is this project's established 'not published' signal and "
+                "cold_start.load_current_defence_strength relies on it to fall "
+                "back to PRIOR-season strengths. Consumers must treat values "
+                "below %d as absent, not as data.",
+                placeholders, len(bootstrap["teams"]), season,
+                _PLAUSIBLE_STRENGTH_FLOOR,
             )
     finally:
         db.close()

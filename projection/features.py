@@ -18,6 +18,24 @@ from data.db import get_session
 # can least afford to be wrong about.
 _FIXTURE_KEYS = ["player_id", "gameweek", "season", "opponent_team_id"]
 
+# Real published team strengths sit around 900-1400. FPL serves PLACEHOLDERS
+# until a season starts -- attack/defence 0, overall on its 1-5 tier -- and
+# those are stored as-is, because 0 is this project's established "not
+# published" signal and cold_start.load_current_defence_strength depends on it
+# to fall back to prior-season strengths.
+#
+# So the honouring of that convention has to happen HERE, at the read. Without
+# it, 2026-27 rows would carry opp_defence_strength=0 and own_overall_strength=3
+# against 975-1390 in every training season, and add_fdr_features' fillna could
+# not help: NaN is missing, 0 is present. Below the floor is treated as NULL so
+# the existing median/1200 fallback takes over.
+_PLAUSIBLE_STRENGTH_FLOOR = 100
+
+
+def _usable(expr: str) -> str:
+    """SQL: the strength expression, or NULL when it is a placeholder."""
+    return f"CASE WHEN ({expr}) >= {_PLAUSIBLE_STRENGTH_FLOOR} THEN ({expr}) END"
+
 
 def _merge_on_fixture(
     df: pd.DataFrame, right: pd.DataFrame, value_cols: list[str]
@@ -59,16 +77,16 @@ def load_fixture_difficulty(season: str | None = None) -> pd.DataFrame:
                 s.team_id_season AS team_id,
                 CASE WHEN s.was_home THEN 1 ELSE 0 END AS is_home,
                 COALESCE(g.is_bgw, 0) AS is_bgw,
-                CASE WHEN s.was_home THEN tss_opp.strength_defence_away
-                     ELSE tss_opp.strength_defence_home END AS opp_defence_strength,
-                CASE WHEN s.was_home THEN tss_opp.strength_attack_away
-                     ELSE tss_opp.strength_attack_home END AS opp_attack_strength,
-                CASE WHEN s.was_home THEN tss_own.strength_attack_home
-                     ELSE tss_own.strength_attack_away END AS own_attack_strength,
-                CASE WHEN s.was_home THEN tss_own.strength_defence_home
-                     ELSE tss_own.strength_defence_away END AS own_defence_strength,
-                CASE WHEN s.was_home THEN tss_own.strength_overall_home
-                     ELSE tss_own.strength_overall_away END AS own_overall_strength,
+                {_usable("CASE WHEN s.was_home THEN tss_opp.strength_defence_away "
+                         "ELSE tss_opp.strength_defence_home END")} AS opp_defence_strength,
+                {_usable("CASE WHEN s.was_home THEN tss_opp.strength_attack_away "
+                         "ELSE tss_opp.strength_attack_home END")} AS opp_attack_strength,
+                {_usable("CASE WHEN s.was_home THEN tss_own.strength_attack_home "
+                         "ELSE tss_own.strength_attack_away END")} AS own_attack_strength,
+                {_usable("CASE WHEN s.was_home THEN tss_own.strength_defence_home "
+                         "ELSE tss_own.strength_defence_away END")} AS own_defence_strength,
+                {_usable("CASE WHEN s.was_home THEN tss_own.strength_overall_home "
+                         "ELSE tss_own.strength_overall_away END")} AS own_overall_strength,
                 COALESCE((
                     SELECT AVG(CASE WHEN s2.was_home THEN t2.strength_defence_away
                                     ELSE t2.strength_defence_home END)

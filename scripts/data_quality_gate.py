@@ -342,6 +342,15 @@ def run_team_strength_scale_check(season: str = "2026-27") -> list:
 
     from data.db import get_session
     from data.quality_checks import QualityIssue
+    from projection.pipeline import season_has_played_history
+
+    # Pre-season, placeholders are the CORRECT stored state: 0 is this
+    # project's "not published" signal, cold_start falls back to prior-season
+    # strengths because of it, and features.py treats sub-floor values as
+    # absent. Failing the gate every pre-season week for a correct state is the
+    # same cry-wolf failure the dead-column check already avoids.
+    if not season_has_played_history(season):
+        return []
 
     db = get_session()
     try:
