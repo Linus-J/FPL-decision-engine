@@ -590,8 +590,19 @@ class PriorLeagueStats(Base):
     matches: Mapped[int] = mapped_column(Integer, default=0)
     goals90: Mapped[float] = mapped_column(Float, default=0.0)
     assists90: Mapped[float] = mapped_column(Float, default=0.0)
+    # Non-penalty goals per 90 (FBref "G-PK"). Added 2026-08-17: npxg90 has
+    # never been populated -- FBref's season-standard table carries no Expected
+    # column group for any scraped league -- so the cold start fell back to
+    # goals90, which INCLUDES penalties. That both overstates a prior-league
+    # penalty taker and is why the tier is excluded from the cold-start penalty
+    # bonus (its goals already contain penalties, unattributably). npg90 is the
+    # same quantity the in-season engine works in, and it IS in the scraped
+    # table -- it was simply never read.
+    npg90: Mapped[float] = mapped_column(Float, default=0.0)
     npxg90: Mapped[float] = mapped_column(Float, default=0.0)
     xa90: Mapped[float] = mapped_column(Float, default=0.0)
+    # Never written by any code path -- compute_per90 does not produce it and
+    # soccerdata's player-season API has no goal_shot_creation stat type.
     sca90: Mapped[float] = mapped_column(Float, default=0.0)
 
 

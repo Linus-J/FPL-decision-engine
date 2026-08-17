@@ -375,7 +375,8 @@ def load_prior_league_lookup(season: str) -> dict[int, dict]:
     db = get_session()
     try:
         query = text("""
-            SELECT code, league, goals90, assists90, npxg90, xa90, minutes, matches
+            SELECT code, league, goals90, assists90, npg90, npxg90, xa90,
+                   minutes, matches
             FROM prior_league_stats
             WHERE season = :season AND code IS NOT NULL AND minutes >= :min_minutes
         """)
@@ -642,10 +643,18 @@ def _prior_league_projection(position: str, pl_row: dict) -> tuple[float, float,
     # against realized RAW goal+assist output (see
     # projection/prior_league_translation.py); the expected-goals inputs were
     # an application-time refinement.
+    # The fallback ladder, best available first:
+    #   npxg90  -- expected, non-penalty. Never yet populated.
+    #   npg90   -- realized NON-PENALTY goals (FBref "G-PK"). Present in the
+    #              scraped table all along; simply never read until 2026-08-17.
+    #   goals90 -- realized goals INCLUDING penalties. Last resort: it flatters
+    #              a prior-league penalty taker, and because those penalties
+    #              cannot be attributed it is also why this tier is held out of
+    #              the cold-start penalty bonus.
     npxg90 = float(pl_row.get("npxg90") or 0.0)
     xa90 = float(pl_row.get("xa90") or 0.0)
     if npxg90 <= 0.0 and xa90 <= 0.0:
-        npxg90 = float(pl_row.get("goals90") or 0.0)
+        npxg90 = float(pl_row.get("npg90") or 0.0) or float(pl_row.get("goals90") or 0.0)
         xa90 = float(pl_row.get("assists90") or 0.0)
     translated_npxg90 = npxg90 * factor
     translated_xa90 = xa90 * factor

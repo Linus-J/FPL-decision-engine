@@ -10,6 +10,13 @@ Usage (from repo root, with Chromium):
     FBREF_HEADED=1 DB_PATH=fpl_bot_v2.db uv run --with soccerdata \
         python scripts/scrape_prior_league.py "ESP-La Liga" 2025-2026
 
+Pass --no-cache to force a real re-fetch. WITHOUT it soccerdata re-reads its
+cached HTML and this script will happily report "rows written" having made no
+request at all -- which is exactly what happened on 2026-08-17. Note also that
+soccerdata caches BLOCKED responses, so a re-fetch can still yield nothing;
+the ingest now names any per-90 metric that is zero on every row instead of
+letting the row count imply success.
+
     # all default prior leagues for 2025-2026 (omit the league arg):
     FBREF_HEADED=1 DB_PATH=fpl_bot_v2.db uv run --with soccerdata \
         python scripts/scrape_prior_league.py
@@ -59,6 +66,13 @@ fbref.com/en/comps/, id 10) — "Championship" alone does not match and yields
 
 
 def main(argv: list[str]) -> None:
+    # --no-cache must be reachable from the CLI. Without it this script could
+    # only ever re-parse soccerdata's cached HTML: a user who re-ran it on
+    # 2026-08-17 to fetch the missing Expected columns got "rows written" back
+    # from files last fetched on 2026-08-01, and no new request was made.
+    no_cache = "--no-cache" in argv
+    argv = [a for a in argv if a != "--no-cache"]
+
     league = argv[0] if argv else None
     season = argv[1] if len(argv) > 1 else DEFAULT_SEASON
     leagues = [league] if league else list(PRIOR_LEAGUES)
@@ -67,10 +81,14 @@ def main(argv: list[str]) -> None:
     headless = os.environ.get("FBREF_HEADED", "") == ""
     init_db()
     for lg in leagues:
-        logger.info("=== prior-league season stats: %s %s (headless=%s) ===", lg, season, headless)
+        logger.info(
+            "=== prior-league season stats: %s %s (headless=%s, no_cache=%s) ===",
+            lg, season, headless, no_cache,
+        )
         try:
             written = ingest_prior_league_season(
-                lg, season, path_to_browser=path_to_browser, headless=headless
+                lg, season, path_to_browser=path_to_browser, headless=headless,
+                no_cache=no_cache,
             )
             logger.info("%s %s: %d rows", lg, season, written)
         except Exception as exc:  # one league failing must not kill the rest
