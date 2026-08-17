@@ -30,7 +30,7 @@ print('BEN:', [info[int(p)][1] for p, _ in sorted(d['bench_order'].items(), key=
 print('C  :', info[d['captain_id']][1], '| V:', info[d['vice_captain_id']][1])"
 ```
 
-**Starting XI** — 3-5-2
+**Starting XI** — 1-4-5-1
 
 | Pos | Player | Price |
 |---|---|---|
@@ -38,16 +38,16 @@ print('C  :', info[d['captain_id']][1], '| V:', info[d['vice_captain_id']][1])"
 | DEF | Gabriel | £8.0m |
 | DEF | Senesi | £6.0m |
 | DEF | Tarkowski | £6.0m |
+| DEF | Guéhi | £6.0m |
 | MID | B.Fernandes **(C)** | £12.0m |
 | MID | Semenyo | £8.5m |
 | MID | Gibbs-White | £8.0m |
+| MID | Wilson | £6.5m |
 | MID | Anderson | £6.5m |
-| MID | Groß | £5.5m |
 | FWD | Thiago | £8.0m |
-| FWD | João Pedro | £7.5m |
 
-**Bench, in order** — 1. Dubravka (GKP) £4.0m · 2. Disasi (DEF) £4.5m ·
-3. Mitchell (DEF) £4.5m · 4. Simms (FWD) £5.0m
+**Bench, in order** — 1. Verbruggen (GKP) £4.5m · 2. Disasi (DEF) £4.5m ·
+3. Simms (FWD) £5.0m · 4. Furo (FWD) £4.5m
 
 Bench order matters: it decides which substitute comes on if a starter
 blanks, and the outcome scorer replays FPL's real auto-substitution rules
