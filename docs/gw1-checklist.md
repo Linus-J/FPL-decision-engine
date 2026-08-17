@@ -187,28 +187,27 @@ What genuinely remains is a data limitation rather than a decision:
 - **The prior-league tier cannot see penalty duty.** A foreign signing's
   goals already include penalties taken abroad, and nothing in the data says
   whether he was on them, so no correction is safe either way.
-- **Prior-league expected-goals data is missing** — `npxg90`/`xa90` are zero
-  on all 15,323 rows; every cached FBref `standard` table lacks the `Expected`
-  column group entirely.
+- **Prior-league expected goals: solved, via Understat rather than FBref.**
+  Your `--no-cache` run proved the flag works and that FBref simply does not
+  serve xG on that endpoint — the freshly-fetched page is the right page and
+  has no xG field at all. Do not re-run it expecting `npxg90`.
 
-  **Non-penalty goals (`npg90`) are now captured and used instead**, backfilled
-  offline from the existing cache — 7,329 rows, 1,043 of which raw goals had
-  inflated with penalties. That was the part that mattered; the tier no longer
-  over-rates a foreign penalty taker.
-
-  If you still want the expected metrics, the re-scrape needs **both** a
-  display *and* `--no-cache` — without the flag it silently re-parses the
-  2026-08-01 cache and reports success, which is exactly what happened on
-  2026-08-17:
+  Understat has the data and needs no browser. Refresh it with:
 
   ```bash
-  FBREF_HEADED=1 DB_PATH=fpl_bot_v2.db uv run --with soccerdata \
-      python scripts/scrape_prior_league.py 'ESP-La Liga' 2025-2026 --no-cache
+  DB_PATH=fpl_bot_v2.db .venv/bin/python -c "
+  from data.ingestors.understat_prior import ingest_prior_league_expected, UNDERSTAT_PRIOR_LEAGUES
+  for lg in UNDERSTAT_PRIOR_LEAGUES:
+      print(lg, ingest_prior_league_expected(lg, '2025-2026'))"
   ```
 
-  The ingest now names any metric that comes back zero on every row, so you
-  will be told plainly whether it worked. It may simply not be available
-  through this API surface. Low value now that `npg90` is in.
+  `updated` is the only number that means the data arrived. Serie A needs a
+  one-time `{"Understat": "Serie A"}` entry in
+  `~/soccerdata/config/league_dict.json` (already added).
+
+  The **Championship** has no expected-goals data from any of these sources
+  and projects from `npg90` (non-penalty goals) instead — which is penalty-free
+  and was the part that actually mattered.
 
 - **Team strengths are neutral until FPL publishes.** FPL serves pre-season
   placeholders; storing them verbatim would have put every FDR feature
