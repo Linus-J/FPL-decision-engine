@@ -22,15 +22,39 @@ POSITIVE_SIGNALS = [
 ]
 NEGATIVE_SIGNALS = [
     "won't feature", "will not feature", "won't be involved", "will miss",
-    "not available", "out for", "ruled out", "still injured", "doubt",
-    "unlikely to play", "not ready", "recovering", "awaiting scan",
+    "not available", "unavailable", "ruled out", "still injured",
+    "unlikely to play", "not ready", "recovering",
+    # Plurals need to be explicit now that matching is word-bounded:
+    # substring containment used to catch "doubts"/"scans" via "doubt"/"scan",
+    # and losing "fitness doubts" would cost a genuine availability signal.
+    r"doubts?", r"awaiting scans?",
+    # "out for" alone matched "hook it out for a throw" and "deflected out for
+    # a corner" -- ordinary match commentary, scored as a long-term absence.
+    # Require something absence-shaped after it.
+    r"out for (?:the (?:season|year)|an? extended|several|a few|the next|"
+    r"\d+\s*(?:week|month|game|match))",
+    r"out (?:injured|until)",
 ]
+
+
+def _matches(pattern: str, sentence: str) -> bool:
+    """Word-boundary match. Plain phrases are anchored; entries that are
+    already regexes are used as written.
+
+    Substring containment was the bug: ``"available" in "was also unavailable
+    for spells"`` is True, so a sentence saying a player was UNAVAILABLE scored
+    +1.0 (observed on Odegaard, 2026-08-01). ``\\b`` fixes that without a
+    special case -- there is no word boundary between "un" and "available".
+    """
+    if any(ch in pattern for ch in "(?:\\"):
+        return re.search(pattern, sentence) is not None
+    return re.search(rf"\b{re.escape(pattern)}\b", sentence) is not None
 
 
 def _score_sentence(sentence: str) -> float:
     s = sentence.lower()
-    pos = sum(1 for p in POSITIVE_SIGNALS if p in s)
-    neg = sum(1 for n in NEGATIVE_SIGNALS if n in s)
+    pos = sum(1 for p in POSITIVE_SIGNALS if _matches(p, s))
+    neg = sum(1 for n in NEGATIVE_SIGNALS if _matches(n, s))
     if pos + neg == 0:
         return 0.0
     return (pos - neg) / (pos + neg)
