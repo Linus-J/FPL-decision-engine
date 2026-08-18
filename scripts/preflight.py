@@ -277,6 +277,63 @@ def check_model_features_are_usable(result: Result) -> dict:
     return {"n_features": len(FEATURE_COLS), "degenerate": sorted(degenerate)}
 
 
+def check_chips_are_reachable(db, result: Result) -> dict:
+    """Can each chip actually fire this half, given the data that exists?
+
+    2026-08-18 (engine review §15/§17). Every other check here asks whether a
+    value is right. This one asks whether a DECISION is reachable at all, which
+    is a different failure and the one the chip layer actually has.
+
+    Bench Boost requires an active double gameweek; Free Hit requires one of
+    those or five blanking squad players. Doubles and blanks only arise from
+    postponements, so the published fixture list has none — every gameweek
+    holds exactly ten fixtures — and they cluster in the second half of the
+    season when cup replays start biting. ``_panic_shrink`` lowers chip
+    THRESHOLDS as a half expires but cannot relax those structural gates, and
+    the panic force-play at the boundary covers only Triple Captain. So if no
+    DGW or five-blank BGW materialises before the GW19 deadline, two of the
+    four first-half chips expire unused by construction.
+
+    That is a strategy question, not a bug, and it is the user's call — but it
+    should be a number they see weekly rather than something discovered in
+    January. Reported, never failed on.
+    """
+    from sqlalchemy import text
+
+    from optimiser.chips import _get_wc_half_boundary
+
+    print("\n[chip reachability]")
+    rows = db.execute(
+        text(
+            "SELECT gameweek, COUNT(*) FROM fixtures WHERE season = :s "
+            "GROUP BY gameweek"
+        ),
+        {"s": SEASON},
+    ).fetchall()
+    per_gw = {int(gw): int(n) for gw, n in rows}
+    if not per_gw:
+        result.note("fixtures loaded", "none — cannot assess chip reachability")
+        return {"dgw_gws_first_half": 0, "bgw_gws_first_half": 0}
+
+    teams = db.execute(
+        text("SELECT COUNT(*) FROM teams"), {}
+    ).scalar() or 20
+    full_slate = teams // 2
+    boundary = _get_wc_half_boundary(SEASON)
+
+    dgw = sorted(gw for gw, n in per_gw.items() if n > full_slate and gw <= boundary)
+    bgw = sorted(gw for gw, n in per_gw.items() if n < full_slate and gw <= boundary)
+
+    result.note(f"double gameweeks before GW{boundary}", dgw or "none")
+    result.note(f"blank gameweeks before GW{boundary}", bgw or "none")
+    if not dgw and not bgw:
+        result.note(
+            "Bench Boost / Free Hit reachability",
+            "UNREACHABLE this half on current fixtures — both need a DGW/BGW",
+        )
+    return {"dgw_gws_first_half": len(dgw), "bgw_gws_first_half": len(bgw)}
+
+
 def check_site_export_matches(db, result: Result) -> None:
     """The site is what the user actually reads. It has diverged from the
     decision log before."""
@@ -332,6 +389,7 @@ def main() -> int:
         squad = check_squad_is_legal(db, result)
         check_no_duplicate_live_decisions(db, result)
         check_no_leakage(db, result)
+        chips = check_chips_are_reachable(db, result)
         check_site_export_matches(db, result)
     finally:
         db.close()
@@ -339,7 +397,7 @@ def main() -> int:
     fallbacks = check_fallbacks_engage(result)
     features = check_model_features_are_usable(result)
 
-    snapshot = {**squad, **fallbacks, **features}
+    snapshot = {**squad, **chips, **fallbacks, **features}
     compare_to_baseline(snapshot, result, update)
 
     print()

@@ -177,6 +177,13 @@ class TransferRules:
     free_transfers_per_gw: int = 1
     max_banked_free_transfers: int = 5
     hit_cost_points: int = -4
+    # NOT an FPL rule (flagged 2026-08-18, engine review §18). FPL allows
+    # unlimited hits; this is a self-imposed guard against the optimiser
+    # talking itself into a huge one-week rebuild off noisy projections, in the
+    # same family as transfer_switching_cost. Left in place because it is
+    # almost never binding in practice, but it IS a hard constraint on the ILP,
+    # so if a plan ever looks oddly timid at 2 hits this is the first thing to
+    # check. It does not apply on a wildcard, where hits are zeroed outright.
     max_hits_per_gw: int = 2
     ft_terminal_value: float = 2.0
 
@@ -390,6 +397,18 @@ class OptimiserConfig:
     # over GW6-20/2025-26 -- 0.0 won (57.67 avg actual pts/GW vs the prior
     # 0.05 default's 57.27). Reduced window for speed, not a final gate
     # validation; re-run GW6-38 to firm this up.
+    #
+    # CONSEQUENCE, spelled out 2026-08-18 (engine review §16): at 0.0, with the
+    # default risk_level of 0, mu is 0 and lambda is 0 -- so THREE documented
+    # capabilities are dormant, not live:
+    #   * optimiser/scoring.py's variance term (score reduces to plain xpts),
+    #   * its ownership/differential weighting (multiplier is 1 for everyone),
+    #   * optimiser/captaincy.py's scenario-based covariance-aware captaincy,
+    #     which short-circuits to mean argmax without touching the DB.
+    # That is a defensible position -- mean argmax is optimal for a linear mean
+    # objective, and 0.0 won its sweep -- but it was being described in two
+    # docstrings as active. Reviving any of them starts with re-running this
+    # calibration over the full GW6-38 window.
     mu_baseline: float = 0.0
     mu_range: float = 0.08
 

@@ -32,12 +32,25 @@ candidate whose fixture has no persisted rows): falls back to the same
 additive own-variance approximation P3-3 already used, so a candidate with
 no sample data scores ``xpts + mu*xpts_var`` exactly as before. At
 ``mu == 0`` this short-circuits to plain mean argmax without touching the
-DB at all — verified by test not assumed. ``mu`` is no longer 0 by default
-(plan/risk-aware-cold-start-v1.md gave ``risk_level=0`` a real, non-zero
-``mu_baseline``), so this short-circuit is now the exception rather than
-the common case for the real bot/simulations; ``scripts/backtest.py``
-pins its own calls to ``mu_baseline=0`` explicitly, so it still hits this
-path every time.
+DB at all — verified by test not assumed.
+
+**DORMANT AT THE DEFAULT CONFIGURATION** (corrected 2026-08-18, engine
+review §16). This docstring used to claim ``mu`` was "no longer 0 by
+default", which was true when written and was falsified by the
+``mu_baseline`` calibration of 2026-07-31: that sweep chose **0.0**, and
+``mu = mu_baseline + risk_level * mu_range`` with the default
+``risk_level = 0`` therefore gives ``mu = 0``. The short-circuit above is
+consequently taken on EVERY real-bot and persona call, and none of the
+covariance machinery below runs.
+
+Nothing is wrong with that — plain mean argmax is provably optimal for a
+linear mean objective, which is what the engine currently maximises. But
+it is dormant, not live, and the same is true of the two other risk
+layers (``optimiser/scoring.py``'s variance term and its ownership
+weighting, both zero at ``risk_level = 0``). Reviving any of them means
+re-running the ``mu_baseline`` calibration over GW6-38, as that
+calibration's own note recommends — and separately for captaincy, since a
+``mu`` that is wrong for squad selection may be right here.
 """
 
 from __future__ import annotations
