@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 1,
   "label": "GW1 \u2014 21 Aug 2026",
-  "generated_at": "2026-08-18T18:24:05.134599+00:00",
+  "generated_at": "2026-08-18T18:43:34.441631+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -33,9 +33,9 @@
       "bench_order": null,
       "xpts": {
         "p10": 0.0,
-        "median": 7.2079,
-        "mean": 7.2079,
-        "p90": 16.4026
+        "median": 7.4338,
+        "mean": 7.4338,
+        "p90": 16.6285
       }
     },
     {
@@ -73,6 +73,40 @@
       }
     },
     {
+      "player_id": 232,
+      "web_name": "Van Hecke",
+      "position": "DEF",
+      "team_short": "TOT",
+      "now_cost": 5.0,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 2,
+      "xpts": {
+        "p10": 0.0,
+        "median": 3.5832,
+        "mean": 3.5832,
+        "p90": 7.5686
+      }
+    },
+    {
+      "player_id": 310,
+      "web_name": "Lacroix",
+      "position": "DEF",
+      "team_short": "CHE",
+      "now_cost": 6.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "xpts": {
+        "p10": 0.0,
+        "median": 4.8331,
+        "mean": 4.8331,
+        "p90": 9.9993
+      }
+    },
+    {
       "player_id": 356,
       "web_name": "Tarkowski",
       "position": "DEF",
@@ -84,26 +118,9 @@
       "bench_order": null,
       "xpts": {
         "p10": 0.0,
-        "median": 4.7573,
-        "mean": 4.7573,
-        "p90": 9.6448
-      }
-    },
-    {
-      "player_id": 400,
-      "web_name": "Sessegnon",
-      "position": "MID",
-      "team_short": "FUL",
-      "now_cost": 4.5,
-      "is_starting": false,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": 4,
-      "xpts": {
-        "p10": 0.0,
-        "median": 1.5961,
-        "mean": 1.5961,
-        "p90": 5.1067
+        "median": 4.7764,
+        "mean": 4.7764,
+        "p90": 9.6639
       }
     },
     {
@@ -118,9 +135,9 @@
       "bench_order": null,
       "xpts": {
         "p10": 0.0,
-        "median": 5.191,
-        "mean": 5.191,
-        "p90": 11.0119
+        "median": 5.2728,
+        "mean": 5.2728,
+        "p90": 11.0938
       }
     },
     {
@@ -141,6 +158,23 @@
       }
     },
     {
+      "player_id": 480,
+      "web_name": "Gravenberch",
+      "position": "MID",
+      "team_short": "LIV",
+      "now_cost": 6.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "xpts": {
+        "p10": 0.0,
+        "median": 4.1762,
+        "mean": 4.1762,
+        "p90": 9.6835
+      }
+    },
+    {
       "player_id": 496,
       "web_name": "Semenyo",
       "position": "MID",
@@ -155,40 +189,6 @@
         "median": 6.0605,
         "mean": 6.0605,
         "p90": 13.3984
-      }
-    },
-    {
-      "player_id": 506,
-      "web_name": "Matheus N.",
-      "position": "DEF",
-      "team_short": "MCI",
-      "now_cost": 6.0,
-      "is_starting": true,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": null,
-      "xpts": {
-        "p10": 0.0,
-        "median": 4.7566,
-        "mean": 4.7566,
-        "p90": 10.4047
-      }
-    },
-    {
-      "player_id": 510,
-      "web_name": "O'Reilly",
-      "position": "DEF",
-      "team_short": "MCI",
-      "now_cost": 6.5,
-      "is_starting": true,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": null,
-      "xpts": {
-        "p10": 0.0,
-        "median": 4.9212,
-        "mean": 4.9212,
-        "p90": 11.6342
       }
     },
     {
@@ -217,12 +217,12 @@
       "is_starting": false,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": 2,
+      "bench_order": 3,
       "xpts": {
         "p10": 0.0,
-        "median": 2.3295,
-        "mean": 2.3295,
-        "p90": 7.8113
+        "median": 2.3302,
+        "mean": 2.3302,
+        "p90": 7.8119
       }
     },
     {
@@ -234,12 +234,12 @@
       "is_starting": false,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": 3,
+      "bench_order": 4,
       "xpts": {
         "p10": 0.0,
-        "median": 2.1445,
-        "mean": 2.1445,
-        "p90": 5.8581
+        "median": 2.1443,
+        "mean": 2.1443,
+        "p90": 5.8579
       }
     },
     {
@@ -291,10 +291,10 @@
       "position": "DEF",
       "team_short": "ARS",
       "xpts": {
-        "p10": 7.20787858009838,
-        "median": 7.20787858009838,
-        "mean": 7.20787858009838,
-        "p90": 7.20787858009838
+        "p10": 7.433824235905718,
+        "median": 7.433824235905718,
+        "mean": 7.433824235905718,
+        "p90": 7.433824235905718
       }
     },
     {
@@ -375,10 +375,10 @@
       "position": "MID",
       "team_short": "MUN",
       "xpts": {
-        "p10": 5.544167747787267,
-        "median": 5.544167747787267,
-        "mean": 5.544167747787267,
-        "p90": 5.544167747787267
+        "p10": 5.546966842267007,
+        "median": 5.546966842267007,
+        "mean": 5.546966842267007,
+        "p90": 5.546966842267007
       }
     },
     {
@@ -418,6 +418,18 @@
       }
     },
     {
+      "player_id": 464,
+      "web_name": "Virgil",
+      "position": "DEF",
+      "team_short": "LIV",
+      "xpts": {
+        "p10": 5.2728049238047126,
+        "median": 5.2728049238047126,
+        "mean": 5.2728049238047126,
+        "p90": 5.2728049238047126
+      }
+    },
+    {
       "player_id": 635,
       "web_name": "Anderson",
       "position": "MID",
@@ -427,18 +439,6 @@
         "median": 5.262830193790122,
         "mean": 5.262830193790122,
         "p90": 5.262830193790122
-      }
-    },
-    {
-      "player_id": 464,
-      "web_name": "Virgil",
-      "position": "DEF",
-      "team_short": "LIV",
-      "xpts": {
-        "p10": 5.190957767330779,
-        "median": 5.190957767330779,
-        "mean": 5.190957767330779,
-        "p90": 5.190957767330779
       }
     }
   ],
