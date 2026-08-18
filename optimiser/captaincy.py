@@ -55,6 +55,7 @@ calibration's own note recommends — and separately for captaincy, since a
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 
 import pandas as pd
@@ -109,7 +110,16 @@ def pick_captain(
             var_with_c = total_var_baseline - var_g + new_var
         else:
             var_with_c = total_var_baseline + var_by_id.get(pid, 0.0)
-        score = mean_c + mu * var_with_c
+        # Team-total STANDARD DEVIATION, not variance (2026-08-18). `mu` is
+        # calibrated against quantities in POINTS -- see
+        # optimiser/scoring.risk_adjusted_score, which multiplies it by an
+        # upper semi-deviation. Multiplying it by a variance here instead put
+        # the two on different scales by a factor of the spread itself, and at
+        # a negative `mu` the variance term swamped the mean outright: the
+        # risk-averse personas captained whoever had the least variance, which
+        # is whoever was worst, and produced captains like a 1.2-xPts fourth
+        # forward.
+        score = mean_c + mu * math.sqrt(max(0.0, var_with_c))
         if score > best_score:
             best_score, best_pid = score, pid
     return best_pid

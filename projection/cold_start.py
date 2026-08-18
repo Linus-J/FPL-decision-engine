@@ -892,6 +892,7 @@ def project_cold_start(
         )
 
         estimation_se = float("nan")
+        upside = float("nan")
         has_prior = r.appearances >= MIN_PRIOR_APPEARANCES
         if has_prior:
             mean_played = max(_MIN_XPTS, float(r.ppg_played)) + pen_mean
@@ -901,6 +902,17 @@ def project_cold_start(
             else:
                 var_played = 0.0
             var_played += pen_var
+            # §RISK: how big this player's GOOD weeks are, separately from how
+            # erratic he is. Upper semi-deviation of his own prior-season
+            # per-appearance scores -- sqrt(E[max(0, x - mean)^2]) -- which is
+            # in points and isolates upside from downside, unlike variance.
+            if r.id in own_appearances.groups and len(own_points) > 1:
+                m_played = float(own_points.mean())
+                upside_played = float(
+                    np.sqrt(np.mean(np.maximum(0.0, own_points - m_played) ** 2))
+                )
+            else:
+                upside_played = float(np.sqrt(max(0.0, var_played) / 2.0))
             p_appear = 1.0
             if has_p_appear and not pd.isna(r.p_appear):
                 p_appear = float(r.p_appear)
@@ -909,6 +921,9 @@ def project_cold_start(
             # it -- flooring the unconditional value instead would erase the
             # very distinction this change exists to make.
             xpts, xpts_var = unconditional_moments(p_appear, mean_played, var_played)
+            # Same per-appearance -> per-gameweek scaling the mean takes. A
+            # week he does not feature is not upside, so it simply scales down.
+            upside = p_appear * upside_played
             start_prob = float(r.starts_rate)
             source = "prior_season"
             # §19: how well we know this player's MEAN, not how spiky he is.
@@ -977,12 +992,16 @@ def project_cold_start(
             # Carried so the horizon expansion can split the fixture effect
             # between the attacking and clean-sheet channels (§ fixture model).
             "position": r.position,
+            # NaN for tiers with no per-appearance samples of their own; filled
+            # from the symmetric assumption below.
+            "upside": upside,
             # NaN for the pooled/synthetic tiers; filled in below once the
             # measured prior-season scale is known.
             "estimation_se": estimation_se if source == "prior_season" else float("nan"),
         })
     base_df = pd.DataFrame(rows)
     base_df = _fill_tier_estimation_se(base_df)
+    base_df = _fill_missing_upside(base_df)
     if horizon < 1 or season is None:
         return base_df
 
@@ -1030,6 +1049,7 @@ def project_cold_start(
             "start_probability": base["start_probability"],
             "proj_source": base["proj_source"],
             "position": base.get("position"),
+            "upside": base.get("upside", float("nan")) * mult,
             # SE is in the same units as xpts, so it scales with the fixture
             # multiplier exactly as the mean does. Dropping it here would have
             # silently disabled the per-player shrinkage for every horizon
@@ -1037,6 +1057,27 @@ def project_cold_start(
             "estimation_se": base.get("estimation_se", float("nan")) * mult,
         })
     return pd.DataFrame(horizon_rows)
+
+
+def _fill_missing_upside(df: pd.DataFrame) -> pd.DataFrame:
+    """Upside for players with no per-appearance samples of their own.
+
+    A pooled or synthetic estimate says nothing about whether THIS player
+    hauls, so assuming no special skew is the honest default: for a symmetric
+    distribution the upper semi-deviation is ``sd / sqrt(2)``. That keeps the
+    column in points on every row, which matters -- the objective adds it to
+    xpts directly, and mixing points with points-squared across players would
+    quietly wreck the comparison.
+    """
+    if df.empty or "upside" not in df.columns:
+        return df
+    out = df.copy()
+    missing = out["upside"].isna()
+    if missing.any():
+        out.loc[missing, "upside"] = (
+            np.sqrt(out.loc[missing, "xpts_var"].clip(lower=0.0)) / np.sqrt(2.0)
+        )
+    return out
 
 
 def _fill_tier_estimation_se(df: pd.DataFrame) -> pd.DataFrame:

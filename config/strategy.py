@@ -410,7 +410,25 @@ class OptimiserConfig:
     # docstrings as active. Reviving any of them starts with re-running this
     # calibration over the full GW6-38 window.
     mu_baseline: float = 0.0
-    mu_range: float = 0.08
+    # Widened 2026-08-18, together with the switch from variance to upside
+    # semi-deviation as the risk term (optimiser/scoring.risk_adjusted_score).
+    #
+    # Two things were wrong with 0.08. The units changed -- mu now multiplies a
+    # quantity in POINTS rather than points-squared -- and the old axis could
+    # not move a decision anyway: at risk_level=1.0 it bought 0.08 x 0.8 = 0.06
+    # points of preference between Haaland and Gabriel, against a 1.0-point gap
+    # in expected return. A persona sweep whose extremes produce near-identical
+    # squads cannot teach anything about risk, which is the whole reason the
+    # cohort exists.
+    #
+    # 1.25 is the level at which the most aggressive persona will actually
+    # trade a point of expected return for a point of upside -- i.e. genuinely
+    # buys the explosive player over the steady one. That is meant to be an
+    # EXTREME of the sweep, not a recommendation.
+    #
+    # The live engine is untouched: mu = mu_baseline + risk_level * mu_range,
+    # and risk_level defaults to 0, so mu stays exactly 0 whatever this is.
+    mu_range: float = 1.25
 
     # Optimiser's-curse shrinkage (2026-07-28 data-completeness audit,
     # superseding the narrower P3-6 transfer_variance_penalty): shrinks

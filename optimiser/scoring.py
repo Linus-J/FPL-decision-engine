@@ -78,11 +78,32 @@ def risk_adjusted_score(
     eo_pct: float,
     lam: float,
     mu: float,
+    upside: float | None = None,
 ) -> float:
     """Per-player-per-GW ILP objective coefficient, replacing raw xpts.
     Linear in the selection variable, so it drops into the existing
-    squad.py/transfers.py MILP formulations with no solver change."""
-    return xpts * differential_multiplier(eo_pct, lam) + mu * xpts_var
+    squad.py/transfers.py MILP formulations with no solver change.
+
+    ``upside`` (2026-08-18): the player's upper semi-deviation --
+    ``sqrt(E[max(0, x - mean)^2])`` over his own per-appearance scores -- in
+    POINTS. Used in place of ``xpts_var`` for the risk term whenever it is
+    available, because variance is the wrong quantity for a risk appetite and
+    measurably so.
+
+    Measured on the real 2025-26 season. Haaland returns 13+ points in 22.9% of
+    his appearances against Gabriel's 6.2%, and their upper semi-deviations are
+    3.63 and 2.83. But the modelled ``xpts_var`` runs the other way -- 36.8 for
+    Haaland, 50.5 for Gabriel -- because unconditional variance is dominated by
+    the level of the mean and by availability, not by how big the good weeks
+    are. A positive ``mu`` on ``xpts_var`` therefore rewarded the STEADIER
+    player, which is the opposite of what a risk-seeking persona is asking for.
+
+    Note the units. ``mu * upside`` is points x points; ``mu * xpts_var`` was
+    points x points-squared. The scale of ``mu`` differs accordingly, which is
+    why ``OptimiserConfig.mu_range`` moved with this change.
+    """
+    risk_term = xpts_var if upside is None else upside
+    return xpts * differential_multiplier(eo_pct, lam) + mu * risk_term
 
 
 def add_effective_score(
@@ -122,8 +143,14 @@ def add_effective_score(
     else:
         eo_pct = pd.Series(0.0, index=out.index)
 
+    upside = (
+        out["upside"] if "upside" in out.columns
+        else pd.Series([None] * len(out), index=out.index)
+    )
     out["effective_score"] = [
-        risk_adjusted_score(xpts, var, eo, lam, mu)
-        for xpts, var, eo in zip(out["xpts"], out["xpts_var"], eo_pct, strict=True)
+        risk_adjusted_score(xpts, var, eo, lam, mu, up)
+        for xpts, var, eo, up in zip(
+            out["xpts"], out["xpts_var"], eo_pct, upside, strict=True
+        )
     ]
     return out
