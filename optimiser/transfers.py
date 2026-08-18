@@ -239,7 +239,16 @@ def evaluate_transfers(
         for pid in pid_list:
             x = float(gw_proj.get(pid, 0.0))
             v = float(gw_var.get(pid, 0.0)) if gw_var is not None else 0.0
-            scores_pw[(pid, w)] = risk_adjusted_score(x, v, eo_by_pid[pid], lam, mu)
+            # Discounted by how far ahead the gameweek is (2026-08-18, matching
+            # optimiser.squad._decay_weights). Without it a transfer justified
+            # only by week three of the plan counted exactly as much as one
+            # paying off this week, on a projection with no bookmaker odds
+            # behind it. `hit_cost_points` and the switching cost are NOT
+            # decayed: those are paid in real points, now, whatever the plan
+            # later turns out to be worth.
+            scores_pw[(pid, w)] = (
+                cfg.gameweek_decay ** w
+            ) * risk_adjusted_score(x, v, eo_by_pid[pid], lam, mu)
 
     prob = pulp.LpProblem("mp_transfers", pulp.LpMaximize)
 
@@ -395,11 +404,46 @@ def evaluate_transfers(
     # -- optimise_squad already weights the bench (bench_value_weight) and this
     # is the same term, so an in-season transfer can no longer undo what the
     # squad build deliberately paid for.
+    # Slot-weighted, matching optimiser.squad._bench_objective exactly
+    # (2026-08-18). The two must agree: the squad build now pays real money
+    # for a first substitute who plays, and if this ILP still valued every
+    # bench player at a flat 0.15 it would sell him again the following week
+    # -- undoing the purchase and charging a transfer for the privilege.
+    # Keeping them in sync is the whole point of this term existing.
+    pos_of = dict(zip(pid_list, positions, strict=True))
+    outfield_pids = [pid for pid in pid_list if pos_of[pid] != "GKP"]
+    keeper_pids = [pid for pid in pid_list if pos_of[pid] == "GKP"]
+    bench_slot_w = [w * cfg.bench_value_weight for w in cfg.bench_slot_weights]
+    bench_gk_w = cfg.bench_gk_weight * cfg.bench_value_weight
+
+    bslot = {
+        (pid, w, k): pulp.LpVariable(f"bslot_{pid}_{w}_{k}", cat="Binary")
+        for pid in outfield_pids
+        for w in range(H)
+        for k in range(len(bench_slot_w))
+    }
+    for w in range(H):
+        for pid in outfield_pids:
+            prob += (
+                pulp.lpSum(bslot[(pid, w, k)] for k in range(len(bench_slot_w)))
+                == squad[(pid, w)] - starting[(pid, w)]
+            )
+        for k in range(len(bench_slot_w)):
+            prob += pulp.lpSum(bslot[(pid, w, k)] for pid in outfield_pids) == 1
+
     prob += pulp.lpSum(
         scores_pw[(pid, w)] * starting[(pid, w)]
         + scores_pw[(pid, w)] * captain[(pid, w)]
-        + cfg.bench_value_weight * scores_pw[(pid, w)] * (squad[(pid, w)] - starting[(pid, w)])
         for pid in pid_list
+        for w in range(H)
+    ) + pulp.lpSum(
+        bench_slot_w[k] * scores_pw[(pid, w)] * bslot[(pid, w, k)]
+        for pid in outfield_pids
+        for w in range(H)
+        for k in range(len(bench_slot_w))
+    ) + pulp.lpSum(
+        bench_gk_w * scores_pw[(pid, w)] * (squad[(pid, w)] - starting[(pid, w)])
+        for pid in keeper_pids
         for w in range(H)
     ) + trules.ft_terminal_value * ft[H] - pulp.lpSum(
         # P1.4: both of these used to sit INSIDE the per-player loop above, so

@@ -337,6 +337,29 @@ class OptimiserConfig:
     # Number of GWs to project ahead for transfer decisions
     transfer_planning_horizon_gws: int = 3
 
+    # Per-gameweek discount applied to the OBJECTIVE over a multi-gameweek
+    # horizon (2026-08-18). The i-th gameweek ahead is weighted `decay ** i`,
+    # so at 0.85 a five-gameweek horizon runs 1.00 / 0.85 / 0.72 / 0.61 / 0.52.
+    #
+    # Summing a horizon with equal weight — what this engine did until today —
+    # claims a projection five weeks out is worth as much as one for the match
+    # about to kick off. On the live GW1 frame that was measurably false: 22%
+    # of the squad's projected points came from gameweeks bookmakers had
+    # priced, 78% from the strength model with 17 of 20 teams still on
+    # prior-season fallback.
+    #
+    # Every serious FPL optimiser discounts. Sertalp Çay's
+    # `solve_multi_period_fpl` defaults to `decay_base = 0.84`; FPLReview's
+    # solvers recommend 0.80-0.95, lower for short-term aggression and higher
+    # for long-term planning. 0.85 sits in the middle of both and is the
+    # field's rough consensus.
+    #
+    # NOT calibrated on this project's own backtest — inherited from the
+    # field, same convention as the other heuristic constants here, and worth
+    # sweeping over the walk-forward gate once real 26/27 gameweeks exist.
+    # Set to 1.0 to restore the old equal-weight behaviour exactly.
+    gameweek_decay: float = 0.85
+
     # GWs to look ahead when building the GW1/pre-season initial squad
     # (fixture-difficulty-weighted, not just single-GW xPts) -- a distinct
     # knob from transfer_planning_horizon_gws since cold start is a one-shot
@@ -458,7 +481,48 @@ class OptimiserConfig:
     # XI for budget on equal terms. Untuned starting value pending
     # backtesting, same convention as this session's other heuristic
     # constants.
-    bench_value_weight: float = 0.15
+    # 2026-08-18: this became a MULTIPLIER on `bench_slot_weights` below
+    # rather than a flat per-player weight of its own. 1.0 keeps the derived
+    # slot weights as they are, 0.0 makes the solver ignore the bench
+    # entirely and spend everything on the XI. Same convention as FPLReview's
+    # solver, where the bench weight scales a probability-derived default
+    # rather than replacing it.
+    #
+    # Kept under its old name because it is a persisted column on the
+    # simulation manager table and one of the persona sweep axes; a rename
+    # would silently reinterpret stored rows. Historic simulation rows hold
+    # values on the OLD scale (0.15 meant "15% of every bench player"), so
+    # they are not comparable with runs after this date.
+    bench_value_weight: float = 1.0
+
+    # Per-SLOT bench weights, replacing the flat one above (2026-08-18).
+    #
+    # A bench is an ordered queue, not a set. FPL's automatic substitutions
+    # promote the first eligible bench player when a starter does not appear,
+    # so bench slot 1 is worth whatever P(at least one starter blanks) is, and
+    # slot 3 is worth almost nothing. Weighting all four equally at 0.15 is
+    # wrong in both directions at once: it underpays the slot that actually
+    # gets used and overpays the two that do not.
+    #
+    # Derived from this engine's own start probabilities on the live GW1 XI
+    # (mean P(start) 0.93): P(>=1 outfield starter misses) = 0.53,
+    # P(>=2) = 0.15, P(>=3) = 0.03. The Alan Turing Institute's AIrsenal
+    # reaches the same shape with hand-tuned constants
+    # (DEFAULT_SUB_WEIGHTS = {"GK": 0.03, "Outfield": (0.65, 0.3, 0.1)}),
+    # which is independent corroboration of the ordering and rough magnitude.
+    #
+    # These are static, so they do not tighten as the squad becomes more
+    # nailed-on. Deriving them per-solve from the chosen XI's minutes is what
+    # FPLReview's solver does and is the better answer; it is circular (the
+    # weights depend on the XI being chosen) and wants a fixed-point pass,
+    # which is not worth doing three days before a deadline.
+    bench_slot_weights: tuple[float, float, float] = (0.53, 0.15, 0.03)
+
+    # The reserve keeper plays only if the first-choice keeper does not, and
+    # unlike outfield slots there is no queue to inherit from: one keeper,
+    # one chance. AIrsenal uses 0.03; this engine's own GK start probability
+    # implies much the same.
+    bench_gk_weight: float = 0.03
 
 
 # ---------------------------------------------------------------------------

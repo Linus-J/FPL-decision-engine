@@ -573,16 +573,47 @@ def load_fixture_lambdas(
     } if not odds.empty else {}
 
     from projection.assemble import load_team_strength_rel
+    from projection.dixon_coles import fit_from_database, has_published_strength, team_codes
     from projection.team_goals import team_goals_from_odds, team_goals_from_strength
 
     strength = load_team_strength_rel(season)
+
+    # Which fallback, for the fixtures bookmakers have not priced. Measured
+    # walk-forward against odds-implied lambda over four held-out seasons:
+    # the published-strength power law wins when it has THIS season's ratings
+    # (MAE 0.249 vs 0.262), and loses clearly when it is running on last
+    # season's (0.319 vs 0.262). FPL publishes zeros until a season is
+    # underway, so at GW1 it is always the latter — which is the case carrying
+    # 78% of the initial squad's projected points.
+    #
+    # So: keep the published model once real ratings exist, and use results-
+    # fitted team strength before then. Fitting is skipped entirely in the
+    # case where it would not be used.
+    dc_fit = None
+    codes: dict[int, int] = {}
+    if not has_published_strength(season):
+        dc_fit = fit_from_database()
+        if dc_fit is not None:
+            codes = team_codes(season)
+            logger.info(
+                "Unpriced fixtures: Dixon-Coles fitted on %d matches (%d teams) — "
+                "this season's strength ratings are not published yet",
+                dc_fit.n_matches, len(dc_fit.teams_fitted),
+            )
+
     out: dict[tuple[int, int], tuple[float, float]] = {}
     n_priced = 0
+    n_dc = 0
     for f in fixtures.itertuples():
         if int(f.id) in priced:
             h, d, a, o = priced[int(f.id)]
             lam_h, lam_a = team_goals_from_odds(float(h), float(d), float(a), float(o))
             n_priced += 1
+        elif dc_fit is not None:
+            lam_h, lam_a = dc_fit.lambdas(
+                codes.get(int(f.team_h_id)), codes.get(int(f.team_a_id))
+            )
+            n_dc += 1
         else:
             sh = strength.get(int(f.team_h_id), {})
             sa = strength.get(int(f.team_a_id), {})
@@ -595,9 +626,9 @@ def load_fixture_lambdas(
         out[(int(f.team_h_id), int(f.gameweek))] = (lam_h, lam_a)
         out[(int(f.team_a_id), int(f.gameweek))] = (lam_a, lam_h)
     logger.info(
-        "Horizon fixture lambdas: %d of %d fixtures priced by bookmakers, "
-        "%d from the strength model",
-        n_priced, len(fixtures), len(fixtures) - n_priced,
+        "Horizon fixture lambdas: %d of %d priced by bookmakers, %d from Dixon-Coles, "
+        "%d from published strength",
+        n_priced, len(fixtures), n_dc, len(fixtures) - n_priced - n_dc,
     )
     return out
 

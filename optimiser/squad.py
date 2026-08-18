@@ -45,13 +45,40 @@ class SquadSolution:
     hits_taken: int
 
 
-def _multi_gw_xpts(projections: pd.DataFrame, horizon: int) -> pd.Series:
+def _decay_weights(gws: list, decay: float) -> dict:
+    """``decay ** i`` for the i-th gameweek in the horizon, nearest first.
+
+    A five-gameweek horizon summed with EQUAL weight treats a projection five
+    weeks out as being worth exactly as much as the one for the match about to
+    kick off. It is not: bookmakers price roughly one round ahead, so on the
+    live GW1 frame 22% of a squad's projected points came from gameweeks with
+    real odds and 78% from the strength model with most teams still on
+    prior-season fallback. Equal weighting puts full confidence in the least
+    reliable numbers in the system.
+
+    Every serious FPL optimiser discounts. Sertalp Çay's
+    ``solve_multi_period_fpl`` defaults to ``decay_base = 0.84`` and
+    FPLReview's solvers recommend 0.80-0.95; 0.85 sits in the middle of both.
+
+    This is a weighting on the OBJECTIVE only. Reported ``total_xpts`` stays
+    the true undiscounted sum — the same separation the risk-adjusted score
+    already keeps between ``effective_score`` and ``xpts_total``, and for the
+    same reason: a decision aid must not quietly restate the thing it is
+    predicting.
+    """
+    return {gw: decay ** i for i, gw in enumerate(gws)}
+
+
+def _multi_gw_xpts(projections: pd.DataFrame, horizon: int, decay: float = 1.0) -> pd.Series:
     gws = sorted(projections["gameweek"].unique())[:horizon]
     subset = projections[projections["gameweek"].isin(gws)]
-    return subset.groupby("player_id")["xpts"].sum()
+    if decay == 1.0:
+        return subset.groupby("player_id")["xpts"].sum()
+    weights = subset["gameweek"].map(_decay_weights(gws, decay))
+    return (subset["xpts"] * weights).groupby(subset["player_id"]).sum()
 
 
-def _multi_gw_var(projections: pd.DataFrame, horizon: int) -> pd.Series:
+def _multi_gw_var(projections: pd.DataFrame, horizon: int, decay: float = 1.0) -> pd.Series:
     """P3-3: per-player summed xpts_var over the horizon (own-variance only —
     see optimiser/scoring.py for why teammate covariance isn't here). Empty
     Series (not an error) if the caller's projections predate P10's
@@ -60,10 +87,15 @@ def _multi_gw_var(projections: pd.DataFrame, horizon: int) -> pd.Series:
         return pd.Series(dtype=float)
     gws = sorted(projections["gameweek"].unique())[:horizon]
     subset = projections[projections["gameweek"].isin(gws)]
-    return subset.groupby("player_id")["xpts_var"].sum()
+    if decay == 1.0:
+        return subset.groupby("player_id")["xpts_var"].sum()
+    weights = subset["gameweek"].map(_decay_weights(gws, decay))
+    return (subset["xpts_var"] * weights).groupby(subset["player_id"]).sum()
 
 
-def _multi_gw_semidev(projections: pd.DataFrame, horizon: int, col: str) -> pd.Series:
+def _multi_gw_semidev(
+    projections: pd.DataFrame, horizon: int, col: str, decay: float = 1.0
+) -> pd.Series:
     """Per-player summed upper/lower semi-deviation over the horizon.
 
     Summed, like ``xpts``, rather than combined in quadrature: these feed a
@@ -75,7 +107,14 @@ def _multi_gw_semidev(projections: pd.DataFrame, horizon: int, col: str) -> pd.S
         return pd.Series(dtype=float)
     gws = sorted(projections["gameweek"].unique())[:horizon]
     subset = projections[projections["gameweek"].isin(gws)]
-    return subset.groupby("player_id")[col].sum()
+    if decay == 1.0:
+        return subset.groupby("player_id")[col].sum()
+    # Decayed LINEARLY, like the points they sit beside in the objective, not
+    # quadratically as a scaled variance would be. These are semi-deviations
+    # in points; the whole reason they replaced a variance term is that the
+    # objective adds them to a points total directly.
+    weights = subset["gameweek"].map(_decay_weights(gws, decay))
+    return (subset[col] * weights).groupby(subset["player_id"]).sum()
 
 
 def _semidev_by_id(df, mu: float) -> dict | None:
@@ -86,6 +125,114 @@ def _semidev_by_id(df, mu: float) -> dict | None:
     if col not in df.columns or df[col].isna().all():
         return None
     return dict(zip(df["id"], df[col].fillna(0.0), strict=True))
+
+
+def _bench_objective(
+    prob: pulp.LpProblem,
+    selected: list,
+    starting: list,
+    scores: list[float],
+    positions: list[str],
+    cfg: OptimiserConfig,
+    tag: str,
+):
+    """Objective terms for the bench, weighted by SLOT rather than uniformly.
+
+    A bench is an ordered queue. FPL's automatic substitutions promote the
+    first eligible bench player when a starter does not appear, so the value
+    of slot 1 is P(at least one starter blanks) -- 0.53 on the live GW1 XI --
+    while slot 3 needs three simultaneous absences and is worth 0.03. A flat
+    weight underpays the slot that gets used and overpays the two that do not,
+    which is what buys four £4.0m non-players instead of one real substitute.
+
+    Adds the slot-assignment constraints to ``prob`` and returns the terms to
+    add to the objective. Slot weights are strictly decreasing, so the solver
+    puts its best bench player in slot 1 without needing an ordering
+    constraint -- it is a maximisation and any other assignment is dominated.
+    """
+    weights = [w * cfg.bench_value_weight for w in cfg.bench_slot_weights]
+    gk_weight = cfg.bench_gk_weight * cfg.bench_value_weight
+    n = len(scores)
+    outfield = [i for i in range(n) if positions[i] != "GKP"]
+    keepers = [i for i in range(n) if positions[i] == "GKP"]
+
+    slot = {
+        (i, k): pulp.LpVariable(f"bench_{tag}_{i}_{k}", cat="Binary")
+        for i in outfield
+        for k in range(len(weights))
+    }
+    for i in outfield:
+        prob += pulp.lpSum(slot[i, k] for k in range(len(weights))) == selected[i] - starting[i]
+    for k in range(len(weights)):
+        prob += pulp.lpSum(slot[i, k] for i in outfield) == 1
+
+    terms = pulp.lpSum(
+        weights[k] * scores[i] * slot[i, k] for i in outfield for k in range(len(weights))
+    )
+    # The reserve keeper has no queue to inherit from: he plays only if the
+    # first-choice keeper does not.
+    terms += pulp.lpSum(
+        gk_weight * scores[i] * (selected[i] - starting[i]) for i in keepers
+    )
+    return terms
+
+
+def _add_no_good_cuts(
+    prob: pulp.LpProblem,
+    selected: list,
+    idx: dict,
+    forbidden_squads: list[list[int]] | None,
+) -> None:
+    """Forbid each given squad exactly, without forbidding any of its members.
+
+    ``sum(selected[i] for i in S) <= len(S) - 1`` rules out picking all fifteen
+    of S again while leaving every fourteen-man subset legal. Re-solving with
+    one of these added yields the next-best squad, which is how a solution pool
+    is built on a solver with no native pool support (CBC); Gurobi and CPLEX
+    expose the same idea directly as PoolSearchMode / populate.
+
+    A squad whose members are not all still in the candidate pool is skipped
+    rather than cut down: it is already unreachable, and a cut written over the
+    survivors would forbid legal squads that merely resemble it.
+    """
+    for squad_ids in forbidden_squads or []:
+        positions_in_pool = [idx[pid] for pid in squad_ids if pid in idx]
+        if len(positions_in_pool) != len(squad_ids):
+            continue
+        prob += pulp.lpSum(selected[i] for i in positions_in_pool) <= len(squad_ids) - 1
+
+
+def generate_squad_pool(
+    projections: pd.DataFrame,
+    players: pd.DataFrame,
+    n: int = 10,
+    **kwargs,
+) -> list[SquadSolution]:
+    """The ``n`` best distinct squads, best first.
+
+    Exists because a single answer hides how much of itself is real. A squad
+    reported alone cannot say whether its 12th pick beat the alternative by
+    four points or by two hundredths, and the difference is the difference
+    between a conviction and a coin toss. Reading which players survive across
+    the whole pool is a far better confidence signal than any single solve:
+    a player in all ten squads is one the model genuinely wants, and one in
+    three of ten is the model shrugging.
+
+    Stops early and returns what it has if the problem becomes infeasible,
+    which it will once the cuts exhaust the legal squads in a small pool.
+    """
+    pool: list[SquadSolution] = []
+    forbidden: list[list[int]] = list(kwargs.pop("forbidden_squads", None) or [])
+    for _ in range(max(0, n)):
+        try:
+            solution = optimise_squad(
+                projections, players, forbidden_squads=forbidden, **kwargs
+            )
+        except RuntimeError:
+            break
+        pool.append(solution)
+        forbidden.append(sorted(int(pid) for pid in solution.squad["id"]))
+    return pool
 
 
 def optimise_squad(
@@ -101,6 +248,7 @@ def optimise_squad(
     ownership: pd.DataFrame | None = None,
     season: str | None = None,
     config: OptimiserConfig | None = None,
+    forbidden_squads: list[list[int]] | None = None,
 ) -> SquadSolution:
     """``ownership`` (P3-3, optional): a ``(player_id, top10k_selected_pct)``
     frame (P3-2) feeding the risk-adjusted objective's differential term.
@@ -128,8 +276,16 @@ def optimise_squad(
     horizon_gws = sorted(projections["gameweek"].unique())[:horizon]
     target_gw = horizon_gws[0] if horizon_gws else None
 
+    # Two aggregates over the same horizon (2026-08-18): the TRUE sum, which
+    # is what gets reported, and the decayed sum, which is what gets optimised.
+    # See _decay_weights — a projection five gameweeks out is not worth as much
+    # as one for the match about to kick off, and every serious FPL optimiser
+    # discounts it. Reporting the decayed figure as "expected points" would be
+    # a lie about the quantity being predicted.
+    decay = cfg.gameweek_decay
     xpts_by_player = _multi_gw_xpts(projections, horizon)
-    var_by_player = _multi_gw_var(projections, horizon)
+    xpts_for_objective = _multi_gw_xpts(projections, horizon, decay)
+    var_by_player = _multi_gw_var(projections, horizon, decay)
 
     df = players.copy()
     df = df[df["status"].isin(["a", "d"])]
@@ -138,6 +294,7 @@ def optimise_squad(
     df = df[~df["id"].isin(force_exclude_ids)]
 
     df["xpts_total"] = df["id"].map(xpts_by_player).fillna(0.0)
+    df["xpts_objective"] = df["id"].map(xpts_for_objective).fillna(0.0)
     df["var_total"] = df["id"].map(var_by_player).fillna(0.0)
     # One-sided risk over the same horizon (2026-08-18). Without these the
     # objective falls back to variance, which is symmetric and so cannot tell a
@@ -148,7 +305,7 @@ def optimise_squad(
         # zero risk term is both neutral and never selected on. NaN here would
         # propagate straight into the objective and make the ILP nonsense.
         df[_col] = df["id"].map(
-            _multi_gw_semidev(projections, horizon, _col)
+            _multi_gw_semidev(projections, horizon, _col, decay)
         ).astype(float).fillna(0.0)
 
     lam, mu = lambda_mu_for_risk_level(
@@ -162,7 +319,7 @@ def optimise_squad(
     df["effective_score"] = [
         risk_adjusted_score(x, v, e, lam, mu, up, down)
         for x, v, e, up, down in zip(
-            df["xpts_total"], df["var_total"], df["eo_pct"],
+            df["xpts_objective"], df["var_total"], df["eo_pct"],
             df["upside"], df["downside"], strict=True,
         )
     ]
@@ -198,10 +355,8 @@ def optimise_squad(
     # XI — without letting bench quality compete with the starting XI for
     # budget on equal terms.
     prob += pulp.lpSum(
-        scores[i] * (starting[i] + captain[i])
-        + cfg.bench_value_weight * scores[i] * (selected[i] - starting[i])
-        for i in range(n)
-    )
+        scores[i] * (starting[i] + captain[i]) for i in range(n)
+    ) + _bench_objective(prob, selected, starting, scores, positions, cfg, "a")
 
     prob += pulp.lpSum(selected) == SQUAD.squad_size
     prob += pulp.lpSum(costs[i] * selected[i] for i in range(n)) <= budget
@@ -230,6 +385,8 @@ def optimise_squad(
         if pid in idx:
             prob += selected[idx[pid]] == 1
 
+    _add_no_good_cuts(prob, selected, idx, forbidden_squads)
+
     if current_squad_ids and max_transfers is not None:
         new_player = [pulp.LpVariable(f"new_{i}", cat="Binary") for i in range(n)]
         for i, pid in enumerate(player_ids):
@@ -248,10 +405,8 @@ def optimise_squad(
         captain2 = [pulp.LpVariable(f"cap2_{i}", cat="Binary") for i in range(n)]
         vice2 = [pulp.LpVariable(f"vic2_{i}", cat="Binary") for i in range(n)]
         prob2 += pulp.lpSum(
-            scores[i] * (starting2[i] + captain2[i])
-            + cfg.bench_value_weight * scores[i] * (selected2[i] - starting2[i])
-            for i in range(n)
-        )
+            scores[i] * (starting2[i] + captain2[i]) for i in range(n)
+        ) + _bench_objective(prob2, selected2, starting2, scores, positions, cfg, "b")
         prob2 += pulp.lpSum(selected2) == SQUAD.squad_size
         prob2 += pulp.lpSum(costs[i] * selected2[i] for i in range(n)) <= budget
         prob2 += pulp.lpSum(starting2) == 11
@@ -273,6 +428,7 @@ def optimise_squad(
         for pid in force_include_ids:
             if pid in idx:
                 prob2 += selected2[idx[pid]] == 1
+        _add_no_good_cuts(prob2, selected2, idx, forbidden_squads)
         prob2.solve(pulp.PULP_CBC_CMD(msg=False))
         if pulp.LpStatus[prob2.status] == "Optimal":
             logger.warning(
@@ -296,7 +452,11 @@ def optimise_squad(
     vice_id = next(player_ids[i] for i in range(n) if pulp.value(vice[i]) > 0.5)
 
     if season is not None and target_gw is not None:
-        xpts_by_id = dict(zip(df["id"], df["xpts_total"], strict=True))
+        # The decayed figure, matching the ILP's own captain variable, which
+        # ranks on `effective_score`. If these two disagreed the linear argmax
+        # inside the solve and the scenario-based pick after it would be
+        # answering different questions.
+        xpts_by_id = dict(zip(df["id"], df["xpts_objective"], strict=True))
         var_by_id = dict(zip(df["id"], df["var_total"], strict=True))
         captain_id = scenario_based_captain(
             season, target_gw, list(starting_ids), xpts_by_id, var_by_id, mu,
