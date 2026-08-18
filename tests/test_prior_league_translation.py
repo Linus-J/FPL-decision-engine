@@ -21,11 +21,32 @@ def test_prior_league_rules_covers_all_five_leagues():
         assert PRIOR_LEAGUE.translation_variance(league) > 0
 
 
-def test_championship_factor_discounted_below_top5():
-    # the plan's own literature-style prior: Championship output doesn't
-    # translate 1:1 to the PL, top-5 leagues roughly do.
-    assert PRIOR_LEAGUE.translation_factor("ENG-Championship") < 1.0
-    assert PRIOR_LEAGUE.translation_factor("ESP-La Liga") == 1.0
+def test_every_league_is_discounted_and_the_championship_most():
+    """Changed 2026-08-18. The top-5 factors used to be exactly 1.0 -- a claim
+    that a Ligue 1 goal is worth precisely a Premier League goal. They now
+    carry a modest discount ordered by a transfer-based league-strength study
+    (La Liga strongest, Bundesliga weakest of the five), with the Championship
+    still far below any of them.
+
+    The exact values are a prior, not a measurement -- a direct calibration was
+    rejected for survivorship bias -- so this locks the ORDERING and the fact
+    that no league translates one-for-one, not the numbers."""
+    top5 = [
+        "ESP-La Liga", "ITA-Serie A", "GER-Bundesliga", "FRA-Ligue 1",
+    ]
+    for league in top5:
+        factor = PRIOR_LEAGUE.translation_factor(league)
+        assert 0.5 < factor < 1.0, f"{league} should be discounted but not crushed"
+
+    championship = PRIOR_LEAGUE.translation_factor("ENG-Championship")
+    assert championship < min(PRIOR_LEAGUE.translation_factor(x) for x in top5)
+    # La Liga is the strongest of the five, Bundesliga the weakest.
+    assert PRIOR_LEAGUE.translation_factor("ESP-La Liga") == max(
+        PRIOR_LEAGUE.translation_factor(x) for x in top5
+    )
+    assert PRIOR_LEAGUE.translation_factor("GER-Bundesliga") == min(
+        PRIOR_LEAGUE.translation_factor(x) for x in top5
+    )
 
 
 def test_prior_league_rules_covers_every_registered_league():

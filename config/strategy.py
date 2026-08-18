@@ -480,11 +480,32 @@ class PriorLeagueRules:
     scripts/calibrate_prior_league_factors.py's real output once the
     historical hold-out has actually been scraped (needs a browser)."""
 
+    # Top-5 factors were 1.0 -- i.e. a claim that a Ligue 1 goal is worth
+    # exactly a Premier League goal. Almost nobody believes that, and the
+    # direction of the error is known: it over-projects foreign signings, who
+    # are precisely the cold-start players entering the GW1 squad.
+    #
+    # Revised 2026-08-18 from a transfer-based league-strength study (Elhabr,
+    # regressing the change in players' z-scored VAEP/90 as they move between
+    # leagues). Its coefficients, rescaled so the Premier League is 1.00:
+    #
+    #     La Liga 0.89   Ligue 1 0.81   Serie A 0.76   Bundesliga 0.67
+    #
+    # Deliberately NOT used raw. That study measures z-scored VAEP, a
+    # whole-game action-value metric, while this factor multiplies npxG90/xA90
+    # -- attacking output. Applying its numbers literally would claim a
+    # precision the metric mismatch does not support, so they are compressed
+    # toward 1.0: the ordering is trusted, the magnitude is halved.
+    #
+    # Still a prior, not a measurement. A direct calibration was attempted and
+    # rejected for survivorship bias (it returned a La Liga factor of 2.11x,
+    # because only successful imports are observed). The honest position is
+    # that some discount is much more likely right than none.
     translation_factor_championship: float = 0.65
-    translation_factor_la_liga: float = 1.0
-    translation_factor_serie_a: float = 1.0
-    translation_factor_bundesliga: float = 1.0
-    translation_factor_ligue_1: float = 1.0
+    translation_factor_la_liga: float = 0.95
+    translation_factor_serie_a: float = 0.88
+    translation_factor_bundesliga: float = 0.84
+    translation_factor_ligue_1: float = 0.90
 
     # Deliberately unremarkable variance guess (mirrors cold_start.py's own
     # _FALLBACK_VAR reasoning) until a real hold-out replaces it.

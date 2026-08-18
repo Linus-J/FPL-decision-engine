@@ -6,7 +6,7 @@ up-to-date DefCon/bonus/ownership data, not whatever was last scraped.
 
 FBref -> WhoScored -> set-pieces -> ownership ->
 backfill_decision_outcomes.py -> run_agent.py -> data_quality_gate.py ->
-run_simulations.py.
+export_site_data.py -> preflight.py -> run_simulations.py.
 
 The outcome backfill scores LAST gameweek's decisions (for the real bot and
 all 100 personas) before this gameweek's are made, so it always runs against
@@ -159,6 +159,20 @@ def main() -> None:
     _run_or_warn(
         "scripts/data_quality_gate.py",
         [sys.executable, "scripts/data_quality_gate.py"],
+    )
+
+    # 2026-08-18: regenerate the site export BEFORE preflight, because
+    # preflight asserts the published site matches decision_log -- and nothing
+    # in this pipeline produced it. So every legitimate re-decision left that
+    # check failing until someone remembered to run the export by hand, which
+    # trains you to ignore a failing preflight. Either the pipeline owns the
+    # artefact or the check should not exist; it owns it.
+    #
+    # --no-push keeps the weekly run from touching a remote on its own; the
+    # commit is local and the checklist covers publishing.
+    _run_or_warn(
+        "scripts/export_site_data.py",
+        [sys.executable, "scripts/export_site_data.py", "--no-push"],
     )
 
     # P4 (2026-08-17): the decision SURFACE, after the gate has checked the
