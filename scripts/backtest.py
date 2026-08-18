@@ -178,6 +178,13 @@ def _build_gw_projections(
     if history.empty:
         return pd.DataFrame()
 
+    # `strength_rel` (§2) is deliberately NOT passed here. It only feeds
+    # fixtures the bookmakers never priced, and the backtest runs over
+    # completed seasons whose `historical_fixture_odds` coverage is 380/380 —
+    # so the strength path cannot fire, and passing it would change nothing
+    # except to make a historical run depend on strengths published later.
+    # The live gap it exists to close (odds thin out past the next week or two)
+    # has no analogue in a finished season.
     proj = assemble.assemble_gw_projections(
         history, all_stats, minutes_model, target_gw, horizon,
         match_odds, defcon_events, defcon_field_shares,

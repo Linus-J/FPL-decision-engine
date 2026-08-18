@@ -5,9 +5,12 @@ from __future__ import annotations
 import pytest
 
 from projection.team_goals import (
+    NEUTRAL_LAMBDA_AWAY,
+    NEUTRAL_LAMBDA_HOME,
     clean_sheet_prob,
     outcome_probs,
     team_goals_from_odds,
+    team_goals_from_strength,
 )
 
 
@@ -41,5 +44,56 @@ def test_clean_sheet_prob_monotonic():
 
 
 def test_degenerate_odds_fall_back():
-    assert team_goals_from_odds(0.0, 0.0, 0.0) == (1.35, 1.15)
-    assert team_goals_from_odds(0.5, 0.5, 0.0) == (1.35, 1.15)  # no away mass
+    neutral = (NEUTRAL_LAMBDA_HOME, NEUTRAL_LAMBDA_AWAY)
+    assert team_goals_from_odds(0.0, 0.0, 0.0) == neutral
+    assert team_goals_from_odds(0.5, 0.5, 0.0) == neutral  # no away mass
+
+
+# --- strength-based lambda (engine review §2) --------------------------------
+
+def test_neutral_teams_give_the_league_average_fixture():
+    """Both sides exactly average -> the fitted bases, so the strength path and
+    the no-information path agree at the centre instead of disagreeing."""
+    lam_h, lam_a = team_goals_from_strength(1.0, 1.0, 1.0, 1.0)
+    assert lam_h == pytest.approx(NEUTRAL_LAMBDA_HOME)
+    assert lam_a == pytest.approx(NEUTRAL_LAMBDA_AWAY)
+
+
+def test_strong_attack_raises_and_strong_defence_suppresses():
+    """FPL's defence scale runs the opposite way to the goal rate: a HIGHER
+    strength_defence means a BETTER defence, so it must reduce the opponent's
+    lambda. Getting that sign wrong would invert every unpriced fixture."""
+    base_h, base_a = team_goals_from_strength(1.0, 1.0, 1.0, 1.0)
+
+    strong_home_attack, _ = team_goals_from_strength(1.3, 1.0, 1.0, 1.0)
+    assert strong_home_attack > base_h
+
+    weak_away_defence, _ = team_goals_from_strength(1.0, 1.0, 1.0, 0.8)
+    assert weak_away_defence > base_h
+
+    strong_away_defence, _ = team_goals_from_strength(1.0, 1.0, 1.0, 1.3)
+    assert strong_away_defence < base_h
+
+    _, away_vs_strong_home_defence = team_goals_from_strength(1.0, 1.3, 1.0, 1.0)
+    assert away_vs_strong_home_defence < base_a
+
+
+def test_missing_strengths_degrade_one_term_at_a_time():
+    """A promoted side with no prior top-flight rating must not drag the whole
+    fixture to neutral -- the half we DO know still differentiates it."""
+    known_only = team_goals_from_strength(1.4, 1.4, None, None)
+    assert known_only[0] == pytest.approx(
+        team_goals_from_strength(1.4, 1.4, 1.0, 1.0)[0]
+    )
+    # A fully unknown fixture is exactly the league average.
+    assert team_goals_from_strength(None, None, None, None) == pytest.approx(
+        (NEUTRAL_LAMBDA_HOME, NEUTRAL_LAMBDA_AWAY)
+    )
+
+
+def test_strength_lambdas_stay_inside_the_solver_bounds():
+    """Extreme ratios are clipped to the same range the odds solver uses, so a
+    freak strength ratio cannot produce a nonsensical Poisson rate."""
+    lam_h, lam_a = team_goals_from_strength(5.0, 0.1, 5.0, 0.1)
+    assert 0.05 <= lam_h <= 6.0
+    assert 0.05 <= lam_a <= 6.0

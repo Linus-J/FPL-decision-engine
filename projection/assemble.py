@@ -40,7 +40,12 @@ from projection import clean_sheets, defcon, goals, saves
 from projection.assists import ASSIST_FRACTION, expected_assist_points
 from projection.covariance import sample_team_goals, split_multinomial
 from projection.minutes_model import predict_minutes_bands
-from projection.team_goals import team_goals_from_odds
+from projection.team_goals import (
+    NEUTRAL_LAMBDA_AWAY,
+    NEUTRAL_LAMBDA_HOME,
+    team_goals_from_odds,
+    team_goals_from_strength,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +295,87 @@ def load_match_odds(season: str) -> pd.DataFrame:
         db.close()
 
 
+# Below this a published strength is FPL's pre-season placeholder, not a real
+# rating. Same convention and same floor as projection/features.py.
+_PLAUSIBLE_STRENGTH_FLOOR = 100
+
+
+def load_team_strength_rel(season: str) -> dict[int, dict[str, float]]:
+    """team_id -> attack/defence strengths RELATIVE to the league average, for
+    ``team_goals_from_strength`` (2026-08-18, engine review §2).
+
+    Prefers the current season's published ratings and falls back to the prior
+    season's, matched on the cross-season-stable team ``code``. That fallback
+    is not an edge case: FPL publishes attack/defence as 0 until a season is
+    underway, so at GW1 — exactly when the planning horizon reaches furthest
+    past the last priced fixture — the current season has nothing usable and
+    every team resolves through it.
+
+    League averages are taken over whatever set is actually resolved, so the
+    ratios are relative within a consistent population rather than to a
+    hard-coded scale.
+
+    Returns an empty dict when neither season has real ratings; the caller then
+    uses the neutral league-average fixture.
+    """
+    # Imported lazily: cold_start already reaches back into this module, and a
+    # top-level import here would close the loop.
+    from projection.cold_start import prior_season_of
+
+    db = get_session()
+    try:
+        rows = pd.read_sql(
+            text("""
+                SELECT season, team_id, code,
+                       strength_attack_home, strength_attack_away,
+                       strength_defence_home, strength_defence_away
+                FROM team_season_strength
+                WHERE season IN (:season, :prior)
+            """),
+            db.bind, params={"season": season, "prior": prior_season_of(season)},
+        )
+    finally:
+        db.close()
+    if rows.empty:
+        return {}
+
+    cols = [
+        "strength_attack_home", "strength_attack_away",
+        "strength_defence_home", "strength_defence_away",
+    ]
+    usable = rows[(rows[cols] >= _PLAUSIBLE_STRENGTH_FLOOR).all(axis=1)]
+    if usable.empty:
+        return {}
+
+    current = usable[usable["season"] == season].set_index("team_id")
+    prior_by_code = usable[usable["season"] != season].set_index("code")
+    # team_id -> code, taken from whichever season knows it.
+    code_by_team = (
+        rows.dropna(subset=["code"]).set_index("team_id")["code"].astype(int).to_dict()
+    )
+
+    resolved: dict[int, dict[str, float]] = {}
+    for team_id in rows["team_id"].unique():
+        team_id = int(team_id)
+        if team_id in current.index:
+            src = current.loc[team_id]
+        else:
+            code = code_by_team.get(team_id)
+            if code is None or code not in prior_by_code.index:
+                continue
+            src = prior_by_code.loc[code]
+        resolved[team_id] = {c: float(src[c]) for c in cols}
+
+    if not resolved:
+        return {}
+
+    means = {c: float(np.mean([v[c] for v in resolved.values()])) for c in cols}
+    return {
+        team_id: {c: v[c] / means[c] if means[c] > 0 else 1.0 for c in cols}
+        for team_id, v in resolved.items()
+    }
+
+
 def load_all_stats(season: str) -> pd.DataFrame:
     """All ``player_gw_stats`` rows for a season, joined to the point-in-time
     player state snapshot and per-GW xG stats. Shared by the backtest path
@@ -526,6 +612,7 @@ def assemble_gw_projections(
     seed: int = 42,
     persist_samples: bool = False,
     season: str | None = None,
+    strength_rel: Mapping[int, Mapping[str, float]] | None = None,
 ) -> pd.DataFrame:
     """P10: replaces ``points_model.predict_batch`` as ``_build_gw_projections``'s
     xPts source. ``all_stats`` (unfiltered, ALL gameweeks) supplies fixture
@@ -553,11 +640,19 @@ def assemble_gw_projections(
     players from DIFFERENT matches who happen to share a raw scenario index —
     only real teammates (same fixture) ever share a scenario_id range.
     Storage/retention policy is not addressed here (flagged, not solved —
-    same open item P0 originally noted)."""
+    same open item P0 originally noted).
+
+    ``strength_rel`` (§2, optional): league-relative team strengths from
+    ``load_team_strength_rel``, used to derive λ for fixtures the bookmakers
+    have not priced. Odds always win where they exist. Omitting it (or passing
+    an empty mapping) falls back to the league-average fixture, which is the
+    old behaviour except that the constants are now the calibrated league
+    means rather than values 0.25 goals a game below them."""
     if history.empty:
         return pd.DataFrame()
     if persist_samples and not season:
         raise ValueError("persist_samples=True needs season (for the ProjectionSample rows)")
+    strength_rel = strength_rel or {}
 
     feat = _build_rolling_features(
         history, defcon_events, penalty_duty=load_penalty_duty(season) if season else None
@@ -620,7 +715,28 @@ def assemble_gw_projections(
                     float(r["away_win_prob"]), float(r["over25_prob"]),
                 )
             else:
-                lam_home, lam_away = 1.35, 1.15
+                # §2 (2026-08-18): odds cover the next week or two at most,
+                # while the transfer planner looks three gameweeks ahead and
+                # the wildcard evaluation five. This used to hand every
+                # unpriced fixture the same flat pair, so beyond the priced
+                # window no fixture was distinguishable from any other — a
+                # defender's clean-sheet probability did not depend on who
+                # they played, across the entire planning horizon.
+                #
+                # Team strengths are a much weaker signal than the market, and
+                # are only ever consulted where the market is silent.
+                h = strength_rel.get(home_team)
+                a = strength_rel.get(away_team)
+                if h is None and a is None:
+                    lam_home, lam_away = NEUTRAL_LAMBDA_HOME, NEUTRAL_LAMBDA_AWAY
+                else:
+                    h, a = h or {}, a or {}
+                    lam_home, lam_away = team_goals_from_strength(
+                        home_attack_rel=h.get("strength_attack_home"),
+                        home_defence_rel=h.get("strength_defence_home"),
+                        away_attack_rel=a.get("strength_attack_away"),
+                        away_defence_rel=a.get("strength_defence_away"),
+                    )
 
             home_players = _player_dicts(home_ids, feat, bands)
             away_players = _player_dicts(away_ids, feat, bands)

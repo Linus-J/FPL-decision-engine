@@ -270,6 +270,9 @@ def run_projections(
         seed=seed,
         persist_samples=persist,  # P3-1: real teammate covariance for Phase 3
         season=season,
+        # §2: fixture differentiation past the priced window. Odds cover the
+        # next week or two; this horizon runs to five.
+        strength_rel=assemble.load_team_strength_rel(season),
     )
 
     if not projections_df.empty:
