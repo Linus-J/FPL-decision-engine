@@ -159,6 +159,21 @@ exclude:
     model reads as settled because his appearance record is.
   as_of: '2026-08-18'
   source: user
+- code: 472769          # O'Reilly, Man City
+  reason: >-
+    No Manchester City defender is nailed on under the new manager. Same root
+    cause as the Guehi entry: a change of manager breaks the assumption the
+    minutes model rests on, and a full-back's record under the previous one
+    says little about this one's shape.
+  as_of: '2026-08-18'
+  source: user
+- code: 465351          # Matheus N., Man City
+  reason: >-
+    As above -- no Manchester City defender is nailed on under the new manager.
+    FPL also has him at status 'd' (doubtful), which discounts him but does not
+    exclude him.
+  as_of: '2026-08-18'
+  source: user
 - code: 221466          # Marcos Senesi, Spurs
   reason: >-
     Summer move to Spurs after 37 Bournemouth appearances; centre-back depth
