@@ -153,3 +153,55 @@ def test_empty_projections_is_a_no_op():
     players = _players([(1, "MID")])
     out = apply_curse_shrinkage(projections, players)
     assert out.empty
+
+
+def test_a_zeroed_player_is_never_resurrected_by_shrinkage():
+    """Regression, 2026-08-18 (engine review §3).
+
+    A zero here is not a low estimate — it is a statement that the player will
+    not feature. Unavailable players are zeroed and confirmed departures
+    discounted to 0.0 BEFORE shrinkage runs. Shrinking them toward a positive
+    group mean handed them points back: at the default strength a zeroed
+    player in a group averaging 4.0 came out at 0.60 xpts, so a leaver the
+    departure gate had just eliminated became selectable again.
+    """
+    projections = pd.DataFrame([
+        {"player_id": 1, "gameweek": 10, "xpts": 8.0},
+        {"player_id": 2, "gameweek": 10, "xpts": 3.0},
+        {"player_id": 3, "gameweek": 10, "xpts": 1.0},
+        {"player_id": 4, "gameweek": 10, "xpts": 0.0},   # departed / unavailable
+    ])
+    players = _players([(1, "MID"), (2, "MID"), (3, "MID"), (4, "MID")])
+    out = apply_curse_shrinkage(projections, players)
+
+    assert out[out["player_id"] == 4]["xpts"].iloc[0] == 0.0
+
+
+def test_the_group_mean_ignores_players_who_will_not_feature():
+    """Regression, 2026-08-18 (engine review §3), the subtler half.
+
+    Non-participants used to drag the group mean down, so how hard a real
+    player was shrunk depended on how many irrelevant players happened to be
+    in that week's frame — the correction for a premium should not move
+    because a fringe player got injured.
+
+    Both frames below hold the same three real players; the second merely adds
+    non-participants. The shrunk values must be identical.
+    """
+    real = [
+        {"player_id": 1, "gameweek": 10, "xpts": 8.0},
+        {"player_id": 2, "gameweek": 10, "xpts": 3.0},
+        {"player_id": 3, "gameweek": 10, "xpts": 1.0},
+    ]
+    padding = [
+        {"player_id": pid, "gameweek": 10, "xpts": 0.0} for pid in range(4, 30)
+    ]
+    roster = [(pid, "MID") for pid in range(1, 30)]
+
+    without = apply_curse_shrinkage(pd.DataFrame(real), _players(roster))
+    with_padding = apply_curse_shrinkage(pd.DataFrame(real + padding), _players(roster))
+
+    for pid in (1, 2, 3):
+        assert without[without["player_id"] == pid]["xpts"].iloc[0] == pytest.approx(
+            with_padding[with_padding["player_id"] == pid]["xpts"].iloc[0]
+        )

@@ -952,6 +952,21 @@ def build_initial_squad(
     # was never built), so this call was always a no-op before today.
     projections = apply_departure_discount(projections, load_p_leave_overrides())
 
+    # Optimiser's-curse shrinkage (2026-08-18, engine review §3). This ran in
+    # `projection/pipeline.py` for every in-season gameweek and never here,
+    # because the decision engine calls `build_initial_squad` directly and
+    # bypasses the pipeline entirely — so the ONE decision made from the
+    # noisiest projections in the system (prior-season, translated
+    # prior-league, peer bucket, synthetic) was the one made without the
+    # correction for selecting on noise.
+    #
+    # Same flag, same function, same position in the order as the in-season
+    # path (after availability and departure adjustments, before anything
+    # selects on the numbers), so the two cannot drift.
+    if cfg.curse_shrinkage_enabled:
+        from projection.assemble import apply_curse_shrinkage
+        projections = apply_curse_shrinkage(projections, players)
+
     players = players.merge(
         projections[["player_id", "start_probability"]].drop_duplicates("player_id"),
         left_on="id", right_on="player_id", how="left",

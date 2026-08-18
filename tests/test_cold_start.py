@@ -381,6 +381,51 @@ def test_build_initial_squad_uses_injected_players_not_live_bootstrap(temp_sessi
     assert not projections.empty
 
 
+def test_build_initial_squad_applies_curse_shrinkage(temp_session, monkeypatch):
+    """Regression, 2026-08-18 (engine review §3).
+
+    ``apply_curse_shrinkage`` ran in ``projection/pipeline.py`` for every
+    in-season gameweek and never here, because the decision engine calls
+    ``build_initial_squad`` directly and bypasses the pipeline. So the one
+    decision made from the noisiest projections in the system — the initial
+    15, locked in for weeks — was the one made with no correction for
+    selecting on noise.
+
+    ``xpts_raw`` is the tell: it only exists once shrinkage has run, and it
+    preserves the pre-shrinkage value.
+    """
+    import dataclasses
+
+    from config.strategy import OPTIMISER
+
+    _seed_full_pool(temp_session)
+    s = temp_session()
+    try:
+        injected = pd.read_sql(
+            "SELECT id, code, web_name, position, now_cost, status, team_id FROM players", s.bind
+        )
+    finally:
+        s.close()
+
+    _, projections = cs.build_initial_squad("2026-27", players=injected)
+    # `xpts_raw` exists only once shrinkage has run, and holds the
+    # pre-shrinkage value. (The shrinkage arithmetic itself is covered in
+    # test_curse_shrinkage.py; this test is about the wiring, since the defect
+    # was that the function was never reached on this path at all.)
+    assert "xpts_raw" in projections.columns, "cold start must apply curse shrinkage"
+
+    # A player the departure gate zeroed must not be handed points back.
+    zeroed = projections[projections["xpts_raw"] == 0.0]
+    assert (zeroed["xpts"] == 0.0).all()
+
+    # And the flag still disables it exactly, as it does in-season.
+    _, unshrunk = cs.build_initial_squad(
+        "2026-27", players=injected,
+        config=dataclasses.replace(OPTIMISER, curse_shrinkage_enabled=False),
+    )
+    assert "xpts_raw" not in unshrunk.columns
+
+
 def test_load_current_players_applies_team_overrides(temp_session, monkeypatch, tmp_path):
     import yaml
 

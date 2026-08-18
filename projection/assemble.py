@@ -752,7 +752,24 @@ def apply_curse_shrinkage(projections: pd.DataFrame, players: pd.DataFrame) -> p
     out["xpts_raw"] = out["xpts"]
     shrunk = out["xpts"].copy()
 
-    for (_gw, _pos), group in out.groupby(["gameweek", "position"]):
+    # Only players who are actually expected to feature take part (2026-08-18,
+    # engine review §3). A zero here is not a low estimate — it is a statement
+    # that the player will not play at all: the unavailable are zeroed and
+    # departures discounted to 0.0 BEFORE this runs.
+    #
+    # Shrinking those toward a positive group mean resurrects them. At the
+    # default strength a zeroed player in a group averaging 2.0 comes back out
+    # at 0.30 xpts, so a confirmed leaver the departure gate had just
+    # eliminated becomes selectable again. They also drag the mean down, which
+    # made every real player's correction depend on how many non-participants
+    # happened to be in that week's frame — the correction for Salah should
+    # not move because a fringe player got injured.
+    #
+    # Excluding them fixes both. The curse being corrected is a SELECTION
+    # effect, and these rows were never selection candidates.
+    plays = out["xpts"] > 0.0
+
+    for (_gw, _pos), group in out[plays].groupby(["gameweek", "position"]):
         if len(group) < MIN_SHRINKAGE_GROUP_SIZE:
             continue
         group_mean = group["xpts"].mean()
