@@ -2,25 +2,8 @@
   "schema_version": 1,
   "gameweek": 1,
   "label": "GW1 \u2014 21 Aug 2026",
-  "generated_at": "2026-08-18T14:02:40.772228+00:00",
+  "generated_at": "2026-08-18T15:16:42.854506+00:00",
   "squad": [
-    {
-      "player_id": 1,
-      "web_name": "Raya",
-      "position": "GKP",
-      "team_short": "ARS",
-      "now_cost": 6.0,
-      "is_starting": true,
-      "is_captain": false,
-      "is_vice_captain": true,
-      "bench_order": null,
-      "xpts": {
-        "p10": 0.0636,
-        "median": 5.529,
-        "mean": 5.529,
-        "p90": 10.9943
-      }
-    },
     {
       "player_id": 5,
       "web_name": "Gabriel",
@@ -29,7 +12,7 @@
       "now_cost": 8.0,
       "is_starting": true,
       "is_captain": false,
-      "is_vice_captain": false,
+      "is_vice_captain": true,
       "bench_order": null,
       "xpts": {
         "p10": 0.0,
@@ -67,9 +50,9 @@
       "bench_order": 1,
       "xpts": {
         "p10": 0.0,
-        "median": 2.3086,
-        "mean": 2.3086,
-        "p90": 5.3273
+        "median": 2.3072,
+        "mean": 2.3072,
+        "p90": 5.326
       }
     },
     {
@@ -115,12 +98,29 @@
       "is_starting": false,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": 3,
+      "bench_order": 4,
       "xpts": {
         "p10": 0.0,
-        "median": 2.2755,
-        "mean": 2.2755,
-        "p90": 7.0024
+        "median": 2.2751,
+        "mean": 2.2751,
+        "p90": 7.002
+      }
+    },
+    {
+      "player_id": 356,
+      "web_name": "Tarkowski",
+      "position": "DEF",
+      "team_short": "EVE",
+      "now_cost": 6.0,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 2,
+      "xpts": {
+        "p10": 0.0,
+        "median": 4.7906,
+        "mean": 4.7906,
+        "p90": 9.678
       }
     },
     {
@@ -200,46 +200,46 @@
       "is_starting": false,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": 2,
+      "bench_order": 3,
       "xpts": {
         "p10": 0.0,
-        "median": 2.3265,
-        "mean": 2.3265,
-        "p90": 7.8082
+        "median": 2.3258,
+        "mean": 2.3258,
+        "p90": 7.8076
       }
     },
     {
-      "player_id": 594,
-      "web_name": "Targett",
-      "position": "DEF",
-      "team_short": "HUL",
-      "now_cost": 4.0,
-      "is_starting": false,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": 4,
-      "xpts": {
-        "p10": 0.0,
-        "median": 1.758,
-        "mean": 1.758,
-        "p90": 4.1642
-      }
-    },
-    {
-      "player_id": 633,
-      "web_name": "Gibbs-White",
-      "position": "MID",
-      "team_short": "NFO",
-      "now_cost": 8.0,
+      "player_id": 572,
+      "web_name": "Lammens",
+      "position": "GKP",
+      "team_short": "MUN",
+      "now_cost": 5.0,
       "is_starting": true,
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
       "xpts": {
-        "p10": 0.19,
-        "median": 5.5078,
-        "mean": 5.5078,
-        "p90": 10.8256
+        "p10": 0.0,
+        "median": 4.3487,
+        "mean": 4.3487,
+        "p90": 9.697
+      }
+    },
+    {
+      "player_id": 598,
+      "web_name": "Bruno G.",
+      "position": "MID",
+      "team_short": "ARS",
+      "now_cost": 7.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "xpts": {
+        "p10": 0.0,
+        "median": 5.6073,
+        "mean": 5.6073,
+        "p90": 13.2931
       }
     },
     {
@@ -346,18 +346,6 @@
       }
     },
     {
-      "player_id": 555,
-      "web_name": "Rashford",
-      "position": "MID",
-      "team_short": "MUN",
-      "xpts": {
-        "p10": 5.782840021596824,
-        "median": 5.782840021596824,
-        "mean": 5.782840021596824,
-        "p90": 5.782840021596824
-      }
-    },
-    {
       "player_id": 554,
       "web_name": "Cunha",
       "position": "MID",
@@ -367,6 +355,18 @@
         "median": 5.782362437306622,
         "mean": 5.782362437306622,
         "p90": 5.782362437306622
+      }
+    },
+    {
+      "player_id": 555,
+      "web_name": "Rashford",
+      "position": "MID",
+      "team_short": "MUN",
+      "xpts": {
+        "p10": 5.78038464075553,
+        "median": 5.78038464075553,
+        "mean": 5.78038464075553,
+        "p90": 5.78038464075553
       }
     },
     {
