@@ -6,12 +6,12 @@ import json
 import math
 from datetime import datetime
 
-import dashboard.data.squad as squad_module
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import dashboard.data.squad as squad_module
 from data.models import Base, DecisionLog, Gameweek, Player, ProjectionSample, Team
 from scripts.site_export import payload as payload_module
 

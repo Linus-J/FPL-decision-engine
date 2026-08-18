@@ -77,7 +77,7 @@ def plot_value_map(df: pd.DataFrame) -> None:
         )
 
     ax.set_xlabel("Price (£m)")
-    ax.set_ylabel("Projected xPts (GW{})".format(next_gw))
+    ax.set_ylabel(f"Projected xPts (GW{next_gw})")
     ax.set_title("FPL Value Map — Price vs Projected Points")
     ax.legend(title="Position")
     fig.tight_layout()

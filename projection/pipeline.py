@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 def _get_current_and_next_gw() -> tuple[int, int]:
     db = get_session()
     try:
-        current = db.query(Gameweek).filter(Gameweek.is_current == True).first()
-        next_gw = db.query(Gameweek).filter(Gameweek.is_next == True).first()
+        current = db.query(Gameweek).filter(Gameweek.is_current.is_(True)).first()
+        next_gw = db.query(Gameweek).filter(Gameweek.is_next.is_(True)).first()
         current_id = current.id if current else 1
         next_id = next_gw.id if next_gw else current_id + 1
         return current_id, next_id
@@ -50,7 +50,7 @@ def _get_dgw_gameweeks(lookahead: int) -> set[int]:
                 Gameweek.season == season,
                 Gameweek.id >= next_gw,
                 Gameweek.id < next_gw + lookahead,
-                Gameweek.is_dgw == True,
+                Gameweek.is_dgw.is_(True),
             )
             .all()
         )
@@ -70,7 +70,7 @@ def _get_bgw_gameweeks(lookahead: int) -> set[int]:
                 Gameweek.season == season,
                 Gameweek.id >= next_gw,
                 Gameweek.id < next_gw + lookahead,
-                Gameweek.is_bgw == True,
+                Gameweek.is_bgw.is_(True),
             )
             .all()
         )

@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import math
 from datetime import datetime, timedelta
 
 import aiohttp

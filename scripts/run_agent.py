@@ -16,9 +16,9 @@ logging.basicConfig(
 
 from agent import decision_engine, fpl_client, notifier
 from config.settings import settings
+from config.strategy import OPTIMISER
 from data.ingestors.fpl_api import run_full_ingest
 from data.ingestors.injury_parser import run_injury_parser
-from config.strategy import OPTIMISER
 from data.ingestors.odds_api import ingest_odds_sync, log_odds_coverage
 from data.ingestors.understat import run_understat_ingest
 from optimiser.chips import Chip

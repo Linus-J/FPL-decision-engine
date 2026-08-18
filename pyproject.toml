@@ -72,6 +72,14 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+ignore = [
+    # UP042 wants `class Chip(str, Enum)` to become StrEnum. Chip values are
+    # serialised into decision_log's JSON `details` and read back across runs,
+    # and StrEnum changes what `str(Chip.WILDCARD)` returns ("wildcard" rather
+    # than "Chip.WILDCARD") -- a live behaviour change for any f-string on a
+    # chip, in exchange for nothing. Not worth it for a stylistic rule.
+    "UP042",
+]
 
 [tool.mypy]
 python_version = "3.12"
@@ -88,3 +96,14 @@ testpaths = ["tests"]
 # passed 755. The docs name `pytest` as the gate, so the gate as documented
 # did not run. pythonpath makes both invocations equivalent.
 pythonpath = ["."]
+
+[tool.ruff.lint.per-file-ignores]
+# Entry-point scripts insert the repo root on sys.path before importing the
+# project's own packages. `tool.uv.package = false` means those packages are
+# never installed into the venv, so for a script run as `python scripts/x.py`
+# the imports genuinely cannot come first. This is the pattern, not an
+# oversight.
+"scripts/*.py" = ["E402"]
+# conftest.py must set DB_PATH before anything imports config.settings, since
+# data/db.py builds its engine at import time. Same reason.
+"conftest.py" = ["E402"]
