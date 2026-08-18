@@ -729,10 +729,33 @@ def load_horizon_fixtures(
 
 
 def apply_departure_gate(players: pd.DataFrame) -> pd.DataFrame:
-    """§6.5 confirmed tier: drop players FPL marks unavailable (status 'u')."""
-    if "status" not in players.columns:
-        return players
-    return players[~players["status"].isin(_DEPARTED_STATUS)].copy()
+    """§6.5 confirmed tier: drop players FPL marks unavailable (status 'u'),
+    plus anyone under a hand-entered hard veto in
+    ``config/transfer_overrides.yaml``'s ``exclude`` list.
+
+    The veto sits here rather than at the optimiser because a hard exclusion
+    should be invisible downstream: the player is not a candidate, so nothing
+    later has to remember to skip him. A rotation-risk CAP is the softer tier
+    and lives elsewhere — it discounts and lets the optimiser decide, which on
+    the live GW1 frame kept two of five capped players in the squad.
+    """
+    from data.overrides import load_excluded_player_ids
+
+    out = players
+    if "status" in out.columns:
+        out = out[~out["status"].isin(_DEPARTED_STATUS)]
+
+    excluded = load_excluded_player_ids()
+    if excluded and "id" in out.columns:
+        hit = out["id"].isin(excluded)
+        if hit.any():
+            names = (
+                out.loc[hit, "web_name"].tolist() if "web_name" in out.columns
+                else out.loc[hit, "id"].tolist()
+            )
+            logger.info("Hard-excluded by override, not considered: %s", ", ".join(map(str, names)))
+        out = out[~hit]
+    return out.copy()
 
 
 def _price_prior(position: str, now_cost: float) -> float:
@@ -1184,8 +1207,13 @@ def build_initial_squad(
     projection layer stays testable without PuLP.
     """
     from config.strategy import OPTIMISER, SQUAD
-    from data.overrides import load_p_leave_overrides, log_rumoured_squad_members
+    from data.overrides import (
+        load_p_leave_overrides,
+        load_rotation_risk_overrides,
+        log_rumoured_squad_members,
+    )
     from optimiser.departure_risk import apply_departure_discount
+    from optimiser.rotation_risk import apply_rotation_risk, log_capped_squad_members
     from optimiser.squad import optimise_squad
 
     cfg = config or OPTIMISER
@@ -1208,6 +1236,19 @@ def build_initial_squad(
     # first time -- previously always an empty dict (Phase 4's news layer
     # was never built), so this call was always a no-op before today.
     projections = apply_departure_discount(projections, load_p_leave_overrides())
+
+    # Hand-entered ceilings on start probability (2026-08-18). The minutes
+    # model projects from a player's own history, so a summer signing carries
+    # his previous club's status wholesale — Anderson arrived at Manchester
+    # City on 37 Forest starts and was handed start_probability 0.97 with no
+    # Manchester City minutes anywhere in evidence. Competition for a place is
+    # a fact about a squad, not about a player's record, and nothing in the
+    # pipeline can see it. Same position in the order as the departure
+    # discount: after availability, before anything selects on the numbers.
+    rotation_caps = load_rotation_risk_overrides()
+    projections = apply_rotation_risk(
+        projections, {pid: e["start_probability"] for pid, e in rotation_caps.items()}
+    )
 
     # Optimiser's-curse shrinkage (2026-08-18, engine review §3). This ran in
     # `projection/pipeline.py` for every in-season gameweek and never here,
@@ -1234,4 +1275,5 @@ def build_initial_squad(
         horizon=cfg.cold_start_lookahead_gws, season=season, config=config,
     )
     log_rumoured_squad_members(solution.squad["id"].tolist(), players)
+    log_capped_squad_members(solution.squad["id"].tolist(), players, rotation_caps)
     return solution, projections

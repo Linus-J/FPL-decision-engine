@@ -8,6 +8,8 @@ from sqlalchemy.dialects.sqlite import insert
 from config.strategy import OPTIMISER
 from data.db import get_session
 from data.models import Gameweek, PlayerProjection
+from data.overrides import load_start_probability_caps
+from optimiser.rotation_risk import apply_rotation_risk
 from projection import assemble
 from projection.cold_start import prior_season_of
 from projection.minutes_model import train as train_minutes
@@ -293,6 +295,12 @@ def run_projections(
         # re-scaled by their own severity on top of it) and before curse
         # shrinkage, same ordering rationale as the zeroing itself.
         projections_df = _apply_injury_severity_discount(projections_df, all_players)
+        # Hand-entered rotation-risk ceilings (2026-08-18). Applied here as
+        # well as in the cold start, and in the same position, because the two
+        # paths must not disagree about who is nailed on: an override that
+        # shaped the initial squad and then silently stopped applying in
+        # gameweek 2 would have the transfer planner undo it.
+        projections_df = apply_rotation_risk(projections_df, load_start_probability_caps())
         # Optimiser's-curse correction (2026-07-28) — after the unavailable-
         # player zeroing above, so a genuinely unavailable player (xpts=0)
         # doesn't get shrunk back up toward its group mean.

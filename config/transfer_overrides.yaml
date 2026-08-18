@@ -115,3 +115,67 @@ confirmed:
   as_of: '2026-08-10'
   source: transfermarkt
 rumoured: []
+
+# Two tiers of human judgement about who plays, both hand-edited.
+#
+# The minutes model projects from a player's own history, so a signing carries
+# his previous club's status wholesale — Anderson arrived at Manchester City on
+# 37 Nottingham Forest starts and was handed start_probability 0.97 with no
+# Manchester City minutes anywhere in evidence. Neither tier is a blanket
+# new-signing rule, which was measured and rejected: across 1,149
+# player-seasons, prior-season regulars who changed club retained 95.6-97.2% of
+# the minutes share stayers retained. Competition for a place is specific, so
+# it is entered per player, with a reason and a date.
+
+# Hard vetoes. The player is removed from the candidate pool entirely and can
+# never be selected, however good the numbers look; if he is already owned, he
+# is force-sold on the same terms as a confirmed departure.
+#
+# Distinct from `rotation_risk` below, which only DISCOUNTS. A cap leaves the
+# optimiser free to decide the player is worth it anyway, and on the live GW1
+# frame two of five capped players were selected regardless. Use `exclude` when
+# the judgement is not up for negotiation.
+exclude:
+- code: 215379          # Elliot Anderson, Man City (NB: not the Newcastle one, 232820)
+  reason: >-
+    Summer signing with zero Manchester City minutes on record; 37 starts for
+    Nottingham Forest in 25/26 are all the model has, and it reads them as 0.97.
+  as_of: '2026-08-18'
+  source: 'user, BBC FPL preview'
+- code: 209036          # Marc Guehi, Man City
+  reason: >-
+    Manchester City have a new manager playing a different style. Guehi's 15
+    appearances after the January move were every one 60+ minutes, but all of
+    them under Pep Guardiola, so they say little about who this manager picks.
+    A managerial change breaks the assumption the whole minutes model rests on
+    -- that a player's own recent history predicts his next start -- and
+    nothing in the data marks it.
+  as_of: '2026-08-18'
+  source: user
+- code: 208706          # Bruno G., Arsenal
+  reason: >-
+    May be competing for a full 90 rather than a guaranteed start, at least
+    early on. Same class of doubt as the others: a role question the minutes
+    model reads as settled because his appearance record is.
+  as_of: '2026-08-18'
+  source: user
+- code: 221466          # Marcos Senesi, Spurs
+  reason: >-
+    Summer move to Spurs after 37 Bournemouth appearances; centre-back depth
+    and uncertainty over De Zerbi's shape.
+  as_of: '2026-08-18'
+  source: 'user, BBC FPL preview'
+- code: 223340          # Bukayo Saka, Arsenal
+  reason: 'User-flagged rotation and injury risk.'
+  as_of: '2026-08-18'
+  source: user
+- code: 204480          # Declan Rice, Arsenal
+  reason: 'User-flagged rotation risk.'
+  as_of: '2026-08-18'
+  source: user
+
+# Soft ceilings on start probability, for a contested place the minutes model
+# cannot see. Empty for now: every entry the user asked for is a hard veto
+# above. Kept because the tier is the right one for a genuine doubt, and the
+# mechanism is tested.
+rotation_risk: []
