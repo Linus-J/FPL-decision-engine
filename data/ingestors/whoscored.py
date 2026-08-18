@@ -55,6 +55,17 @@ EVENT_TYPE_FIELD = {
     "BallRecovery": "recoveries",
 }
 DRIBBLE_TYPE = "TakeOn"
+
+# Event types that WhoScored records with a success/failure outcome, and which
+# FPL counts only when won. A Clearance, Interception, BlockedPass or
+# BallRecovery is an achieved outcome by definition, so those are counted in
+# full; a Tackle or a TakeOn is an ATTEMPT and must be filtered.
+#
+# `Tackle` was added here 2026-08-18 (engine review §5): FBref maps `tackles`
+# to "Performance TklW" (tackles WON) and WhoScored overwrites that column, so
+# the two sources were writing one column under two different definitions.
+OUTCOME_SENSITIVE_TYPES = frozenset({"Tackle", DRIBBLE_TYPE})
+
 UPDATE_FIELDS = (*EVENT_TYPE_FIELD.values(), "dribbles")
 
 
@@ -71,8 +82,27 @@ def _to_naive(dt: datetime) -> datetime:
 def aggregate_match_events(events: pd.DataFrame) -> pd.DataFrame:
     """Raw WhoScored event rows (one per action, from ``read_events``) -> one
     row per (game_id, player_id, player) with our count fields. Pure — no
-    DB/network. A dribble only counts if the TakeOn was won (``outcome_type``
-    == "Successful"); every other field is a plain per-type row count.
+    DB/network.
+
+    ``TakeOn`` and ``Tackle`` count only when ``outcome_type == "Successful"``
+    (see ``OUTCOME_SENSITIVE_TYPES``); the rest are plain per-type row counts,
+    which is right because a Clearance, Interception, BlockedPass or
+    BallRecovery is an achieved outcome by definition — there is no
+    "unsuccessful interception".
+
+    The tackle filter was added 2026-08-18 (engine review §5). FBref maps
+    ``tackles`` to "Performance TklW" — tackles WON — and WhoScored, which
+    OVERWRITES that column when it patches a row, was counting every ``Tackle``
+    event regardless of outcome. Two sources were writing one column under two
+    definitions, and which one you got depended on scrape order. Measured on
+    2025-26 the patched rows carried ~80% more tackles per 90 than the
+    FBref-only ones (DEF 1.69 vs 0.92, MID 1.88 vs 1.07), consistent with a
+    ~55-60% tackle success rate.
+
+    It matters twice: ``successful_tackle`` is +2 BPS, the highest-weight
+    defensive action, and DefCon's CBIT threshold is a hard cutoff at 10, so a
+    scale error on one of its four components does not wash out — it shifts
+    P(threshold met) systematically.
     """
     empty = pd.DataFrame(columns=["game_id", "player_id", "player", *UPDATE_FIELDS])
     if events.empty:
@@ -85,6 +115,10 @@ def aggregate_match_events(events: pd.DataFrame) -> pd.DataFrame:
     df["player_id"] = df["player_id"].astype(int)
 
     df["_agg_field"] = df["type"].map(EVENT_TYPE_FIELD)
+    unsuccessful = (
+        df["type"].isin(OUTCOME_SENSITIVE_TYPES) & (df["outcome_type"] != "Successful")
+    )
+    df.loc[unsuccessful, "_agg_field"] = None
     is_dribble = (df["type"] == DRIBBLE_TYPE) & (df["outcome_type"] == "Successful")
     df.loc[is_dribble, "_agg_field"] = "dribbles"
     df = df.dropna(subset=["_agg_field"])
@@ -148,8 +182,17 @@ def _load_deadlines(season: str) -> dict[int, datetime]:
 def _write_defensive_counts(season: str, totals: dict[tuple[int, int], dict[str, int]]) -> int:
     """UPDATE existing player_match_events rows (written by fbref.py) with the
     richer WhoScored counts. Never INSERTs — a player/gameweek with no
-    existing row (no FBref match report) is skipped, the same fallback
-    posture the rest of this pipeline uses (never invents an event row)."""
+    existing row (no FBref match report) is skipped, the same posture the rest
+    of this pipeline uses (never invents an event row).
+
+    ``source`` is stamped (2026-08-18, engine review §4). It was left saying
+    ``'fbref'`` on every row this had patched — all 11,182 of them on the
+    2025-26 season — even though clearances and recoveries are populated and
+    FBref's summary table cannot supply either. Provenance was therefore
+    unauditable, which is precisely what let §5's tackle-definition mismatch
+    sit undetected: with the column telling the truth, comparing the two
+    populations is a one-line query.
+    """
     db = get_session()
     written = 0
     try:
@@ -159,7 +202,8 @@ def _write_defensive_counts(season: str, totals: dict[tuple[int, int], dict[str,
                     UPDATE player_match_events
                     SET tackles = :tackles, interceptions = :interceptions,
                         clearances = :clearances, blocks = :blocks,
-                        recoveries = :recoveries, dribbles = :dribbles
+                        recoveries = :recoveries, dribbles = :dribbles,
+                        source = 'fbref+whoscored'
                     WHERE player_id = :pid AND season = :season AND gameweek = :gw
                 """),
                 {**counts, "pid": pid, "season": season, "gw": gw},
