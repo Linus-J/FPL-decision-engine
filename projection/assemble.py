@@ -939,6 +939,11 @@ def assemble_gw_projections(
 
 MIN_SHRINKAGE_GROUP_SIZE = 3
 
+# Width of the price band that per-player shrinkage regresses within (§19).
+# £1.0m matches cold_start's own peer-bucket rounding, so the two agree on what
+# "a similar player" means.
+_SHRINKAGE_PRICE_BAND = 1.0
+
 # Uniform shrinkage strength toward the (gameweek, position) group mean (see
 # apply_curse_shrinkage). Untuned starting value pending backtesting, same
 # convention as the P3-6 constant this supersedes; 0.0 disables shrinkage
@@ -964,6 +969,20 @@ def apply_curse_shrinkage(projections: pd.DataFrame, players: pd.DataFrame) -> p
     consumer (squad-building, starting-XI/captaincy, transfers, live
     serving) sees the corrected value automatically instead of needing its
     own copy of the same fix.
+
+    **Two modes.** When the frame carries an ``estimation_se`` column — how
+    well each player's MEAN is known — shrinkage is per-player empirical Bayes:
+    each estimate keeps ``tau^2 / (tau^2 + se^2)`` of its distance from the
+    group mean, so a well-measured player barely moves and a pooled guess about
+    an unknown collapses toward the mean. This REORDERS players, which is the
+    only way to actually correct a selection bias (engine review §19). Without
+    that column it falls back to the flat ``CURSE_SHRINKAGE_STRENGTH`` below,
+    which corrects the level but provably cannot change who gets picked: a
+    uniform affine map inside a group preserves the ranking exactly, and with
+    squad quotas fixed the offset term is constant across every legal squad.
+
+    The distinction that makes this work is WHICH variance is used. See below
+    for the one that does not.
 
     A first version weighted the shrinkage per-player by ``xpts_var``
     relative to the group's between-player variance (textbook James-Stein
@@ -996,8 +1015,11 @@ def apply_curse_shrinkage(projections: pd.DataFrame, players: pd.DataFrame) -> p
     if projections.empty or "position" not in players.columns:
         return projections
 
+    merge_cols = ["id", "position"]
+    if "now_cost" in players.columns:
+        merge_cols.append("now_cost")
     out = projections.merge(
-        players[["id", "position"]], left_on="player_id", right_on="id", how="left"
+        players[merge_cols], left_on="player_id", right_on="id", how="left"
     ).drop(columns=["id"])
     out["xpts_raw"] = out["xpts"]
     shrunk = out["xpts"].copy()
@@ -1018,17 +1040,60 @@ def apply_curse_shrinkage(projections: pd.DataFrame, players: pd.DataFrame) -> p
     # Excluding them fixes both. The curse being corrected is a SELECTION
     # effect, and these rows were never selection candidates.
     plays = out["xpts"] > 0.0
+    # §19 (2026-08-18): shrink each player by HIS OWN estimation uncertainty
+    # when it is known, rather than everybody by the same fraction.
+    has_se = (
+        "estimation_se" in out.columns
+        and out.loc[plays, "estimation_se"].notna().any()
+    )
 
-    for (_gw, _pos), group in out[plays].groupby(["gameweek", "position"]):
+    # What each estimate is shrunk TOWARD (§19). Position alone is right for the
+    # flat mode, but wrong once shrinkage is per-player: an unknown's estimate
+    # IS the pooled mean of players like him, so pulling him further toward the
+    # whole position's average — which includes every premium — inflates him.
+    # Measured: cheap peer-bucket players were pulled UP by 0.22 xPts on
+    # average, and the GW1 squad swapped a premium defender for budget names on
+    # the strength of it. Price is the market's own expectation, so banding by
+    # it means a £4.5m unknown regresses toward other £4.5m players rather than
+    # toward Bruno Fernandes.
+    #
+    # The flat path keeps the original position-only grouping, byte for byte.
+    group_keys = ["gameweek", "position"]
+    if has_se and "now_cost" in out.columns:
+        out["_price_band"] = (out["now_cost"] // _SHRINKAGE_PRICE_BAND) * _SHRINKAGE_PRICE_BAND
+        group_keys.append("_price_band")
+
+    for _key, group in out[plays].groupby(group_keys):
         if len(group) < MIN_SHRINKAGE_GROUP_SIZE:
             continue
         group_mean = group["xpts"].mean()
-        shrunk.loc[group.index] = (
-            group_mean + (1.0 - CURSE_SHRINKAGE_STRENGTH) * (group["xpts"] - group_mean)
-        )
+        deviation = group["xpts"] - group_mean
+        if has_se:
+            # Empirical Bayes. An estimate keeps the share of its deviation
+            # that its own precision justifies:
+            #
+            #     keep = tau^2 / (tau^2 + se^2)
+            #
+            # tau^2 is the spread of true ability across the group; se^2 is how
+            # badly this particular estimate is measured. A 38-appearance
+            # prior-season record keeps almost all of its distance from the
+            # mean; a peer-bucket guess about an unknown keeps little. THAT is
+            # what corrects the optimiser's curse -- it reorders players, which
+            # a uniform shrink provably cannot do.
+            #
+            # Where an SE is missing the player falls back to the flat rate, so
+            # a partially-annotated frame degrades one player at a time.
+            se = pd.to_numeric(group.get("estimation_se"), errors="coerce")
+            tau_sq = max(float(deviation.var(ddof=1)) if len(group) > 1 else 0.0, 1e-9)
+            keep = tau_sq / (tau_sq + se.pow(2))
+            keep = keep.fillna(1.0 - CURSE_SHRINKAGE_STRENGTH).clip(0.0, 1.0)
+        else:
+            keep = 1.0 - CURSE_SHRINKAGE_STRENGTH
+        shrunk.loc[group.index] = group_mean + keep * deviation
 
     out["xpts"] = shrunk
-    return out.drop(columns=["position"])
+    return out.drop(columns=[c for c in ("position", "now_cost", "_price_band")
+                             if c in out.columns])
 
 
 def _write_projection_samples(sample_rows: list[dict]) -> int:

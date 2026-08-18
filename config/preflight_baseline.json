@@ -1,9 +1,9 @@
 {
   "bench_order": [
-    "Verbruggen",
-    "Disasi",
+    "Dubravka",
+    "Yarmoliuk",
     "Simms",
-    "Furo"
+    "Scarlett"
   ],
   "captain": "B.Fernandes",
   "chips_left_this_half": 4,
@@ -22,19 +22,19 @@
   "squad": [
     "Anderson",
     "B.Fernandes",
-    "Disasi",
-    "Furo",
+    "Dubravka",
     "Gabriel",
     "Gibbs-White",
     "Gu\u00e9hi",
     "Raya",
+    "Scarlett",
     "Semenyo",
     "Senesi",
     "Simms",
     "Tarkowski",
     "Thiago",
-    "Verbruggen",
-    "Wilson"
+    "Virgil",
+    "Yarmoliuk"
   ],
   "starting_xi": [
     "Anderson",
@@ -47,7 +47,7 @@
     "Senesi",
     "Tarkowski",
     "Thiago",
-    "Wilson"
+    "Virgil"
   ],
   "teams_on_prior_strength": 17,
   "teams_with_live_strength": 0,

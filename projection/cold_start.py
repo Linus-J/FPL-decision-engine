@@ -29,6 +29,30 @@ from projection.goals import expected_goal_points
 
 logger = logging.getLogger(__name__)
 
+# How uncertain each cold-start tier's MEAN is, as a multiple of the typical
+# measured standard error of a prior-season player's own points-per-appearance
+# (2026-08-18, engine review §19). Expressed as a multiple, not an absolute, so
+# the scale self-calibrates against whatever the real prior-season spread is
+# rather than hard-coding a number that drifts.
+#
+# This is ESTIMATION uncertainty -- "how well do I know this player's average"
+# -- which is a different quantity from `xpts_var`, the outcome variance of
+# their week-to-week returns. Conflating the two is what sank the first attempt
+# at per-player shrinkage (see projection/assemble.apply_curse_shrinkage).
+#
+# `prior_season` is measured directly per player (sd / sqrt(appearances)) and so
+# has no entry. The rest are ordered by how much is actually known about the
+# individual, rather than about the group they were pooled into:
+#   prior_league  -- a real personal record, but through a translation factor
+#                    that is itself a guess (PRIOR_LEAGUE.translation_factor)
+#   peer_bucket   -- nothing personal at all; the mean of similar players
+#   position_price-- synthetic, fitted from position and price alone
+_TIER_SE_MULTIPLE = {
+    "prior_league_prior": 1.5,
+    "peer_bucket_prior": 2.5,
+    "position_price_prior": 3.5,
+}
+
 # A player needs at least this many prior-season appearances to use their
 # own history rather than the position/price prior.
 MIN_PRIOR_APPEARANCES = 5
@@ -787,6 +811,7 @@ def project_cold_start(
             r.position, float(penalty_duty.get(int(r.id), 0.0)), 0.0
         )
 
+        estimation_se = float("nan")
         has_prior = r.appearances >= MIN_PRIOR_APPEARANCES
         if has_prior:
             mean_played = max(_MIN_XPTS, float(r.ppg_played)) + pen_mean
@@ -806,6 +831,10 @@ def project_cold_start(
             xpts, xpts_var = unconditional_moments(p_appear, mean_played, var_played)
             start_prob = float(r.starts_rate)
             source = "prior_season"
+            # §19: how well we know this player's MEAN, not how spiky he is.
+            # Standard error of his own points-per-appearance average.
+            n_apps = max(1, int(r.appearances))
+            estimation_se = float(np.sqrt(max(0.0, var_played) / n_apps))
         else:
             peer_stats = _peer_bucket_stats(
                 r.position, float(r.now_cost), peer_buckets, peer_appear_buckets
@@ -865,8 +894,12 @@ def project_cold_start(
             "xpts_var": xpts_var,
             "start_probability": start_prob,
             "proj_source": source,
+            # NaN for the pooled/synthetic tiers; filled in below once the
+            # measured prior-season scale is known.
+            "estimation_se": estimation_se if source == "prior_season" else float("nan"),
         })
     base_df = pd.DataFrame(rows)
+    base_df = _fill_tier_estimation_se(base_df)
     if horizon < 1 or season is None:
         return base_df
 
@@ -897,8 +930,43 @@ def project_cold_start(
             "xpts_var": base["xpts_var"] * mult ** 2,
             "start_probability": base["start_probability"],
             "proj_source": base["proj_source"],
+            # SE is in the same units as xpts, so it scales with the fixture
+            # multiplier exactly as the mean does. Dropping it here would have
+            # silently disabled the per-player shrinkage for every horizon
+            # gameweek -- i.e. for every gameweek the optimiser actually reads.
+            "estimation_se": base.get("estimation_se", float("nan")) * mult,
         })
     return pd.DataFrame(horizon_rows)
+
+
+def _fill_tier_estimation_se(df: pd.DataFrame) -> pd.DataFrame:
+    """Give the pooled/synthetic tiers an estimation SE, scaled off the
+    measured prior-season one (§19).
+
+    ``prior_season`` players carry a real standard error: the spread of their
+    own points-per-appearance divided by the root of how many appearances they
+    made. Everyone else was estimated from a group, so their uncertainty about
+    the INDIVIDUAL is larger, and ``_TIER_SE_MULTIPLE`` says by how much.
+
+    Anchoring to the measured median keeps the whole scale honest — if a
+    season's prior-season players happen to be unusually consistent, the
+    pooled tiers tighten with them instead of staying pinned to a stale
+    absolute.
+    """
+    if df.empty or "estimation_se" not in df.columns:
+        return df
+    measured = df.loc[df["proj_source"] == "prior_season", "estimation_se"]
+    measured = measured[measured > 0]
+    # Nothing measured to anchor against (a season of pure unknowns, or a test
+    # fixture): leave the column NaN and the shrinkage falls back to uniform.
+    if measured.empty:
+        return df
+    base = float(measured.median())
+    out = df.copy()
+    for tier, multiple in _TIER_SE_MULTIPLE.items():
+        mask = (out["proj_source"] == tier) & out["estimation_se"].isna()
+        out.loc[mask, "estimation_se"] = base * multiple
+    return out
 
 
 def build_initial_squad(

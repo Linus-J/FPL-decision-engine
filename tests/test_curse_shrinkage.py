@@ -205,3 +205,99 @@ def test_the_group_mean_ignores_players_who_will_not_feature():
         assert without[without["player_id"] == pid]["xpts"].iloc[0] == pytest.approx(
             with_padding[with_padding["player_id"] == pid]["xpts"].iloc[0]
         )
+
+
+# --- per-player empirical Bayes (engine review §19) --------------------------
+
+def _priced(rows):
+    """players frame with a price, so shrinkage can band by it."""
+    return pd.DataFrame(
+        [{"id": pid, "position": pos, "now_cost": cost} for pid, pos, cost in rows]
+    )
+
+
+def test_a_well_measured_player_is_shrunk_less_than_an_uncertain_one():
+    """The whole point of §19. Two players with the SAME projection, differing
+    only in how well that projection is known: the confident one must keep more
+    of its distance from the group mean.
+
+    A uniform shrink cannot express this — it moves both identically, which is
+    why it can correct the level but never the selection.
+    """
+    projections = pd.DataFrame([
+        {"player_id": 1, "gameweek": 1, "xpts": 8.0, "estimation_se": 0.1},
+        {"player_id": 2, "gameweek": 1, "xpts": 8.0, "estimation_se": 3.0},
+        {"player_id": 3, "gameweek": 1, "xpts": 4.0, "estimation_se": 0.1},
+        {"player_id": 4, "gameweek": 1, "xpts": 2.0, "estimation_se": 0.1},
+    ])
+    players = _priced([(1, "MID", 8.0), (2, "MID", 8.0), (3, "MID", 8.0), (4, "MID", 8.0)])
+    out = apply_curse_shrinkage(projections, players).set_index("player_id")
+
+    confident = out.loc[1, "xpts"]
+    uncertain = out.loc[2, "xpts"]
+    assert confident > uncertain, "the better-measured estimate must survive better"
+    # And the ordering between them is NEW information -- they were tied before.
+    assert out.loc[1, "xpts_raw"] == out.loc[2, "xpts_raw"]
+
+
+def test_per_player_shrinkage_reorders_players():
+    """A uniform shrink is affine within a group, so it preserves ranking
+    exactly and provably cannot change who the optimiser picks. Per-player
+    shrinkage must be able to overturn a ranking, or it is not correcting a
+    selection bias either."""
+    projections = pd.DataFrame([
+        # A narrowly ahead of B on the raw number, but far less certain.
+        {"player_id": 1, "gameweek": 1, "xpts": 6.2, "estimation_se": 4.0},
+        {"player_id": 2, "gameweek": 1, "xpts": 6.0, "estimation_se": 0.05},
+        {"player_id": 3, "gameweek": 1, "xpts": 3.0, "estimation_se": 0.05},
+        {"player_id": 4, "gameweek": 1, "xpts": 2.0, "estimation_se": 0.05},
+    ])
+    players = _priced([(1, "MID", 6.0), (2, "MID", 6.0), (3, "MID", 6.0), (4, "MID", 6.0)])
+    out = apply_curse_shrinkage(projections, players).set_index("player_id")
+
+    assert out.loc[1, "xpts_raw"] > out.loc[2, "xpts_raw"]
+    assert out.loc[2, "xpts"] > out.loc[1, "xpts"], "the reliable estimate must win"
+
+
+def test_missing_estimation_se_falls_back_to_the_flat_rate():
+    """A partially annotated frame must degrade one player at a time, not
+    collapse the whole group."""
+    projections = pd.DataFrame([
+        {"player_id": 1, "gameweek": 1, "xpts": 8.0, "estimation_se": 0.1},
+        {"player_id": 2, "gameweek": 1, "xpts": 6.0, "estimation_se": float("nan")},
+        {"player_id": 3, "gameweek": 1, "xpts": 4.0, "estimation_se": 0.1},
+    ])
+    players = _priced([(1, "MID", 6.0), (2, "MID", 6.0), (3, "MID", 6.0)])
+    out = apply_curse_shrinkage(projections, players).set_index("player_id")
+
+    mean = projections["xpts"].mean()
+    expected = mean + (1.0 - CURSE_SHRINKAGE_STRENGTH) * (6.0 - mean)
+    assert out.loc[2, "xpts"] == pytest.approx(expected)
+
+
+def test_shrinkage_target_is_price_banded_when_per_player():
+    """A cheap unknown must regress toward other cheap players, not toward the
+    whole position's average.
+
+    Measured before this was fixed: peer-bucket players were pulled UP by 0.22
+    xPts on average, because the position mean includes every premium — and the
+    GW1 squad swapped a premium defender out for budget names on the strength
+    of it. Price is the market's own expectation of a player.
+    """
+    projections = pd.DataFrame([
+        {"player_id": 1, "gameweek": 1, "xpts": 9.0, "estimation_se": 0.1},
+        {"player_id": 2, "gameweek": 1, "xpts": 9.2, "estimation_se": 0.1},
+        {"player_id": 3, "gameweek": 1, "xpts": 8.8, "estimation_se": 0.1},
+        # A cheap unknown, far below the premiums above.
+        {"player_id": 4, "gameweek": 1, "xpts": 2.0, "estimation_se": 3.0},
+        {"player_id": 5, "gameweek": 1, "xpts": 2.2, "estimation_se": 3.0},
+        {"player_id": 6, "gameweek": 1, "xpts": 1.8, "estimation_se": 3.0},
+    ])
+    players = _priced([
+        (1, "MID", 12.0), (2, "MID", 12.0), (3, "MID", 12.0),
+        (4, "MID", 4.5), (5, "MID", 4.5), (6, "MID", 4.5),
+    ])
+    out = apply_curse_shrinkage(projections, players).set_index("player_id")
+    # Banded by price, the cheap player regresses toward ~2.0, not toward the
+    # all-MID mean of ~5.5 -- so he must not be inflated past his own band.
+    assert out.loc[4, "xpts"] < 3.0
