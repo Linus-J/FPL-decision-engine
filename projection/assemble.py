@@ -495,11 +495,107 @@ def load_penalty_duty(season: str) -> dict[int, float]:
     return {int(pid): float(xg or 0.0) for pid, xg in rows}
 
 
+# How much weight the PRIOR season's per-match rate carries, expressed in
+# current-season gameweeks (2026-08-18, engine review §20 follow-up). At n
+# played gameweeks the current season gets n/(n + this) of the blend, so:
+#
+#   after 1 GW   -> 25% current, 75% prior
+#   after 3 GWs  -> 50/50
+#   after 10 GWs -> 77% current
+#   after 20 GWs -> 87% current
+#
+# Deliberately modest. A rate measured over one match is nearly worthless on
+# its own, and the alternative the engine used was not "wait for data" but
+# "assume zero" -- which is a far stronger and far wronger claim than "he is
+# probably similar to last year". Untuned starting value, same convention as
+# the other heuristic constants; 0.0 disables blending exactly.
+_PRIOR_SEASON_BLEND_GWS = 3.0
+
+_PRIOR_RATE_SOURCES = (
+    "xg", "npxg", "xa", "key_passes", "yellow_cards", "red_cards",
+    "cbit", "cbirt", "dribbles",
+)
+
+
+def load_prior_season_rates(prior_season: str) -> pd.DataFrame:
+    """Per-player per-match means from the PRIOR season, indexed by player_id.
+
+    ``players.id`` is the stable cross-season identity (the table is upserted
+    on the FPL ``code``), so this joins straight onto the current season's
+    players without a name match — verified: 534 player_ids appear in both
+    2024-25 and 2025-26.
+
+    Returns an empty frame when the prior season has no data, which makes the
+    blend below a no-op rather than an error.
+    """
+    hist = load_all_stats(prior_season)
+    if hist.empty:
+        return pd.DataFrame()
+    df = hist.copy()
+    defcon_events = load_defcon_events(prior_season)
+    if not defcon_events.empty:
+        de = defcon_events.copy()
+        de["cbit"] = de["clearances"] + de["blocks"] + de["interceptions"] + de["tackles"]
+        de["cbirt"] = de["cbit"] + de["recoveries"]
+        df = df.merge(
+            de[["player_id", "gameweek", "season", "cbit", "cbirt", "dribbles"]],
+            on=["player_id", "gameweek", "season"], how="left",
+        )
+    if "minutes" in df.columns:
+        df = df[df["minutes"] > 0]
+    if df.empty:
+        return pd.DataFrame()
+    for col in _PRIOR_RATE_SOURCES:
+        if col not in df.columns:
+            df[col] = 0.0
+        df[col] = df[col].fillna(0.0)
+    return df.groupby("player_id")[list(_PRIOR_RATE_SOURCES)].mean()
+
+
+def _blend_toward_prior(
+    last: pd.DataFrame,
+    played: pd.Series,
+    prior_rates: pd.DataFrame,
+    rate_cols: dict[str, str],
+    blend_gws: float = _PRIOR_SEASON_BLEND_GWS,
+) -> pd.DataFrame:
+    """Shrink each current-season rate toward the same player's prior-season
+    rate, weighted by how many gameweeks the current one is actually built on.
+
+    This is the general form of the §20 fix. Removing the stray ``shift(1)``
+    stopped the engine throwing away its newest gameweek, but it could not help
+    the deeper problem: at GW2 a rate rests on ONE match, and by GW5 on four.
+    The engine's implicit answer to "what do I know about this player" was
+    whatever those few matches happened to say — and, before §20, literally
+    zero. A whole prior season of real per-match rates sat unused two feet away.
+
+    Weighting by sample size is the standard answer and needs no tuning
+    beyond the prior's strength: a player with one match is mostly last
+    season's player, a player with fifteen is mostly this season's. New
+    signings and promoted-club players simply have no prior row and are left
+    on their current-season rate alone.
+    """
+    if prior_rates.empty or blend_gws <= 0:
+        return last
+    out = last.copy()
+    n = played.reindex(out.index).fillna(0.0).astype(float)
+    weight_current = n / (n + blend_gws)
+    for src, col in rate_cols.items():
+        if src not in prior_rates.columns or col not in out.columns:
+            continue
+        prior = prior_rates[src].reindex(out.index)
+        blended = weight_current * out[col] + (1.0 - weight_current) * prior
+        # A player absent from the prior season keeps their current rate.
+        out[col] = blended.where(prior.notna(), out[col])
+    return out
+
+
 def _build_rolling_features(
     history: pd.DataFrame,
     defcon_events: pd.DataFrame,
     penalty_duty: dict[int, float] | None = None,
     target_gw: int | None = None,
+    prior_rates: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Per player, as-of ``history``: leakage-free rolling rates feeding the
     components — same
@@ -563,6 +659,11 @@ def _build_rolling_features(
         )
 
     last = df.groupby("player_id").last()
+    # Gameweeks each player's current-season rate is actually built on, which
+    # is what decides how far to lean on last season below.
+    played_gws = df.groupby("player_id")["gameweek"].nunique()
+    if prior_rates is not None:
+        last = _blend_toward_prior(last, played_gws, prior_rates, rate_cols)
 
     # Penalty duty (2026-08-16). `goal_weight` is the share by which a team's
     # drawn goals get attributed to each player, in expected-goals-per-game
@@ -642,6 +743,7 @@ def assemble_gw_projections(
     persist_samples: bool = False,
     season: str | None = None,
     strength_rel: Mapping[int, Mapping[str, float]] | None = None,
+    prior_rates: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """P10: replaces ``points_model.predict_batch`` as ``_build_gw_projections``'s
     xPts source. ``all_stats`` (unfiltered, ALL gameweeks) supplies fixture
@@ -687,6 +789,7 @@ def assemble_gw_projections(
         history, defcon_events,
         penalty_duty=load_penalty_duty(season) if season else None,
         target_gw=target_gw,
+        prior_rates=prior_rates,
     )
     bands = predict_minutes_bands(history, minutes_model)
 

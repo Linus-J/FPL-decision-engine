@@ -9,6 +9,7 @@ from config.strategy import OPTIMISER
 from data.db import get_session
 from data.models import Gameweek, PlayerProjection
 from projection import assemble
+from projection.cold_start import prior_season_of
 from projection.minutes_model import train as train_minutes
 
 logger = logging.getLogger(__name__)
@@ -273,6 +274,10 @@ def run_projections(
         # §2: fixture differentiation past the priced window. Odds cover the
         # next week or two; this horizon runs to five.
         strength_rel=assemble.load_team_strength_rel(season),
+        # §20 follow-up: early in a season a rolling rate rests on one or two
+        # matches. Lean on last season's per-match rates until this one has
+        # enough of its own to speak for itself.
+        prior_rates=assemble.load_prior_season_rates(prior_season_of(season)),
     )
 
     if not projections_df.empty:

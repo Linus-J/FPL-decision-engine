@@ -108,3 +108,61 @@ def test_rolling_rates_never_see_the_target_gameweek():
     hist, defcon = _history(3, {1: 10, 2: 10, 3: 1000})
     rate = _build_rolling_features(hist, defcon, target_gw=3).loc[1, "defcon_rate"]
     assert rate == pytest.approx(10.0)
+
+
+# --- prior-season blending (engine review §20 follow-up) ---------------------
+
+def _prior(cbit_per_match: float):
+    import pandas as pd
+
+    return pd.DataFrame(
+        {"cbit": [cbit_per_match], "cbirt": [cbit_per_match]}, index=[1]
+    ).rename_axis("player_id")
+
+
+def test_early_season_rate_leans_on_last_season():
+    """At GW2 a rate rests on ONE match. The engine's implicit answer to "what
+    do I know about this player" was whatever that single match said — and,
+    before §20, exactly zero — while a whole prior season of real per-match
+    rates sat unused.
+
+    Weight is by sample size: with one played gameweek and a prior worth three,
+    the current season gets 1/(1+3) = 25%.
+    """
+    from projection.assemble import _build_rolling_features
+
+    hist, defcon = _history(1, {1: 20})
+    blended = _build_rolling_features(
+        hist, defcon, prior_rates=_prior(4.0)
+    ).loc[1, "defcon_rate"]
+    assert blended == pytest.approx(0.25 * 20.0 + 0.75 * 4.0)
+
+
+def test_the_current_season_takes_over_as_it_accumulates():
+    """The prior must fade, not linger — by the time a real sample exists it
+    should be doing almost nothing."""
+    from projection.assemble import _build_rolling_features
+
+    weights = []
+    for n in (1, 2, 3, 4):
+        hist, defcon = _history(n, dict.fromkeys(range(1, n + 1), 20))
+        rate = _build_rolling_features(
+            hist, defcon, prior_rates=_prior(0.0)
+        ).loc[1, "defcon_rate"]
+        weights.append(rate / 20.0)          # share of the blend the season holds
+    assert weights == sorted(weights), "current-season weight must be monotonic"
+    assert weights[0] == pytest.approx(0.25)
+    assert weights[-1] == pytest.approx(4 / 7)
+
+
+def test_a_player_with_no_prior_season_keeps_their_own_rate():
+    """New signings and promoted-club players have no prior row. They must be
+    left alone rather than blended toward a NaN or a league default."""
+    import pandas as pd
+
+    from projection.assemble import _build_rolling_features
+
+    hist, defcon = _history(1, {1: 20})
+    empty_prior = pd.DataFrame(columns=["cbit", "cbirt"]).rename_axis("player_id")
+    rate = _build_rolling_features(hist, defcon, prior_rates=empty_prior).loc[1, "defcon_rate"]
+    assert rate == pytest.approx(20.0)
