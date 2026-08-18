@@ -8,6 +8,62 @@ when.
 
 ---
 
+## The final run (2026-08-19, verified 2026-08-18)
+
+State as checked on the 18th: `v2` already carries every change from the
+engine review except the vice-captain fix, and merging the rest is a real
+merge with **zero conflicts** — the `data/simulations/*.json` clashes from
+earlier in the day are already resolved. `v2` is 17 commits ahead of
+`origin/v2` and unpushed.
+
+```bash
+# 1. one commit left to merge; no conflicts expected
+git merge worktree-engine-review
+
+# 2. full cycle. Re-ingests odds, which matters: prices move on team news
+#    right up to kickoff, and the team-name matcher fix means all 10 GW1
+#    fixtures now price (it was 6 of 10 before).
+uv run python scripts/run_weekly.py --dry-run
+
+# 3. preflight WILL fail on decision-surface drift. That is the guard doing
+#    its job -- the squad changed. Read the diff, then accept it.
+uv run python scripts/preflight.py --update-baseline
+
+# 4. see the reasoning behind the squad before typing it in
+uv run python scripts/explain_squad.py --pool 10 --out /tmp/why.md
+```
+
+Then enter the squad by hand (§1 below). `DRY_RUN=true`, so nothing submits
+itself.
+
+Worth doing at some point: `git push origin v2`. Seventeen commits of the
+review exist only on this machine.
+
+**What to look at in the explainer**, in order of how much it tends to change
+your mind:
+
+- *Who has actually played for this club* — the shortlist for a team-news
+  check. Anyone with no minutes at his current club is rated on someone
+  else's team, and the model cannot know it.
+- *Margins* — a pick worth under about half a point over its replacement is
+  not really a decision. Those are the free slots for a hunch of your own.
+- *How much is measured vs modelled* — only GW1 has bookmaker odds. Any
+  reasoning about gameweeks three or more out rests on the modelled part.
+- *Correlated exposure* — clubs at the three-player cap, and any keeper
+  sharing a clean sheet with his own defender. The objective is blind to
+  both.
+
+**Overrides.** `config/transfer_overrides.yaml` has two tiers. `exclude` is a
+hard veto: out of the pool, force-sold if ever owned, and blocked from
+returning via a transfer. `rotation_risk` is a soft cap on start probability
+that discounts but lets the optimiser decide anyway — on the live frame two of
+five capped players were still selected. Currently eight vetoes and no caps.
+Both are hand-edited and both want a reason and a date.
+
+A managerial change is the case neither tier can infer and only you can enter:
+it breaks the assumption the minutes model rests on — that a player's own
+recent record predicts his next start — and nothing in the data marks one.
+
 ## Before the deadline
 
 ### 1. Enter the squad on the FPL site
