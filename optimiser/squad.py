@@ -355,7 +355,14 @@ def optimise_squad(
     # XI — without letting bench quality compete with the starting XI for
     # budget on equal terms.
     prob += pulp.lpSum(
-        scores[i] * (starting[i] + captain[i]) for i in range(n)
+        scores[i] * (starting[i] + captain[i])
+        # The armband only passes to the vice when the captain does not
+        # feature, so it is worth P(captain blanks) x his score. Without this
+        # term `vice` is constrained but unvalued, every legal choice ties, and
+        # the solver returns whichever it branched on -- a goalkeeper, on the
+        # live frame, while a 7.43-xPts defender sat in the same XI.
+        + cfg.vice_captain_weight * scores[i] * vice[i]
+        for i in range(n)
     ) + _bench_objective(prob, selected, starting, scores, positions, cfg, "a")
 
     prob += pulp.lpSum(selected) == SQUAD.squad_size
@@ -405,7 +412,9 @@ def optimise_squad(
         captain2 = [pulp.LpVariable(f"cap2_{i}", cat="Binary") for i in range(n)]
         vice2 = [pulp.LpVariable(f"vic2_{i}", cat="Binary") for i in range(n)]
         prob2 += pulp.lpSum(
-            scores[i] * (starting2[i] + captain2[i]) for i in range(n)
+            scores[i] * (starting2[i] + captain2[i])
+            + cfg.vice_captain_weight * scores[i] * vice2[i]
+            for i in range(n)
         ) + _bench_objective(prob2, selected2, starting2, scores, positions, cfg, "b")
         prob2 += pulp.lpSum(selected2) == SQUAD.squad_size
         prob2 += pulp.lpSum(costs[i] * selected2[i] for i in range(n)) <= budget
@@ -583,7 +592,11 @@ def optimise_starting_xi(
     captain = [pulp.LpVariable(f"cap_{i}", cat="Binary") for i in range(n)]
     vice = [pulp.LpVariable(f"vic_{i}", cat="Binary") for i in range(n)]
 
-    prob += pulp.lpSum(scores[i] * (starting[i] + captain[i]) for i in range(n))
+    prob += pulp.lpSum(
+        scores[i] * (starting[i] + captain[i])
+        + cfg.vice_captain_weight * scores[i] * vice[i]
+        for i in range(n)
+    )
 
     prob += pulp.lpSum(starting) == 11
     prob += pulp.lpSum(captain) == 1
