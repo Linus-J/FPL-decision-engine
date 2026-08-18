@@ -24,7 +24,7 @@ from config.strategy import PRIOR_LEAGUE, SCORING
 from data.db import get_session
 from data.overrides import apply_team_overrides
 from projection.assists import expected_assist_points
-from projection.fixture_adjust import fixture_multiplier
+from projection.fixture_adjust import fixture_points_multiplier
 from projection.goals import expected_goal_points
 
 logger = logging.getLogger(__name__)
@@ -523,6 +523,85 @@ def load_prior_defence_strength_by_code(prior_season: str) -> dict[int, float]:
     return result
 
 
+def load_fixture_lambdas(
+    season: str, target_gw: int, horizon: int
+) -> dict[tuple[int, int], tuple[float, float]]:
+    """(team_id, gameweek) -> (own expected goals, opponent's), for the horizon.
+
+    Odds where the bookmakers have priced the fixture, the calibrated strength
+    model where they have not (2026-08-18). Until now the cold start used
+    neither: it scored fixtures off a raw strength RATIO whose whole observed
+    range on GW1 was 0.89 to 1.10, while the six priced fixtures span 0.46 to
+    1.72. Six of GW1's ten fixtures had real odds sitting unused in
+    ``fixture_odds`` on the day the initial squad was built.
+
+    Reads the latest quote per fixture. Pre-deadline that is simply the freshest
+    price; there is no as-of subtlety here because the squad is built before any
+    of these fixtures kick off.
+    """
+    db = get_session()
+    try:
+        fixtures = pd.read_sql(
+            text("""
+                SELECT f.id, f.gameweek, f.team_h_id, f.team_a_id
+                FROM fixtures f
+                WHERE f.season = :season
+                  AND f.gameweek >= :start AND f.gameweek < :end
+            """),
+            db.bind,
+            params={"season": season, "start": target_gw, "end": target_gw + horizon},
+        )
+        odds = pd.read_sql(
+            text("""
+                SELECT fo.fixture_id, fo.home_win_prob, fo.draw_prob,
+                       fo.away_win_prob, fo.over25_prob
+                FROM fixture_odds fo
+                JOIN (SELECT fixture_id, MAX(fetched_at) m FROM fixture_odds
+                      GROUP BY fixture_id) latest
+                  ON latest.fixture_id = fo.fixture_id AND latest.m = fo.fetched_at
+            """),
+            db.bind,
+        )
+    finally:
+        db.close()
+    if fixtures.empty:
+        return {}
+
+    priced = {
+        int(r.fixture_id): (r.home_win_prob, r.draw_prob, r.away_win_prob, r.over25_prob)
+        for r in odds.itertuples()
+    } if not odds.empty else {}
+
+    from projection.assemble import load_team_strength_rel
+    from projection.team_goals import team_goals_from_odds, team_goals_from_strength
+
+    strength = load_team_strength_rel(season)
+    out: dict[tuple[int, int], tuple[float, float]] = {}
+    n_priced = 0
+    for f in fixtures.itertuples():
+        if int(f.id) in priced:
+            h, d, a, o = priced[int(f.id)]
+            lam_h, lam_a = team_goals_from_odds(float(h), float(d), float(a), float(o))
+            n_priced += 1
+        else:
+            sh = strength.get(int(f.team_h_id), {})
+            sa = strength.get(int(f.team_a_id), {})
+            lam_h, lam_a = team_goals_from_strength(
+                home_attack_rel=sh.get("strength_attack_home"),
+                home_defence_rel=sh.get("strength_defence_home"),
+                away_attack_rel=sa.get("strength_attack_away"),
+                away_defence_rel=sa.get("strength_defence_away"),
+            )
+        out[(int(f.team_h_id), int(f.gameweek))] = (lam_h, lam_a)
+        out[(int(f.team_a_id), int(f.gameweek))] = (lam_a, lam_h)
+    logger.info(
+        "Horizon fixture lambdas: %d of %d fixtures priced by bookmakers, "
+        "%d from the strength model",
+        n_priced, len(fixtures), len(fixtures) - n_priced,
+    )
+    return out
+
+
 def load_horizon_fixtures(
     players: pd.DataFrame, season: str, target_gw: int, horizon: int,
 ) -> pd.DataFrame:
@@ -612,8 +691,9 @@ def load_horizon_fixtures(
         )
 
     merged = players[["id", "team_id"]].merge(fixtures_by_team, on="team_id", how="inner")
+    merged["own_team_id"] = merged["team_id"]
     return merged.rename(columns={"id": "player_id"})[
-        ["player_id", "gameweek", "opp_defence_strength", "was_home"]
+        ["player_id", "gameweek", "opp_defence_strength", "was_home", "own_team_id"]
     ]
 
 
@@ -894,6 +974,9 @@ def project_cold_start(
             "xpts_var": xpts_var,
             "start_probability": start_prob,
             "proj_source": source,
+            # Carried so the horizon expansion can split the fixture effect
+            # between the attacking and clean-sheet channels (§ fixture model).
+            "position": r.position,
             # NaN for the pooled/synthetic tiers; filled in below once the
             # measured prior-season scale is known.
             "estimation_se": estimation_se if source == "prior_season" else float("nan"),
@@ -917,12 +1000,28 @@ def project_cold_start(
         return pd.concat(repeated, ignore_index=True)
 
     base_by_player = base_df.set_index("player_id")
+    # Expected goals per (team, gameweek): odds where priced, calibrated
+    # strength model otherwise (2026-08-18).
+    lambdas = load_fixture_lambdas(season, target_gw, horizon)
     horizon_rows: list[dict] = []
     for f in fixtures.itertuples():
         if f.player_id not in base_by_player.index:
             continue
         base = base_by_player.loc[f.player_id]
-        mult = fixture_multiplier(f.opp_defence_strength, f.was_home)
+        lam_for, lam_against = lambdas.get(
+            (int(f.own_team_id), int(f.gameweek)), (None, None)
+        )
+        # `xpts` is already unconditional (per-appearance points x p_appear), so
+        # divide back out to recover the per-APPEARANCE figure the appearance
+        # floor is defined against. start_probability stands in for p_appear:
+        # they differ a little, and the floor is a second-order correction, so
+        # the approximation costs far less than skipping the floor would.
+        p_play = float(base.get("start_probability") or 0.0)
+        per_app = float(base["xpts"]) / max(p_play, 0.1)
+        mult = fixture_points_multiplier(
+            lam_for, lam_against, f.was_home, per_app,
+            str(base.get("position") or "MID"),
+        )
         horizon_rows.append({
             "player_id": f.player_id,
             "gameweek": f.gameweek,
@@ -930,6 +1029,7 @@ def project_cold_start(
             "xpts_var": base["xpts_var"] * mult ** 2,
             "start_probability": base["start_probability"],
             "proj_source": base["proj_source"],
+            "position": base.get("position"),
             # SE is in the same units as xpts, so it scales with the fixture
             # multiplier exactly as the mean does. Dropping it here would have
             # silently disabled the per-player shrinkage for every horizon

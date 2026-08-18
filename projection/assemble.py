@@ -343,12 +343,21 @@ def load_team_strength_rel(season: str) -> dict[int, dict[str, float]]:
         "strength_attack_home", "strength_attack_away",
         "strength_defence_home", "strength_defence_away",
     ]
-    usable = rows[(rows[cols] >= _PLAUSIBLE_STRENGTH_FLOOR).all(axis=1)]
+    # Per COLUMN, not per row (2026-08-18). Requiring all four to be published
+    # dropped a team outright when FPL had released, say, defence but not
+    # attack -- even though `team_goals_from_strength` is explicitly built to
+    # degrade one term at a time. Below-floor values become NaN and that
+    # promise is honoured; a row with nothing usable falls out naturally.
+    usable = rows.copy()
+    for col in cols:
+        usable.loc[usable[col] < _PLAUSIBLE_STRENGTH_FLOOR, col] = np.nan
+    usable = usable[usable[cols].notna().any(axis=1)]
     if usable.empty:
         return {}
 
     current = usable[usable["season"] == season].set_index("team_id")
-    prior_by_code = usable[usable["season"] != season].set_index("code")
+    prior_by_code = usable[usable["season"] != season].dropna(subset=["code"])
+    prior_by_code = prior_by_code.set_index("code")
     # team_id -> code, taken from whichever season knows it.
     code_by_team = (
         rows.dropna(subset=["code"]).set_index("team_id")["code"].astype(int).to_dict()
@@ -364,14 +373,21 @@ def load_team_strength_rel(season: str) -> dict[int, dict[str, float]]:
             if code is None or code not in prior_by_code.index:
                 continue
             src = prior_by_code.loc[code]
-        resolved[team_id] = {c: float(src[c]) for c in cols}
+        resolved[team_id] = {
+            c: float(src[c]) for c in cols if pd.notna(src[c])
+        }
 
     if not resolved:
         return {}
 
-    means = {c: float(np.mean([v[c] for v in resolved.values()])) for c in cols}
+    means = {}
+    for c in cols:
+        vals = [v[c] for v in resolved.values() if c in v]
+        means[c] = float(np.mean(vals)) if vals else 0.0
     return {
-        team_id: {c: v[c] / means[c] if means[c] > 0 else 1.0 for c in cols}
+        team_id: {
+            c: v[c] / means[c] for c in cols if c in v and means[c] > 0
+        }
         for team_id, v in resolved.items()
     }
 
@@ -1012,11 +1028,17 @@ def apply_curse_shrinkage(projections: pd.DataFrame, players: pd.DataFrame) -> p
     Returns ``projections`` unchanged (no-op, not even ``xpts_raw`` added)
     if it's empty or ``players`` lacks ``position`` — a minimal test/caller
     fixture without position data has nothing this can safely group by."""
-    if projections.empty or "position" not in players.columns:
+    has_position = "position" in projections.columns or "position" in players.columns
+    if projections.empty or not has_position:
         return projections
 
-    merge_cols = ["id", "position"]
-    if "now_cost" in players.columns:
+    # Take only what `projections` does not already carry -- the cold-start
+    # frame now brings its own `position`, and merging a second one produces
+    # position_x/position_y and a KeyError below.
+    merge_cols = ["id"]
+    if "position" not in projections.columns:
+        merge_cols.append("position")
+    if "now_cost" in players.columns and "now_cost" not in projections.columns:
         merge_cols.append("now_cost")
     out = projections.merge(
         players[merge_cols], left_on="player_id", right_on="id", how="left"

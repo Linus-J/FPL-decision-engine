@@ -1,11 +1,11 @@
 {
   "bench_order": [
     "Dubravka",
-    "Yarmoliuk",
-    "Simms",
-    "Scarlett"
+    "Targett",
+    "Mheuka",
+    "Furo"
   ],
-  "captain": "B.Fernandes",
+  "captain": "Gabriel",
   "chips_left_this_half": 4,
   "cost": 100.0,
   "degenerate": [
@@ -23,18 +23,18 @@
     "Anderson",
     "B.Fernandes",
     "Dubravka",
+    "Furo",
     "Gabriel",
     "Gibbs-White",
     "Gu\u00e9hi",
+    "Mheuka",
     "Raya",
-    "Scarlett",
+    "Rice",
     "Semenyo",
-    "Senesi",
-    "Simms",
+    "Targett",
     "Tarkowski",
     "Thiago",
-    "Virgil",
-    "Yarmoliuk"
+    "Virgil"
   ],
   "starting_xi": [
     "Anderson",
@@ -43,8 +43,8 @@
     "Gibbs-White",
     "Gu\u00e9hi",
     "Raya",
+    "Rice",
     "Semenyo",
-    "Senesi",
     "Tarkowski",
     "Thiago",
     "Virgil"
