@@ -1,378 +1,252 @@
-# FPL 2026/27 Autonomous Bot
+# FPL Decision Engine — 2026/27
 
-A Fantasy Premier League system with three parts:
+A Fantasy Premier League decision engine. It ingests live data, projects every
+player's points as a **distribution** rather than a number, and solves for the
+squad, transfers, captain and chip timing that maximise expected points over a
+rolling horizon. Then it explains itself and hands you a team sheet.
 
-1. **The decision engine** — each run ingests live data, projects player points via a distributional Monte-Carlo pipeline, optimises squad and transfers via integer linear programming, decides chip usage, records the decision, and sends a Telegram summary. Submission to FPL is **out of scope**: the bot decides, you enter the team.
-2. **A read-only dashboard** (Streamlit) — one place to check your live squad + projected points, fixtures/DGW exposure, injury news, past-decision history (projected vs actual), and the bot's next planned chip/transfer.
-3. **A live simulation engine** — 90 "shadow" managers, each varying one parameter of the decision engine, stepped forward through the exact same decision logic as the real bot every scheduled run. Never submitted to the real FPL app — it is the project's validation instrument, and the design is a one-factor-at-a-time experiment so a single season's results are interpretable.
+**It cannot submit a team, and that is deliberate.** There is no login, no
+credentials, no `--live` flag and no submission module — the capability was
+removed in August 2026 rather than left switched off, because a flag that turns
+autonomous play back on is a flag that can be set by accident. The engine
+decides; you review the reasoning and enter the squad yourself.
 
-> **📖 [How the decision engine works](docs/decision-engine.md)** — high-level
-> explanation of the approach and the ideas behind it, then a call-by-call
-> reference. Start there.
->
-> Note: submission to the FPL API is **not** in scope — the bot decides, you
-> enter the team. See the doc for what else is deliberately excluded.
->
-> **[GW1 checklist](docs/gw1-checklist.md)** — the current squad to enter, and
-> what to run before/after the deadline.
->
-> **[Database audit](docs/db-audit-2026-08-16.md)** — full pre-season data
-> interrogation across four passes: nineteen defects found, entity resolution
-> measured, every all-null column explained.
->
-> **Before trusting a change**, run `python scripts/preflight.py`. It checks
-> the squad against FPL's rules and diffs the whole decision surface against a
-> committed baseline. Five of those nineteen defects were introduced by fixes
-> made the same day, each passing the tests and the data gate — drift against
-> the baseline is what catches that class.
+That trade is the point of the project. An engine that has to convince a human
+each week has to be able to *show its work*, and most of what is interesting
+here is the machinery for doing that.
 
 ---
 
-## Architecture
+## What it actually does
 
-```
-config/
-  settings.py       — credentials and runtime flags (loaded from .env)
-  strategy.py       — ALL season-variable rules: scoring, chips, squad structure,
-                       DGW params, risk-aware optimiser config (risk_level/mu_baseline/mu_range)
+**Projects distributions, not point estimates.** 150 Monte Carlo scenarios per
+fixture. Team goals are drawn once per fixture-scenario and every dependent
+quantity conditions on that draw, so a goalkeeper and his own centre-back share
+a clean sheet the way they do in reality, and bonus points are a fixture-relative
+BPS ranking rather than a per-player average. Expected goals come from de-vigged
+bookmaker odds where they exist, and from a Dixon-Coles model fitted to five
+seasons of match results where they do not.
 
-data/
-  models.py         — SQLAlchemy ORM: 22 tables (players/fixtures/projections/
-                       decision_log + sim_managers/sim_decision_log for the simulation engine)
-  db.py             — SQLite engine (WAL mode), session factory, init_db()
-  overrides.py      — reads config/transfer_overrides.yaml: applies confirmed team_id
-                       corrections to the live candidate pool, feeds rumoured-departure
-                       p_leave into the optimiser's discount gate — see "Transfer Overrides"
-                       below
-  ingestors/
-    fpl_api.py           — async FPL bootstrap + fixtures + per-player GW history
-    understat_xg.py      — real per-match xG/xA/shots/key passes (soccerdata's Understat reader)
-    whoscored.py         — real per-match defensive actions (tackles/interceptions/clearances/
-                            blocks/recoveries) — the free-tier fix for DefCon + bonus accuracy
-    fbref.py / fbref_prior.py — BPS-relevant match events; Championship/top-5 prior-league
-                            bridge for promoted-team players and new signings
-    odds_api.py          — The Odds API h2h odds → CS probabilities → fixture_odds table
-    ownership.py         — top-10k ownership snapshots (differential/template scoring input)
-    injury_parser.py     — regex parser on players.news → injury_severity (0–3)
-    midweek.py           — derives midweek fixture flags (2 games in 7d with ≥3d gap)
-    press_conference.py  — Guardian API sentiment scraper → PlayerPressSignal table
-    transfermarkt.py     — Transfermarkt scraper: auto-fills confirmed transfers, writes
-                            reviewable rumour candidates — manual/on-demand, see
-                            "Transfer Overrides" below
+**Corrects for its own optimism.** Repeatedly picking whoever looks best
+oversamples players whose estimate is inflated by noise — measured here at
++1.2 to +1.3 points per player among the top 50 by projection. Per-player
+empirical-Bayes shrinkage by estimation uncertainty, banded by price so an
+unknown regresses toward players at his own price rather than toward the league.
 
-projection/
-  assemble.py       — P10 Monte-Carlo assembly: the live projection pipeline (per-fixture
-                       scenario draws for minutes/goals/assists/CS/saves/DefCon/bonus)
-  minutes_model.py  — 3-way GBT classifier: P(0 / 1-59 / 60+ minutes), calibrated
-  team_goals.py     — double-Poisson λ_home/λ_away solved from odds (1X2 + O/U2.5)
-  goals.py / assists.py / clean_sheets.py / saves.py / defcon.py / bonus.py
-                    — per-component MC samplers feeding assemble.py
-  covariance.py     — shared per-fixture team-goal latent (real teammate correlation,
-                       not independent per-player draws)
-  cold_start.py     — GW1 projections with no current-season data: established players get
-                       their own real per-GW variance from prior-season history; new
-                       signings/promoted players get mean AND variance pooled from real
-                       peers at the same position + price (not a synthetic formula);
-                       fixture-difficulty-weighted lookahead across the next N GWs
-                       (cold_start_lookahead_gws, default 5), not just single-GW xPts
-  fixture_adjust.py — per-horizon-GW opponent scaling
-  rescore.py        — 26/27 BPS re-scoring of historical actuals for backtesting
-  pipeline.py       — orchestrates assemble.py, persists to player_projections
+**Discounts what it cannot know.** A five-gameweek horizon is weighted
+`0.85^n`. Bookmakers price about one round ahead, so on a typical pre-season
+frame only ~22% of a squad's projected points rest on real odds and the rest on
+a model — weighting them equally would put full confidence in the least
+reliable numbers in the system.
 
-optimiser/
-  squad.py          — PuLP ILP: 15-man squad picker + XI selector; bench ordered by priority
-  transfers.py      — multi-period ILP transfer planner (0..max_hits), best net xPts gain
-  chips.py          — priority-ordered chip recommender (scenario-EV gated); WC H1/H2 from DB
-  scoring.py        — risk-adjusted objective: continuous risk_level [-1, 1] drives both
-                       ownership-differential weight (lambda) and variance-awareness (mu)
-  captaincy.py      — scenario-based captaincy using real joint MC draws for team-total variance
+**Prices contingencies at their probability.** The first substitute is reached
+by an automatic substitution about half the time, the third almost never, so
+bench slots are weighted 0.53 / 0.15 / 0.03 rather than uniformly. The vice
+captaincy is worth P(captain does not feature) — about 0.17 — rather than
+nothing.
 
-agent/
-  decision_engine.py — shared decision core (_run_decision_cycle) used by BOTH the real
-                        bot (run()) and every simulation persona (run_for_persona()) —
-                        same logic, different config + storage, never a forked copy
-  fpl_client.py      — async FPL API client: login, transfer submission, lineup PATCH
-  notifier.py        — Telegram notification: starting XI, bench in priority order, transfers
+**Explains the decision.** `scripts/explain_squad.py` reports, for every pick,
+what the squad loses if that player is banned and it re-solves; how much of the
+projection is measured versus modelled; which clubs sit at the selection cap;
+and which players have never actually played for the club they are now at. With
+`--pool N` it generates the N best distinct squads via no-good cuts, so you can
+see whether a pick is a conviction or a coin toss.
 
-simulation/
-  personas.py       — generates the 90-persona one-factor-at-a-time cohort
-                      (baseline control + 7 swept axes; see docs/decision-engine.md)
-  analysis.py       — season read-out: axis effects, paired deltas, calibration
-                      persisted once per season and never regenerated mid-season
-  engine.py         — steps every persona forward one GW via decision_engine.run_for_persona,
-                       each isolated by try/except so one failure can't affect another
-
-dashboard/
-  Home.py, pages/   — Streamlit multi-page app: Squad, Fixtures & DGW, Injury News,
-                       Decision History, Chip Plan, Simulations leaderboard
-  data/             — pure DB-in/DataFrame-out query functions behind each page
-
-scripts/
-  run_agent.py                   — CLI entrypoint (--dry-run / --live / --chip / --json-out)
-  run_simulations.py             — runs the weekly simulation batch (all personas)
-  run_weekly.py                  — manual kickoff: run_agent.py then run_simulations.py,
-                                    in order, regardless of the first's exit code
-  backfill_decision_outcomes.py  — fills in actual (vs projected) points once a GW finishes,
-                                    for both the real decision_log and every persona
-  backtest.py                    — walk-forward backtester (pinned to zero-variance scoring
-                                    so the exit-gate number stays comparable across changes)
-  scrape_understat_xg.py / scrape_whoscored.py / scrape_fbref.py / scrape_prior_league.py
-                                  — data ingestion runners for the sources above
-  plot_analysis.py               — generates analysis plots to results/plots/
-
-deploy/
-  fpl-bot.service   — systemd user service (chains run_agent.py + run_simulations.py)
-  fpl-bot.timer     — Fri/Sat/Sun 06:00 — disabled by default, see "Running" below
-  install.sh        — symlinks units, enables the timer if you want it
-```
+**Validates against itself.** A walk-forward backtest, a decision-surface
+baseline that fails when the answer changes for any reason, ~860 tests, and a
+cohort of ~90 shadow managers each varying one parameter through the identical
+decision code.
 
 ---
 
-## Data Sources
+## The three parts
 
-All free tier. The free-tier defensive-action gap (clearances/blocks/recoveries missing from
-FBref) turned out to be the single biggest lever on projection accuracy this project found —
-see `docs/superpowers/plans/phase-2-xpts-engine.md` for the investigation.
+1. **The decision engine** — ingest, project, optimise, explain, notify.
+2. **A read-only dashboard** (Streamlit) — live squad and projected points,
+   fixture and double-gameweek exposure, injury news, projected-versus-actual
+   history, and the next planned chip or transfer.
+3. **A simulation cohort** — ~90 shadow managers, each varying one parameter,
+   stepped through the same decision logic every run. One factor at a time, so
+   a single season's results are interpretable rather than a fog.
+
+---
+
+## Where human judgement goes in
+
+The engine has no way to know that a club has changed manager, or that a
+signing is competing for a place. It projects minutes from a player's own
+record, so a settled record at a *previous* club reads exactly like a settled
+record at this one.
+
+`config/transfer_overrides.yaml` is where you tell it, keyed by each player's
+stable `code` (not `id`/`fpl_id`, which get reassigned):
+
+| Tier | Effect |
+|---|---|
+| `confirmed` | Corrects a `team_id` FPL has not caught up on |
+| `rumoured` | Discounts a player by P(leaves) |
+| `rotation_risk` | Caps start probability — discounts, but the optimiser may still pick him |
+| `exclude` | Hard veto — out of the pool, force-sold if owned, blocked from returning |
+
+The two lower tiers are genuinely different in practice: on a live frame, two
+of five *capped* players were selected anyway, which is correct behaviour for a
+doubt and the wrong behaviour for a decision already made.
+
+A blanket "new signing" discount was measured and **rejected** — across 1,149
+player-seasons, prior-season regulars who changed club retained 95.6–97.2% of
+the minutes share that stayers retained. Whether a move costs minutes depends
+on who else plays there, so it is entered per player, with a reason and a date.
+
+---
+
+## Data sources
+
+All free tier. The free-tier defensive-action gap — clearances, blocks and
+recoveries missing from FBref — turned out to be the single biggest lever on
+projection accuracy this project found.
 
 | Source | What it provides | Key |
 |---|---|---|
-| FPL API | Players, fixtures, GW history, team strengths, live squad picks | Free |
+| FPL API | Players, fixtures, GW history, team strengths, squad picks | Free |
 | vaastav CSV archive | Historical GW stats 2021–25 (backfill) | Free |
-| Understat (via `soccerdata`) | Real per-match xG/xA/npxG/shots/key passes | Free, browserless |
-| WhoScored (via `soccerdata`) | Real per-match tackles/interceptions/clearances/blocks/recoveries — fixes the DefCon + bonus accuracy gap | Free, browser required |
-| FBref (via `soccerdata`) | Match events for BPS re-scoring; Championship/top-5 prior-league bridge | Free, browser required |
-| The Odds API | h2h + O/U2.5 odds → team-goal Poisson λ, CS probability | Free tier (500 req/month) |
-| Guardian API | Press conference text → injury/availability signals | Free (`api-key=test`) |
-| Transfermarkt (scraped) | Confirmed transfers (auto-fills team_id corrections), transfer rumours (credibility-scored candidates for manual review) | Free, no key — manual/on-demand only, see "Transfer Overrides" below |
+| Understat (via `soccerdata`) | Per-match xG/xA/npxG/shots/key passes | Free, browserless |
+| WhoScored (via `soccerdata`) | Per-match tackles/interceptions/clearances/blocks/recoveries — closes the DefCon and bonus gap | Free, browser required |
+| FBref (via `soccerdata`) | Match events for BPS re-scoring; prior-league bridge | Free, browser required |
+| The Odds API | h2h + O/U 2.5 odds → team-goal Poisson λ | Free tier (500 req/month) |
+| Guardian API | Press-conference text → availability signals | Free (`api-key=test`) |
+| Transfermarkt (scraped) | Confirmed transfers and credibility-scored rumours | Free, on-demand only |
 
 ---
 
 ## Setup
 
-### 1. Install dependencies
-
 ```bash
 uv sync
-```
-
-### 2. Configure environment
-
-```bash
-cp .env.example .env
-# Edit .env — set FPL_EMAIL, FPL_PASSWORD, FPL_TEAM_ID at minimum
+cp .env.example .env          # set FPL_TEAM_ID at minimum
 ```
 
 | Variable | Required | Description |
 |---|---|---|
-| `FPL_EMAIL` | Live only | FPL account email |
-| `FPL_PASSWORD` | Live only | FPL account password |
-| `FPL_TEAM_ID` | Yes | Your FPL team ID (from the URL on the FPL site) |
-| `THE_ODDS_API_KEY` | Optional | The Odds API key for CS probability estimates |
-| `GUARDIAN_KEY` | Optional | Guardian API key for press-conference signals (defaults to the low-volume `test` key) |
-| `TELEGRAM_BOT_TOKEN` | Optional | Telegram bot token for notifications |
-| `TELEGRAM_CHAT_ID` | Optional | Telegram chat ID to send notifications to |
-| `DRY_RUN` | — | `true` (default) = no live submissions |
-| `DB_PATH` | — | SQLite database path (default: `fpl_bot_v2.db`) |
+| `FPL_TEAM_ID` | Yes | Your FPL team ID, from the URL on the FPL site |
+| `DB_PATH` | Recommended | SQLite path. Relative paths resolve against the repo root |
+| `THE_ODDS_API_KEY` | Optional | Odds for team-goal λ. Without it, everything falls back to the fitted strength model |
+| `GUARDIAN_KEY` | Optional | Press-conference signals (defaults to the low-volume `test` key) |
+| `TELEGRAM_BOT_TOKEN` | Optional | Notifications |
+| `TELEGRAM_CHAT_ID` | Optional | Notifications |
 
-### 3. Initialise the database and backfill history
+There is no `FPL_PASSWORD` and no `DRY_RUN`. Neither exists any more; extra
+keys in an old `.env` are ignored.
+
+Initialise and backfill:
 
 ```bash
 uv run python -c "from data.db import init_db; init_db()"
 uv run python scripts/backfill_history.py
 ```
 
-This loads vaastav historical CSVs (2021–25) matched by FPL player ID — no fuzzy name matching required.
-
-### 4. Seed your current squad
-
-Before the first live run, seed your last-known squad into the decision log so the transfer
-planner has a starting point (skip this for a true GW1 cold start — `cold_start.py` builds
-an initial squad automatically when no prior decision exists):
-
-```python
-from data.db import get_session
-from data.models import DecisionLog
-import json, datetime
-
-db = get_session()
-db.add(DecisionLog(
-    gameweek=37,
-    decision_type="lineup",
-    details=json.dumps({
-        "squad_ids": [<your 15 internal player IDs>],
-        "starting_ids": [<your 11 starting internal player IDs>],
-        "captain_id": <internal player id>,
-        "vice_captain_id": <internal player id>,
-        "budget": 104.2,          # (value + bank) / 10 from FPL history API
-        "free_transfers": 5,
-    }),
-    projected_gain=0.0,
-    dry_run=True,
-    created_at=datetime.datetime.now(datetime.UTC),
-))
-db.commit()
-```
-
-Internal player IDs can be looked up via `SELECT id, fpl_id, web_name FROM players WHERE fpl_id IN (...)`.
-
-### 5. Run a dry-run decision
-
-```bash
-uv run python scripts/run_agent.py --dry-run
-```
-
-### 6. Scheduler (optional — disabled by default)
-
-```bash
-bash deploy/install.sh
-```
-
-Fires at 06:00 Fri/Sat/Sun — well before FPL's typical 11:00/11:30 deadlines.
-**Disabled by default**: the host machine isn't always on, so a systemd timer can silently
-miss a deadline entirely. Manual weekly kickoff (below) is the current workflow — re-enable
-with `systemctl --user enable --now fpl-bot.timer` if you move to an always-on host.
+For a true GW1 cold start nothing else is needed — an initial squad is built
+from prior-season data automatically. Mid-season, seed your existing squad into
+`decision_log` first so the transfer planner has a starting point.
 
 ---
 
 ## Running
 
 ```bash
-uv run python scripts/run_agent.py --dry-run              # safe preview, no submission
-uv run python scripts/run_agent.py --live                 # live submission
-uv run python scripts/run_agent.py --chip wildcard        # force a specific chip
-uv run python scripts/run_agent.py --json-out out.json    # save full decision to file
+uv run python scripts/run_weekly.py         # the whole cycle: ingest, decide, simulate
+uv run python scripts/run_agent.py          # just this gameweek's decision
+uv run python scripts/run_agent.py --chip wildcard
+uv run python scripts/run_agent.py --json-out out.json
 ```
 
-**Manual weekly kickoff** (real decision + all simulation personas, in the right order):
+`--dry-run` is accepted and ignored on both. It is kept only so existing
+commands and the systemd unit keep working; every run is what it used to mean.
+
+**Before trusting a decision:**
+
 ```bash
-uv run python scripts/run_weekly.py                       # uses .env's DRY_RUN default
-uv run python scripts/run_weekly.py --live                # live submission
+uv run python scripts/preflight.py                    # checks rules + diffs the decision surface
+uv run python scripts/explain_squad.py --pool 10      # why this squad, and how close it was
 ```
-Runs `run_simulations.py` regardless of `run_agent.py`'s exit code — it legitimately exits 1
-on the benign pre-season "no_projections" case, which must never block the simulation batch.
 
-**Dashboard**:
+Preflight diffs the whole decision surface against a committed baseline and
+fails on any drift. That matters more than it sounds: of nineteen defects found
+in one pre-season audit, five were introduced by fixes made the same day, each
+passing the tests and the data gate. Accept an intended change with
+`--update-baseline`.
+
+**Dashboard**, local and read-only:
+
 ```bash
 uv run streamlit run dashboard/Home.py
 ```
-Local-only, read-only — never triggers ingestion or submissions. Opens at `localhost:8501`.
 
-**Backfill actual outcomes** (once a gameweek finishes, for the projected-vs-actual view in
-the Decision History / Simulations dashboard pages):
+**After a gameweek finishes:**
+
 ```bash
 uv run python scripts/backfill_decision_outcomes.py --season 2026-27
 ```
 
-**Site data export** (after reviewing/overruling a `run_agent.py --dry-run` decision, to publish
-the current squad + top-15 xPts + transfer/chip history to the portfolio site's `$ fpl status`
-panel — see `linus-j.github.io`'s own repo for the display side):
-```bash
-uv run python scripts/export_site_data.py            # writes, commits, and pushes
-uv run python scripts/export_site_data.py --no-push   # writes + commits locally only, for review
-```
-Writes `data/simulations/gw{N}.json` and updates `data/simulations/index.json`. Not run
-automatically by anything — a deliberate manual step, run once you're happy with the week's
-decision (matches why the systemd timer below is disabled by default).
+**Validation:**
 
-Backtest (walk-forward, retrains per GW):
 ```bash
-uv run python scripts/backtest.py --season 2026-27 --start-gw 6 --end-gw 38 --out results/backtest.csv
+uv run python scripts/backtest.py --season 2025-26 --start-gw 6 --end-gw 38
+uv run python scripts/walk_forward_gate.py --season 2025-26
+uv run python scripts/benchmark_strength_models.py   # Dixon-Coles vs the published-strength fallback
 ```
 
-Analysis plots:
+**Scheduler** (optional, disabled by default — a timer on a machine that is not
+always on can silently miss a deadline):
+
 ```bash
-uv run python scripts/plot_analysis.py
-# Saves to results/plots/: value_map.png, top_picks.png, cs_by_team.png,
-#                           start_prob_violin.png, points_heatmap.png
+bash deploy/install.sh
 ```
 
 ---
 
-## Transfer Overrides
+## Design decisions worth knowing
 
-FPL's own bootstrap data can lag reality — a confirmed transfer takes a few days to update
-`team_id`, and there's no signal at all for a rumoured-but-not-yet-confirmed departure.
-`config/transfer_overrides.yaml` (hand-edited, version-controlled) fixes both, keyed by each
-player's stable `code` (not `id`/`fpl_id` — those get reassigned across seasons/transfers,
-`code` doesn't):
-
-```yaml
-confirmed:
-  - code: 123456        # corrects team_id ahead of FPL's own update
-    team_id: 1
-    reason: "Signed from Newcastle, not yet reflected in FPL team_id"
-    as_of: "2026-08-10"
-
-rumoured:
-  - code: 234567         # discounts (never excludes) projected points by (1 - p_leave)
-    p_leave: 0.35
-    reason: "Strongly linked to a January move per <source>"
-    as_of: "2026-08-10"
-```
-
-**`confirmed`** is read by every candidate-pool load (cold-start and in-season) — a corrected
-`team_id` is visible to the max-3-per-club constraint and the fixture-difficulty lookahead
-immediately. **`rumoured`** feeds the optimiser's existing departure-risk discount
-(`optimiser/departure_risk.py`) — the bot still considers the player, just at a
-`p_leave`-scaled discount, and logs a warning if a rumoured player still makes the final squad.
-
-### Editing it by hand
-
-Just add an entry under `confirmed`/`rumoured` with the player's `code` (look it up via
-`SELECT code, web_name FROM players WHERE web_name LIKE '%...%'`) and commit the file — no
-code changes, no restart needed, the next decision cycle picks it up.
-
-### Auto-filling it from Transfermarkt
-
-`data/ingestors/transfermarkt.py` scrapes Transfermarkt's Premier League transfers + rumours
-pages. Manual/on-demand only (not wired into `run_weekly.py`):
-
-```bash
-uv run python -c "from data.ingestors import transfermarkt as tm; tm.run(season='2026-27')"
-```
-
-- **Confirmed transfers are auto-applied** directly into `transfer_overrides.yaml`'s
-  `confirmed` list, tagged `source: transfermarkt` so a hand-written entry is never touched —
-  idempotent (safe to re-run) and self-cleaning (removes its own entries once FPL's own
-  `team_id` catches up).
-- **Rumours are never auto-applied.** They're written to a separate, gitignored
-  `config/transfer_overrides_candidates.yaml` (regenerated fresh each run, sorted by
-  Transfermarkt's own credibility "Assessment" score, floor 40%) for you to review and
-  hand-copy any you trust into `transfer_overrides.yaml`'s `rumoured` list yourself.
+- **`config/strategy.py` is the single update point** for season rule changes:
+  scoring, chip counts, squad structure, risk posture, decay. Nothing else
+  should need editing between seasons.
+- **Reported expected points are never the optimised quantity.** The objective
+  is decayed, risk-adjusted and bench-weighted; `total_xpts` is the true
+  undiscounted sum. They are deliberately separate, because a decision aid must
+  not quietly restate the thing it is predicting. One consequence: `total_xpts`
+  is *not* monotonic under added constraints, so it is the wrong number for
+  costing an override.
+- **Continuous `risk_level`, not a three-way switch** — −1.0 to +1.0, with
+  one-sided semi-deviation so risk-seeking means wanting big good weeks and
+  risk-averse means wanting few bad ones. Those are different players.
+- **The simulation cohort shares the real decision loop** — parameterised by
+  config and storage, never a forked copy.
+- **The backtest is pinned to zero-variance scoring** so the walk-forward gate
+  stays a comparable yardstick as live defaults evolve.
+- **Bench order is load-bearing**, not cosmetic: it is the order automatic
+  substitutions consult, and it is surfaced in the team sheet accordingly.
+- **SQLite in WAL mode** — sufficient for single-machine use; back up by
+  copying the file.
 
 ---
 
-## Key Design Decisions
+## Known limitations
 
-- **`DRY_RUN=true` by default** — the bot never submits live without `--live` or `DRY_RUN=false` in `.env`
-- **`config/strategy.py` is the single update point** for all season rule changes (scoring, chip counts, squad structure, DGW multipliers, risk posture). Nothing else needs editing between seasons.
-- **Continuous risk_level, not a 3-way switch** — `risk_level` runs -1.0 (safe) to +1.0 (aggressive); the variance term has a non-zero baseline so 0.0 ("medium") carries real variance-awareness rather than none. The same formula governs every gameweek's real transfer/lineup decisions, not just cold start.
-- **Risk-aware cold start** — GW1 projections have real variance (established players' own historical spread; new signings pooled from real position+price peers), so different risk postures genuinely produce different squads from day one, not just once ownership data exists mid-season.
-- **Simulation engine shares the real decision loop** — `agent/decision_engine.py::run_for_persona` calls the exact same core as the real bot's `run()`, parameterized by config + storage, never a duplicated/forked copy. It never imports `fpl_client` — no submission path exists in that code at all.
-- **Backtest is pinned to zero-variance scoring** (`scripts/backtest.py::_BACKTEST_CONFIG`) so the walk-forward exit-gate number stays a stable, comparable yardstick even as the live risk-scoring defaults evolve.
-- **Cross-season form decay** — `avg_pts_5gw_global` and `form_decay_ratio` features cross season boundaries so the model correctly downgrades players who were historically strong but are currently in poor form.
-- **Bench priority order** — GK bench slot ordered first, remaining 3 bench outfield ordered by xPts descending. Surfaced in the decision JSON, Telegram notification, and the live FPL submission payload (each of the 15 `picks` gets a genuinely unique 1-15 slot).
-- **SQLite WAL mode** — sufficient for local single-machine use; no concurrency issues; back up by copying the `.db` file.
-- **WC H1/H2 boundary** — derived dynamically from `floor(total_gws / 2)` queried from the DB, with fallback to `strategy.py`.
+Stated plainly, because the engine's job is to be checkable.
 
----
-
-## What Needs Doing Before Season Start
-
-### Critical
-
-- **Seed current squad into decision_log** — done for 2026-27. For future seasons, repeat the seeding step above after your final non-Free-Hit gameweek.
-
-- **Run Understat/WhoScored ingest once live GW1 data appears** — both are season-long scrapes; re-run after each real gameweek so DefCon/bonus accuracy keeps improving through the season.
-
-- **Verify FPL API submission format before the first real `--live` run** — the FPL API occasionally changes its transfer/lineup payload format between seasons, and this codebase's live submission path has never been exercised outside dry-run. Run `--dry-run`, inspect the payload logged, and cross-check against the current API (browser devtools on the FPL site).
-
-### Important
-
-- **Tune risk-aware scoring constants** — `mu_baseline`/`mu_range` in `config/strategy.py::OptimiserConfig` are untuned starting values (like this project's other heuristic constants). Revisit after a season's worth of real risk_level-varied outcomes from the simulation engine.
-
-- **Captain differential logic is partially addressed** — the default (non-scenario) captain pick already factors in ownership via the risk-adjusted objective, but the scenario-based MC override (`captaincy.pick_captain`, used once real fixture samples exist) only weighs mean + variance, not ownership. Worth unifying if scenario-based captaincy turns out to systematically override the differential-aware pick.
-
-- **Guardian API rate limits** — `api-key=test` allows low-volume requests. During the season with frequent press conferences, consider upgrading to a paid Guardian API key if signals start returning empty.
-
-- **Calibrate `mu_baseline`/`mu_range`/chip-timing thresholds together** — several of `config/strategy.py`'s heuristic constants (bonus GK-save scaling, chip panic-window shrink, the new risk constants) were set by judgment rather than backtesting; worth a joint calibration pass once enough live data exists.
+- **Squad-level correlation is unmodelled.** The objective sums per-player
+  variances as if independent, so it cannot see that a keeper and his own
+  centre-back share one clean sheet, and it will fill a club to the three-player
+  cap without pricing the concentration. Fixing it properly needs a quadratic
+  objective; the cheap path is sample-based re-ranking of the top-N solutions.
+- **The unpriced-gameweek model carries most of the weight.** Bookmakers price
+  one round ahead. Everything beyond that is the fitted Dixon-Coles model, and
+  it is the largest single source of uncertainty in any multi-gameweek claim.
+- **Several constants are judgement, not calibration** — the decay base is the
+  field's convention, and the bench slot weights are static where they should
+  tighten as a squad becomes more predictable. A full-season A/B found decay
+  worth about +65 points and the bench weights worth about +6, which is noise.
+- **Everything depends on the minutes model.** Start probabilities drive
+  projections, the candidate filter and the bench weights. Errors there
+  propagate further than anywhere else.
+- **No price-change or team-value modelling.** Team value compounds over a
+  season and this does nothing with it.

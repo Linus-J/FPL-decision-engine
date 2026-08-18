@@ -14,13 +14,23 @@ from __future__ import annotations
 
 import importlib
 
+import pytest
+
 
 def test_agent_decision_engine_imports_cleanly():
     importlib.import_module("agent.decision_engine")
 
 
-def test_agent_fpl_client_imports_cleanly():
-    importlib.import_module("agent.fpl_client")
+def test_agent_team_sheet_imports_cleanly():
+    importlib.import_module("agent.team_sheet")
+
+
+def test_there_is_no_submission_path_left():
+    """The capability is removed, not disabled (2026-08-18). A flag that turns
+    submission back on is a flag that can be set by accident; this asserts the
+    module is gone rather than dormant."""
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("agent.fpl_client")
 
 
 def test_agent_notifier_imports_cleanly():

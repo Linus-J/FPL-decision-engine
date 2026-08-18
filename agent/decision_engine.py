@@ -701,12 +701,18 @@ def _run_decision_cycle(
 def run(
     season: str = "2026-27",
     force_chip: Chip | None = None,
-    dry_run: bool | None = None,
 ) -> dict:
-    dry_run = settings.dry_run if dry_run is None else dry_run
+    """Build this gameweek's decision. Nothing is submitted anywhere.
+
+    The ``dry_run`` parameter was removed on 2026-08-18 with the submission
+    path. ``DecisionLog.dry_run`` survives as a column because it carries
+    real history — every decision this project ever recorded was a dry run —
+    and dropping a column in SQLite costs more than the row of Trues is
+    worth. It is written True and never read as a switch.
+    """
     return _run_decision_cycle(
         season=season,
-        dry_run=dry_run,
+        dry_run=True,
         force_chip=force_chip,
         config=OPTIMISER,
         chip_timing=CHIP_TIMING,
@@ -718,7 +724,7 @@ def run(
 def run_for_persona(persona: SimManager, season: str = "2026-27") -> dict:
     """Runs one simulated persona through the exact same decision logic as
     the real bot (plan/simulation-engine-v1.md) -- never touches
-    ``agent/fpl_client.py``; no submission path exists in this code path at
+    any submission path; none exists anywhere in this project as of 2026-08-18, at
     all, not a disabled flag. ``persona`` supplies risk_level/
     max_ownership_differential/chip_aggressiveness; every other config
     field (including mu_baseline/mu_range) stays at today's real default."""
