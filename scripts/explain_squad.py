@@ -174,7 +174,79 @@ def _exposure(df: pd.DataFrame) -> list[str]:
     return lines
 
 
-def build_report(season: str) -> str:
+def _pool_section(
+    pool: list, teams: dict[int, str], players: pd.DataFrame, optimal_ids: set[int]
+) -> list[str]:
+    """How much of the squad survives when the optimiser is made to choose again.
+
+    The margin column answers "what does banning this one player cost?". This
+    answers the broader question: of the ten best legal squads, how many
+    contain him? A player in all ten is a conviction; one in three of ten is
+    the model shrugging, and no single-solve statistic shows that.
+    """
+    lines: list[str] = []
+    if len(pool) < 2:
+        lines.append("Only one legal squad was found, so there is nothing to compare against.")
+        return lines
+
+    best = pool[0].total_xpts
+    lines.append("Ranked by the OBJECTIVE — which is decayed, risk-adjusted and bench-weighted —")
+    lines.append("while the xPts column is the true undiscounted total. The two can disagree, and")
+    lines.append("where they do is exactly where those adjustments are doing the work: a squad")
+    lines.append("with more raw expected points ranked below one with fewer means the objective")
+    lines.append("preferred points sooner, on a safer distribution, or with a usable bench.")
+    lines.append("")
+    lines.append("| rank | true xPts | vs rank 1 | £m | players changed |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    best_ids = set(pool[0].squad["id"])
+    for rank, solution in enumerate(pool, start=1):
+        ids = set(solution.squad["id"])
+        lines.append(
+            f"| {rank} | {solution.total_xpts:.2f} | {solution.total_xpts - best:+.2f} | "
+            f"{solution.total_cost:.1f} | {len(ids - best_ids)} |"
+        )
+    lines.append("")
+
+    within_one = sum(1 for s in pool if abs(s.total_xpts - best) <= 1.0)
+    lines.append(
+        f"**{within_one} of the {len(pool)} best squads sit within 1.0 xPts of the top one.** "
+        "Read that alongside the appearance table below rather than on its own: a flat pool "
+        "does not mean the whole squad is arbitrary, it usually means a settled core with a "
+        "few interchangeable places at the bottom."
+    )
+    lines.append("")
+
+    counts: dict[int, int] = {}
+    for solution in pool:
+        for pid in solution.squad["id"]:
+            counts[int(pid)] = counts.get(int(pid), 0) + 1
+    info = players.set_index("id")
+    rows = sorted(counts.items(), key=lambda kv: (-kv[1], -float(info.loc[kv[0], "now_cost"])))
+
+    lines.append(f"Appearances across the {len(pool)}-squad pool:")
+    lines.append("")
+    lines.append("| player | club | £m | in N squads | in the chosen squad |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for pid, count in rows:
+        row = info.loc[pid]
+        lines.append(
+            f"| {row['web_name']} | {teams.get(int(row['team_id']), '?')} | "
+            f"{row['now_cost']:.1f} | {count}/{len(pool)} | "
+            f"{'yes' if pid in optimal_ids else 'no'} |"
+        )
+    lines.append("")
+    unanimous = [pid for pid, c in counts.items() if c == len(pool)]
+    contested = len(counts) - len(unanimous)
+    lines.append(
+        f"**{len(unanimous)} players appear in every squad in the pool; {contested} others are "
+        f"contested.** The unanimous ones are the actual decision — the model wants them however "
+        "it is made to choose again. The contested ones are where a hunch of your own costs "
+        "nearly nothing to act on."
+    )
+    return lines
+
+
+def build_report(season: str, pool_size: int = 0) -> str:
     teams = _team_names()
     solution, projections = cold_start.build_initial_squad(season)
     players = cold_start.apply_departure_gate(cold_start.load_current_players())
@@ -251,6 +323,18 @@ def build_report(season: str) -> str:
     out.extend(_exposure(df))
     out.append("")
 
+    if pool_size > 1:
+        from optimiser.squad import generate_squad_pool
+
+        pool = generate_squad_pool(
+            projections, players, n=pool_size, budget=SQUAD.budget_total,
+            horizon=horizon, season=season,
+        )
+        out.append("## How much of this squad is actually a choice")
+        out.append("")
+        out.extend(_pool_section(pool, teams, players, set(df["id"])))
+        out.append("")
+
     bench = df[df["role"] == "bench"]
     out.append("## The bench")
     out.append("")
@@ -287,9 +371,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--season", default="2026-27")
     parser.add_argument("--out", default=None, help="write Markdown here instead of stdout")
+    parser.add_argument(
+        "--pool", type=int, default=0, metavar="N",
+        help="also report the N best distinct squads and how often each player appears "
+             "across them (each one costs a further solve)",
+    )
     args = parser.parse_args()
 
-    report = build_report(args.season)
+    report = build_report(args.season, pool_size=args.pool)
     if args.out:
         Path(args.out).write_text(report)
         print(f"wrote {args.out}")

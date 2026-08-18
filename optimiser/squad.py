@@ -177,6 +177,64 @@ def _bench_objective(
     return terms
 
 
+def _add_no_good_cuts(
+    prob: pulp.LpProblem,
+    selected: list,
+    idx: dict,
+    forbidden_squads: list[list[int]] | None,
+) -> None:
+    """Forbid each given squad exactly, without forbidding any of its members.
+
+    ``sum(selected[i] for i in S) <= len(S) - 1`` rules out picking all fifteen
+    of S again while leaving every fourteen-man subset legal. Re-solving with
+    one of these added yields the next-best squad, which is how a solution pool
+    is built on a solver with no native pool support (CBC); Gurobi and CPLEX
+    expose the same idea directly as PoolSearchMode / populate.
+
+    A squad whose members are not all still in the candidate pool is skipped
+    rather than cut down: it is already unreachable, and a cut written over the
+    survivors would forbid legal squads that merely resemble it.
+    """
+    for squad_ids in forbidden_squads or []:
+        positions_in_pool = [idx[pid] for pid in squad_ids if pid in idx]
+        if len(positions_in_pool) != len(squad_ids):
+            continue
+        prob += pulp.lpSum(selected[i] for i in positions_in_pool) <= len(squad_ids) - 1
+
+
+def generate_squad_pool(
+    projections: pd.DataFrame,
+    players: pd.DataFrame,
+    n: int = 10,
+    **kwargs,
+) -> list[SquadSolution]:
+    """The ``n`` best distinct squads, best first.
+
+    Exists because a single answer hides how much of itself is real. A squad
+    reported alone cannot say whether its 12th pick beat the alternative by
+    four points or by two hundredths, and the difference is the difference
+    between a conviction and a coin toss. Reading which players survive across
+    the whole pool is a far better confidence signal than any single solve:
+    a player in all ten squads is one the model genuinely wants, and one in
+    three of ten is the model shrugging.
+
+    Stops early and returns what it has if the problem becomes infeasible,
+    which it will once the cuts exhaust the legal squads in a small pool.
+    """
+    pool: list[SquadSolution] = []
+    forbidden: list[list[int]] = list(kwargs.pop("forbidden_squads", None) or [])
+    for _ in range(max(0, n)):
+        try:
+            solution = optimise_squad(
+                projections, players, forbidden_squads=forbidden, **kwargs
+            )
+        except RuntimeError:
+            break
+        pool.append(solution)
+        forbidden.append(sorted(int(pid) for pid in solution.squad["id"]))
+    return pool
+
+
 def optimise_squad(
     projections: pd.DataFrame,
     players: pd.DataFrame,
@@ -190,6 +248,7 @@ def optimise_squad(
     ownership: pd.DataFrame | None = None,
     season: str | None = None,
     config: OptimiserConfig | None = None,
+    forbidden_squads: list[list[int]] | None = None,
 ) -> SquadSolution:
     """``ownership`` (P3-3, optional): a ``(player_id, top10k_selected_pct)``
     frame (P3-2) feeding the risk-adjusted objective's differential term.
@@ -326,6 +385,8 @@ def optimise_squad(
         if pid in idx:
             prob += selected[idx[pid]] == 1
 
+    _add_no_good_cuts(prob, selected, idx, forbidden_squads)
+
     if current_squad_ids and max_transfers is not None:
         new_player = [pulp.LpVariable(f"new_{i}", cat="Binary") for i in range(n)]
         for i, pid in enumerate(player_ids):
@@ -367,6 +428,7 @@ def optimise_squad(
         for pid in force_include_ids:
             if pid in idx:
                 prob2 += selected2[idx[pid]] == 1
+        _add_no_good_cuts(prob2, selected2, idx, forbidden_squads)
         prob2.solve(pulp.PULP_CBC_CMD(msg=False))
         if pulp.LpStatus[prob2.status] == "Optimal":
             logger.warning(
