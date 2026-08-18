@@ -337,6 +337,27 @@ class OptimiserConfig:
     # Number of GWs to project ahead for transfer decisions
     transfer_planning_horizon_gws: int = 3
 
+    # What the vice-captaincy is worth in the objective (2026-08-18).
+    #
+    # The armband passes to the vice ONLY when the captain does not feature, so
+    # the vice's expected contribution is P(captain blanks) x his own score.
+    # Until today `vice` appeared in the ILP's constraints -- exactly one, must
+    # be a starter, must not be the captain -- and NOWHERE in its objective, so
+    # every legal choice was equally optimal and the solver returned whichever
+    # it happened to branch on. On the live GW1 frame that was Raya, at 5.53
+    # xPts, while Gabriel sat in the same XI on 7.43: the insurance was being
+    # spent at random, on a goalkeeper.
+    #
+    # 0.15 is P(a captain-calibre player does not feature), measured on this
+    # engine's own start probabilities: the top ten by GW1 xPts average 0.827,
+    # giving 0.173. Rounded down slightly because that frame carries pre-season
+    # uncertainty and a nailed-on captain mid-season blanks less often.
+    #
+    # Static, with the same caveat as the bench slot weights: it does not
+    # tighten as a squad becomes more predictable. Small enough that it breaks
+    # ties without letting vice-captaincy bid for squad places.
+    vice_captain_weight: float = 0.15
+
     # Per-gameweek discount applied to the OBJECTIVE over a multi-gameweek
     # horizon (2026-08-18). The i-th gameweek ahead is weighted `decay ** i`,
     # so at 0.85 a five-gameweek horizon runs 1.00 / 0.85 / 0.72 / 0.61 / 0.52.
