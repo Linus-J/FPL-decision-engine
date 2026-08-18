@@ -193,6 +193,57 @@ def load_rotation_risk_overrides() -> dict[int, dict]:
     return result
 
 
+def load_excluded_overrides() -> dict[int, dict]:
+    """player_id -> {reason, as_of}, from the `exclude` list.
+
+    A HARD veto: the player is removed from the candidate pool entirely and can
+    never be selected, however good the numbers look. Distinct from
+    `rotation_risk`, which only discounts — a cap leaves the optimiser free to
+    decide the player is still worth it at his price, and on the live GW1 frame
+    two of five capped players were selected anyway.
+
+    This is the mechanism for a judgement the model is not entitled to argue
+    with: the manager has information about a starting berth that no amount of
+    historical minutes can contradict. It is the same tier as a confirmed
+    departure (`optimiser.departure_risk.hard_excluded_ids`), reached by human
+    decision rather than by FPL's status flag.
+
+    Same failure handling as the rest of this module: a malformed entry or an
+    unmatched code is skipped and logged, never raised.
+    """
+    entries = _load_yaml().get("exclude") or []
+    if not entries:
+        return {}
+    code_to_pid = _code_to_player_id()
+    result: dict[int, dict] = {}
+    for entry in entries:
+        try:
+            code = int(entry["code"])
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning(
+                "transfer_overrides.yaml: malformed exclude entry %r, skipping: %s", entry, exc
+            )
+            continue
+        pid = code_to_pid.get(code)
+        if pid is None:
+            logger.warning(
+                "transfer_overrides.yaml: exclude code %s has no matching current "
+                "player, skipping",
+                code,
+            )
+            continue
+        result[pid] = {
+            "reason": entry.get("reason", ""),
+            "as_of": entry.get("as_of", ""),
+        }
+    return result
+
+
+def load_excluded_player_ids() -> set[int]:
+    """Player ids under a hand-entered hard veto."""
+    return set(load_excluded_overrides())
+
+
 def load_start_probability_caps() -> dict[int, float]:
     """player_id -> capped start probability, the plain-float shape
     ``optimiser.rotation_risk.apply_rotation_risk`` consumes."""

@@ -729,10 +729,33 @@ def load_horizon_fixtures(
 
 
 def apply_departure_gate(players: pd.DataFrame) -> pd.DataFrame:
-    """§6.5 confirmed tier: drop players FPL marks unavailable (status 'u')."""
-    if "status" not in players.columns:
-        return players
-    return players[~players["status"].isin(_DEPARTED_STATUS)].copy()
+    """§6.5 confirmed tier: drop players FPL marks unavailable (status 'u'),
+    plus anyone under a hand-entered hard veto in
+    ``config/transfer_overrides.yaml``'s ``exclude`` list.
+
+    The veto sits here rather than at the optimiser because a hard exclusion
+    should be invisible downstream: the player is not a candidate, so nothing
+    later has to remember to skip him. A rotation-risk CAP is the softer tier
+    and lives elsewhere — it discounts and lets the optimiser decide, which on
+    the live GW1 frame kept two of five capped players in the squad.
+    """
+    from data.overrides import load_excluded_player_ids
+
+    out = players
+    if "status" in out.columns:
+        out = out[~out["status"].isin(_DEPARTED_STATUS)]
+
+    excluded = load_excluded_player_ids()
+    if excluded and "id" in out.columns:
+        hit = out["id"].isin(excluded)
+        if hit.any():
+            names = (
+                out.loc[hit, "web_name"].tolist() if "web_name" in out.columns
+                else out.loc[hit, "id"].tolist()
+            )
+            logger.info("Hard-excluded by override, not considered: %s", ", ".join(map(str, names)))
+        out = out[~hit]
+    return out.copy()
 
 
 def _price_prior(position: str, now_cost: float) -> float:

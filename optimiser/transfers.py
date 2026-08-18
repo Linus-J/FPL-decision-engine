@@ -5,6 +5,7 @@ import pandas as pd
 import pulp
 
 from config.strategy import OPTIMISER, SQUAD, TRANSFERS, OptimiserConfig, TransferRules
+from data.overrides import load_excluded_player_ids
 from optimiser.departure_risk import confirmed_p_leave, is_hard_excluded
 from optimiser.scoring import lambda_mu_for_risk_level, risk_adjusted_score
 
@@ -200,6 +201,15 @@ def evaluate_transfers(
     # reported `transfers_out` (v2-build-plan §6.5 departure-risk gate fix).
     owned_mask = df["id"].isin(current_squad_ids)
     df = df[owned_mask | df["status"].isin(["a", "d"])]
+    # Hand-entered hard vetoes get exactly the treatment a confirmed departure
+    # gets, and for the same reason (2026-08-18). An unowned vetoed player is
+    # dropped from the pool so he can never be bought; an OWNED one is kept as
+    # a variable and force-sold below, because removing his variable outright
+    # would leave him missing from `transfers_out` while the squad-size
+    # constraint quietly conjured a replacement.
+    vetoed = load_excluded_player_ids()
+    if vetoed:
+        df = df[df["id"].isin(current_squad_ids) | ~df["id"].isin(vetoed)]
     df = df.reset_index(drop=True)
 
     pid_list = df["id"].tolist()
@@ -212,6 +222,11 @@ def evaluate_transfers(
     confirmed_departure_ids = {
         pid for pid, status, owned in zip(pid_list, statuses, in_current, strict=True)
         if owned and is_hard_excluded(confirmed_p_leave(status))
+    }
+    # An owned player under a hard veto is sold on the same terms as a departure.
+    owned_ids = set(current_squad_ids)
+    confirmed_departure_ids |= {
+        pid for pid in pid_list if pid in vetoed and pid in owned_ids
     }
 
     lam, mu = lambda_mu_for_risk_level(
