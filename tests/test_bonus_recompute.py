@@ -115,6 +115,34 @@ def test_oldrules_reproduction_detects_disagreement():
     assert m["recipient_jaccard"] == 1.0
 
 
+def test_scoring_slot_rate_ignores_the_trivially_correct_zeros():
+    """2026-08-18 (engine review §6). ``slot_exact_rate`` is dominated by
+    players who got no bonus and were correctly predicted to get none — about
+    nine in ten slots in a real match. On the live 2025-26 recompute it reads
+    0.889 while the same comparison restricted to slots that ACTUALLY scored
+    reads 0.342, and the headline number was being cited as evidence the
+    simulator ranks players correctly.
+
+    Here four of five slots are non-scoring and predicted right; the one
+    scoring slot is wrong. The headline rate looks healthy, the honest one is
+    zero.
+    """
+    events = {
+        "g1": {
+            1: _FWD_BRACE, 2: _MID_GA, 3: _DEF_CS,
+            4: {"position": "MID", "minutes": 5},
+            5: {"position": "DEF", "minutes": 5},
+        }
+    }
+    # Only player 3 scored, and the sim ranks the FWD brace top instead.
+    actual = {"g1": {3: 3}}
+    m = br.oldrules_reproduction(events, actual)
+
+    assert m["n_scoring_slots"] == 1.0
+    assert m["scoring_slot_exact_rate"] == 0.0
+    assert m["slot_exact_rate"] > m["scoring_slot_exact_rate"]
+
+
 # --- FBref pure mappers ------------------------------------------------------
 def test_map_summary_row_available_fields_and_derivations():
     raw = {

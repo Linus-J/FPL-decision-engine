@@ -143,14 +143,25 @@ def oldrules_reproduction(
     reports agreement, not equality:
 
     - ``slot_exact_rate``: share of player-slots where recomputed bonus == actual
+    - ``scoring_slot_exact_rate``: the same, restricted to slots FPL ACTUALLY
+      AWARDED bonus to
     - ``recipient_jaccard``: mean Jaccard of {players with bonus>0} per match
-    - ``n_matches``
+    - ``n_matches``, ``n_scoring_slots``
+
+    **Read the scoring rate, not the headline one** (added 2026-08-18, engine
+    review §6). About nine in ten player-slots in any match get zero bonus and
+    are trivially predicted, so ``slot_exact_rate`` is dominated by
+    correctly-guessed zeros: measured on the live 2025-26 recompute it reads
+    0.889, while the same comparison restricted to slots that actually scored
+    reads **0.342**. The headline number was being cited as evidence the
+    simulator ranks players correctly. It is not evidence of that.
 
     A high score validates that the *plumbing* (events → sim → award) is sound
     before switching to the 26/27 weights; residual error is the metric gap.
     """
     n_matches = 0
     slot_hits = slot_total = 0
+    scoring_hits = scoring_total = 0
     jaccard_sum = 0.0
     for game_id, events_by_player in events_by_game.items():
         actual = actual_bonus_by_game.get(game_id, {})
@@ -158,8 +169,13 @@ def oldrules_reproduction(
         n_matches += 1
         for pid in events_by_player:
             slot_total += 1
-            if recomputed[pid][1] == actual.get(pid, 0):
+            actual_bonus = actual.get(pid, 0)
+            hit = recomputed[pid][1] == actual_bonus
+            if hit:
                 slot_hits += 1
+            if actual_bonus > 0:
+                scoring_total += 1
+                scoring_hits += hit
         rec_set = {pid for pid, (_, b) in recomputed.items() if b > 0}
         act_set = {pid for pid, b in actual.items() if b > 0}
         union = rec_set | act_set
@@ -167,6 +183,10 @@ def oldrules_reproduction(
     return {
         "n_matches": float(n_matches),
         "slot_exact_rate": slot_hits / slot_total if slot_total else 0.0,
+        "scoring_slot_exact_rate": (
+            scoring_hits / scoring_total if scoring_total else 0.0
+        ),
+        "n_scoring_slots": float(scoring_total),
         "recipient_jaccard": jaccard_sum / n_matches if n_matches else 0.0,
     }
 

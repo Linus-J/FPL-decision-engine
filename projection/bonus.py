@@ -40,6 +40,28 @@ MODELLED_BPS_FIELDS = frozenset({
 # bonus vs its own real rate (14.4% modelled vs 9.1% real) even after this
 # fix — a separate, smaller residual not addressed here (see the P10 plan
 # entry) — no compensating factor applied for that side yet.
+#
+# STALE FOR 26/27 — do not trust this number (flagged 2026-08-18, engine
+# review §7; not fixable until real 26/27 BPS is observable, so deliberately
+# left as-is rather than guessed at).
+#
+# It was fitted to reproduce 25/26 OUTCOME rates (GK P(bonus>0) = 11.0%;
+# verified against the live DB at 10.95%, DEF 9.11%). But it is applied under
+# 26/27 weights, and 26/27 deliberately moved bonus TOWARD goalkeepers: saves
+# are a flat 2 BPS with +1 more inside the box, big-chance saves are a new +1,
+# and defenders' CBI was cut from 1-per-2 to 1-per-3. Tuning the new model to
+# hit the old season's rate mechanically undoes the rule change.
+#
+# Two of those three GK buffs are also unmodelled: `saves_in_box` and
+# `big_chances_saved` are absent from MODELLED_BPS_FIELDS and zero on every
+# row of player_match_events, so the engine currently captures the defender
+# nerf and neither compensating buff. On the historical full-event recompute
+# goalkeepers receive 0.40x as many bonus awards as they really did.
+#
+# Re-calibrate against 26/27 outcomes once four or five gameweeks exist, and
+# read the by-position rates conditional on bonus actually being awarded
+# (bonus_recompute.oldrules_reproduction's `scoring_slot_exact_rate`), not the
+# unconditional agreement figure.
 GK_BONUS_SAVE_SCALE = 0.45
 _GK_POSITIONS = frozenset({"GK", "GKP"})
 
