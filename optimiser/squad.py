@@ -88,6 +88,56 @@ def _semidev_by_id(df, mu: float) -> dict | None:
     return dict(zip(df["id"], df[col].fillna(0.0), strict=True))
 
 
+def _bench_objective(
+    prob: pulp.LpProblem,
+    selected: list,
+    starting: list,
+    scores: list[float],
+    positions: list[str],
+    cfg: OptimiserConfig,
+    tag: str,
+):
+    """Objective terms for the bench, weighted by SLOT rather than uniformly.
+
+    A bench is an ordered queue. FPL's automatic substitutions promote the
+    first eligible bench player when a starter does not appear, so the value
+    of slot 1 is P(at least one starter blanks) -- 0.53 on the live GW1 XI --
+    while slot 3 needs three simultaneous absences and is worth 0.03. A flat
+    weight underpays the slot that gets used and overpays the two that do not,
+    which is what buys four £4.0m non-players instead of one real substitute.
+
+    Adds the slot-assignment constraints to ``prob`` and returns the terms to
+    add to the objective. Slot weights are strictly decreasing, so the solver
+    puts its best bench player in slot 1 without needing an ordering
+    constraint -- it is a maximisation and any other assignment is dominated.
+    """
+    weights = [w * cfg.bench_value_weight for w in cfg.bench_slot_weights]
+    gk_weight = cfg.bench_gk_weight * cfg.bench_value_weight
+    n = len(scores)
+    outfield = [i for i in range(n) if positions[i] != "GKP"]
+    keepers = [i for i in range(n) if positions[i] == "GKP"]
+
+    slot = {
+        (i, k): pulp.LpVariable(f"bench_{tag}_{i}_{k}", cat="Binary")
+        for i in outfield
+        for k in range(len(weights))
+    }
+    for i in outfield:
+        prob += pulp.lpSum(slot[i, k] for k in range(len(weights))) == selected[i] - starting[i]
+    for k in range(len(weights)):
+        prob += pulp.lpSum(slot[i, k] for i in outfield) == 1
+
+    terms = pulp.lpSum(
+        weights[k] * scores[i] * slot[i, k] for i in outfield for k in range(len(weights))
+    )
+    # The reserve keeper has no queue to inherit from: he plays only if the
+    # first-choice keeper does not.
+    terms += pulp.lpSum(
+        gk_weight * scores[i] * (selected[i] - starting[i]) for i in keepers
+    )
+    return terms
+
+
 def optimise_squad(
     projections: pd.DataFrame,
     players: pd.DataFrame,
@@ -198,10 +248,8 @@ def optimise_squad(
     # XI — without letting bench quality compete with the starting XI for
     # budget on equal terms.
     prob += pulp.lpSum(
-        scores[i] * (starting[i] + captain[i])
-        + cfg.bench_value_weight * scores[i] * (selected[i] - starting[i])
-        for i in range(n)
-    )
+        scores[i] * (starting[i] + captain[i]) for i in range(n)
+    ) + _bench_objective(prob, selected, starting, scores, positions, cfg, "a")
 
     prob += pulp.lpSum(selected) == SQUAD.squad_size
     prob += pulp.lpSum(costs[i] * selected[i] for i in range(n)) <= budget
@@ -248,10 +296,8 @@ def optimise_squad(
         captain2 = [pulp.LpVariable(f"cap2_{i}", cat="Binary") for i in range(n)]
         vice2 = [pulp.LpVariable(f"vic2_{i}", cat="Binary") for i in range(n)]
         prob2 += pulp.lpSum(
-            scores[i] * (starting2[i] + captain2[i])
-            + cfg.bench_value_weight * scores[i] * (selected2[i] - starting2[i])
-            for i in range(n)
-        )
+            scores[i] * (starting2[i] + captain2[i]) for i in range(n)
+        ) + _bench_objective(prob2, selected2, starting2, scores, positions, cfg, "b")
         prob2 += pulp.lpSum(selected2) == SQUAD.squad_size
         prob2 += pulp.lpSum(costs[i] * selected2[i] for i in range(n)) <= budget
         prob2 += pulp.lpSum(starting2) == 11

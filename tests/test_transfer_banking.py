@@ -373,27 +373,52 @@ def _bench_gk_choice() -> tuple[pd.DataFrame, list[int], pd.DataFrame]:
     return players, squad, pd.DataFrame(proj)
 
 
-def test_bench_value_weight_zero_leaves_the_dead_weight_backup_gk():
+def test_bench_gk_weight_zero_leaves_the_dead_weight_backup_gk():
     """Pre-P1.7 behaviour: the transfer objective scored only `starting` and
     `captain`, so a bench player was worth exactly nothing and every
-    in-season transfer eroded the bench optimise_squad had paid for."""
+    in-season transfer eroded the bench optimise_squad had paid for.
+
+    The reserve keeper is weighted by `bench_gk_weight` (2026-08-18) rather
+    than the old flat `bench_value_weight`: he has no substitution queue to
+    inherit from and plays only if the first-choice keeper does not.
+    """
     players, squad, proj = _bench_gk_choice()
     plan = evaluate_transfers(
         squad, proj, players, free_transfers=1, available_budget=100.0,
-        config=dataclasses.replace(OPTIMISER, bench_value_weight=0.0),
+        config=dataclasses.replace(OPTIMISER, bench_gk_weight=0.0),
         transfer_rules=dataclasses.replace(TRANSFERS, ft_terminal_value=0.0),
     )
     assert not any(t["player_id"] == 16 for t in plan.transfers_in)
 
 
-def test_bench_value_weight_upgrades_the_backup_gk():
+def test_bench_gk_weight_upgrades_the_backup_gk():
     players, squad, proj = _bench_gk_choice()
     plan = evaluate_transfers(
         squad, proj, players, free_transfers=1, available_budget=100.0,
-        config=dataclasses.replace(OPTIMISER, bench_value_weight=0.15),
+        config=dataclasses.replace(OPTIMISER, bench_gk_weight=0.15),
         transfer_rules=dataclasses.replace(TRANSFERS, ft_terminal_value=0.0),
     )
     assert any(t["player_id"] == 16 for t in plan.transfers_in)
+
+
+def test_transfers_and_squad_build_agree_on_what_a_first_substitute_is_worth():
+    """The two objectives must use the same bench weights.
+
+    The squad build pays real money for a substitute who actually plays. If
+    the weekly transfer ILP still valued every bench player at a flat rate it
+    would sell him the following week, undoing the purchase and charging a
+    transfer for it — the failure this term was added to prevent, reintroduced
+    from the other side.
+    """
+    import inspect
+
+    from optimiser import squad as squad_module
+    from optimiser import transfers as transfers_module
+
+    for module in (squad_module, transfers_module):
+        source = inspect.getsource(module)
+        assert "bench_slot_weights" in source, f"{module.__name__} must use the slot weights"
+        assert "bench_gk_weight" in source, f"{module.__name__} must use the keeper weight"
 
 
 # --- P1.1 the multi-gameweek frame the above all depends on ---------------

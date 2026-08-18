@@ -669,7 +669,7 @@ class SimManager(Base):
     # parameters actually in question.
     transfer_switching_cost: Mapped[float] = mapped_column(Float, nullable=False, default=1.5)
     ft_terminal_value: Mapped[float] = mapped_column(Float, nullable=False, default=2.0)
-    bench_value_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.15)
+    bench_value_weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     transfer_planning_horizon_gws: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     mu_baseline: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     # Which axis this persona varies ("baseline" for the all-defaults

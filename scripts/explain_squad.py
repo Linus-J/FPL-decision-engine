@@ -262,12 +262,23 @@ def build_report(season: str) -> str:
         "they are not meant to."
     )
     out.append("")
+    slots = ", ".join(
+        f"slot {k + 1} {w * OPTIMISER.bench_value_weight:.0%}"
+        for k, w in enumerate(OPTIMISER.bench_slot_weights)
+    )
     out.append(
-        f"Bench points are weighted at {OPTIMISER.bench_value_weight:.0%} in the objective, so the "
-        "optimiser deliberately buys the cheapest legal bench and spends the rest on the XI. That "
-        "is the standard trade and it is usually right, but it prices no injury or rotation risk "
-        "beyond each player's start probability: the cost of a thin bench only appears when "
-        "somebody in the XI does not play, and nothing here forecasts that."
+        f"Bench weights in the objective: {slots}, reserve keeper "
+        f"{OPTIMISER.bench_gk_weight * OPTIMISER.bench_value_weight:.0%}. These are the "
+        "probabilities that each bench slot is actually reached by an automatic substitution, so "
+        "the first substitute is bought as a real player and the last two as fodder — which is "
+        "what they are."
+    )
+    out.append("")
+    out.append(
+        "The weights are static, so they do not tighten as a squad becomes more nailed-on, and "
+        "they price no injury or rotation risk beyond each player's start probability. The cost "
+        "of a thin bench still only appears when somebody in the XI does not play, and nothing "
+        "here forecasts a specific absence."
     )
     return "\n".join(out)
 

@@ -70,7 +70,10 @@ SWEPT_AXES: dict[str, list[float]] = {
     # grid search that varied it spanned 1.4 points across a 10x range.
     "ft_terminal_value": _spread(0.0, 6.0, _PER_AXIS),
     # How much to spend on a bench that only pays off when a starter blanks.
-    "bench_value_weight": _spread(0.0, 0.5, _PER_AXIS),
+    # Now a MULTIPLIER on the derived slot weights (2026-08-18), so the useful
+    # range runs either side of 1.0: 0.0 ignores the bench entirely, 1.5 pays
+    # half again over the autosub-implied value.
+    "bench_value_weight": _spread(0.0, 1.5, _PER_AXIS),
     # Does planning further ahead help, or just add churn? Only as many
     # personas as there are distinct horizons -- padding to _PER_AXIS would
     # spend a tenth of the cohort on exact duplicates.

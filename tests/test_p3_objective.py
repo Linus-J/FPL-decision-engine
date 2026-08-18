@@ -332,7 +332,7 @@ def _pool_with_a_backup_gk_choice():
     return players, projections, weak_id, decent_id
 
 
-def test_bench_value_weight_zero_picks_the_cheapest_backup_gk(monkeypatch):
+def test_bench_gk_weight_zero_picks_the_cheapest_backup_gk(monkeypatch):
     import dataclasses
 
     from optimiser import squad as squad_module
@@ -340,7 +340,7 @@ def test_bench_value_weight_zero_picks_the_cheapest_backup_gk(monkeypatch):
 
     monkeypatch.setattr(
         squad_module, "OPTIMISER",
-        dataclasses.replace(real_optimiser, bench_value_weight=0.0),
+        dataclasses.replace(real_optimiser, bench_gk_weight=0.0),
     )
     players, projections, weak_id, decent_id = _pool_with_a_backup_gk_choice()
     solution = optimise_squad(projections, players, budget=100.0, horizon=3)
@@ -349,7 +349,7 @@ def test_bench_value_weight_zero_picks_the_cheapest_backup_gk(monkeypatch):
     assert decent_id not in selected
 
 
-def test_bench_value_weight_upgrades_the_backup_gk_when_enabled(monkeypatch):
+def test_bench_gk_weight_upgrades_the_backup_gk_when_enabled(monkeypatch):
     import dataclasses
 
     from optimiser import squad as squad_module
@@ -358,7 +358,7 @@ def test_bench_value_weight_upgrades_the_backup_gk_when_enabled(monkeypatch):
     players, projections, weak_id, decent_id = _pool_with_a_backup_gk_choice()
     monkeypatch.setattr(
         squad_module, "OPTIMISER",
-        dataclasses.replace(real_optimiser, bench_value_weight=0.15),
+        dataclasses.replace(real_optimiser, bench_gk_weight=0.15),
     )
     solution = optimise_squad(projections, players, budget=100.0, horizon=3)
     selected = set(solution.squad["id"])
