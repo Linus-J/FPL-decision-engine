@@ -428,13 +428,19 @@ def test_multi_gw_frame_changes_the_decision_a_single_gw_frame_would_make():
     """`get_latest_projections` returned exactly one gameweek regardless of
     the configured horizon, so the live ILP ran at H=1.
 
-    Uses the REAL frictions deliberately: a +0.6/GW upgrade is worth 0.6 over
+    Uses the REAL frictions deliberately: a +0.9/GW upgrade is worth 0.9 over
     one gameweek (under the 1.5pt switching cost -- correctly declined) but
-    1.8 over the planning horizon (worth doing). Same player, same squad,
+    ~2.3 over the planning horizon (worth doing). Same player, same squad,
     opposite decisions -- which is what the live path was silently getting
-    wrong every week."""
+    wrong every week.
+
+    The per-gameweek margin was 0.6 until gameweek decay landed (2026-08-18).
+    At `gameweek_decay = 0.85` a three-week horizon is worth 1 + 0.85 + 0.72 =
+    2.57 gameweeks rather than 3, so 0.6/GW came to 1.54 against a 1.5 switching
+    cost -- close enough that the test was measuring the tie-break rather than
+    the behaviour it names. Raised to keep the horizon effect unambiguous."""
     players, squad, _ = _one_week_spike(0.0)
-    full = _persistent_gain(0.6)
+    full = _persistent_gain(0.9)
     single = full[full["gameweek"] == 10]
 
     single_plan = evaluate_transfers(

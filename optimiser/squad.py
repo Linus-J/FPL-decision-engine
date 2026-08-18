@@ -45,13 +45,40 @@ class SquadSolution:
     hits_taken: int
 
 
-def _multi_gw_xpts(projections: pd.DataFrame, horizon: int) -> pd.Series:
+def _decay_weights(gws: list, decay: float) -> dict:
+    """``decay ** i`` for the i-th gameweek in the horizon, nearest first.
+
+    A five-gameweek horizon summed with EQUAL weight treats a projection five
+    weeks out as being worth exactly as much as the one for the match about to
+    kick off. It is not: bookmakers price roughly one round ahead, so on the
+    live GW1 frame 22% of a squad's projected points came from gameweeks with
+    real odds and 78% from the strength model with most teams still on
+    prior-season fallback. Equal weighting puts full confidence in the least
+    reliable numbers in the system.
+
+    Every serious FPL optimiser discounts. Sertalp Çay's
+    ``solve_multi_period_fpl`` defaults to ``decay_base = 0.84`` and
+    FPLReview's solvers recommend 0.80-0.95; 0.85 sits in the middle of both.
+
+    This is a weighting on the OBJECTIVE only. Reported ``total_xpts`` stays
+    the true undiscounted sum — the same separation the risk-adjusted score
+    already keeps between ``effective_score`` and ``xpts_total``, and for the
+    same reason: a decision aid must not quietly restate the thing it is
+    predicting.
+    """
+    return {gw: decay ** i for i, gw in enumerate(gws)}
+
+
+def _multi_gw_xpts(projections: pd.DataFrame, horizon: int, decay: float = 1.0) -> pd.Series:
     gws = sorted(projections["gameweek"].unique())[:horizon]
     subset = projections[projections["gameweek"].isin(gws)]
-    return subset.groupby("player_id")["xpts"].sum()
+    if decay == 1.0:
+        return subset.groupby("player_id")["xpts"].sum()
+    weights = subset["gameweek"].map(_decay_weights(gws, decay))
+    return (subset["xpts"] * weights).groupby(subset["player_id"]).sum()
 
 
-def _multi_gw_var(projections: pd.DataFrame, horizon: int) -> pd.Series:
+def _multi_gw_var(projections: pd.DataFrame, horizon: int, decay: float = 1.0) -> pd.Series:
     """P3-3: per-player summed xpts_var over the horizon (own-variance only —
     see optimiser/scoring.py for why teammate covariance isn't here). Empty
     Series (not an error) if the caller's projections predate P10's
@@ -60,10 +87,15 @@ def _multi_gw_var(projections: pd.DataFrame, horizon: int) -> pd.Series:
         return pd.Series(dtype=float)
     gws = sorted(projections["gameweek"].unique())[:horizon]
     subset = projections[projections["gameweek"].isin(gws)]
-    return subset.groupby("player_id")["xpts_var"].sum()
+    if decay == 1.0:
+        return subset.groupby("player_id")["xpts_var"].sum()
+    weights = subset["gameweek"].map(_decay_weights(gws, decay))
+    return (subset["xpts_var"] * weights).groupby(subset["player_id"]).sum()
 
 
-def _multi_gw_semidev(projections: pd.DataFrame, horizon: int, col: str) -> pd.Series:
+def _multi_gw_semidev(
+    projections: pd.DataFrame, horizon: int, col: str, decay: float = 1.0
+) -> pd.Series:
     """Per-player summed upper/lower semi-deviation over the horizon.
 
     Summed, like ``xpts``, rather than combined in quadrature: these feed a
@@ -75,7 +107,14 @@ def _multi_gw_semidev(projections: pd.DataFrame, horizon: int, col: str) -> pd.S
         return pd.Series(dtype=float)
     gws = sorted(projections["gameweek"].unique())[:horizon]
     subset = projections[projections["gameweek"].isin(gws)]
-    return subset.groupby("player_id")[col].sum()
+    if decay == 1.0:
+        return subset.groupby("player_id")[col].sum()
+    # Decayed LINEARLY, like the points they sit beside in the objective, not
+    # quadratically as a scaled variance would be. These are semi-deviations
+    # in points; the whole reason they replaced a variance term is that the
+    # objective adds them to a points total directly.
+    weights = subset["gameweek"].map(_decay_weights(gws, decay))
+    return (subset[col] * weights).groupby(subset["player_id"]).sum()
 
 
 def _semidev_by_id(df, mu: float) -> dict | None:
@@ -178,8 +217,16 @@ def optimise_squad(
     horizon_gws = sorted(projections["gameweek"].unique())[:horizon]
     target_gw = horizon_gws[0] if horizon_gws else None
 
+    # Two aggregates over the same horizon (2026-08-18): the TRUE sum, which
+    # is what gets reported, and the decayed sum, which is what gets optimised.
+    # See _decay_weights — a projection five gameweeks out is not worth as much
+    # as one for the match about to kick off, and every serious FPL optimiser
+    # discounts it. Reporting the decayed figure as "expected points" would be
+    # a lie about the quantity being predicted.
+    decay = cfg.gameweek_decay
     xpts_by_player = _multi_gw_xpts(projections, horizon)
-    var_by_player = _multi_gw_var(projections, horizon)
+    xpts_for_objective = _multi_gw_xpts(projections, horizon, decay)
+    var_by_player = _multi_gw_var(projections, horizon, decay)
 
     df = players.copy()
     df = df[df["status"].isin(["a", "d"])]
@@ -188,6 +235,7 @@ def optimise_squad(
     df = df[~df["id"].isin(force_exclude_ids)]
 
     df["xpts_total"] = df["id"].map(xpts_by_player).fillna(0.0)
+    df["xpts_objective"] = df["id"].map(xpts_for_objective).fillna(0.0)
     df["var_total"] = df["id"].map(var_by_player).fillna(0.0)
     # One-sided risk over the same horizon (2026-08-18). Without these the
     # objective falls back to variance, which is symmetric and so cannot tell a
@@ -198,7 +246,7 @@ def optimise_squad(
         # zero risk term is both neutral and never selected on. NaN here would
         # propagate straight into the objective and make the ILP nonsense.
         df[_col] = df["id"].map(
-            _multi_gw_semidev(projections, horizon, _col)
+            _multi_gw_semidev(projections, horizon, _col, decay)
         ).astype(float).fillna(0.0)
 
     lam, mu = lambda_mu_for_risk_level(
@@ -212,7 +260,7 @@ def optimise_squad(
     df["effective_score"] = [
         risk_adjusted_score(x, v, e, lam, mu, up, down)
         for x, v, e, up, down in zip(
-            df["xpts_total"], df["var_total"], df["eo_pct"],
+            df["xpts_objective"], df["var_total"], df["eo_pct"],
             df["upside"], df["downside"], strict=True,
         )
     ]
@@ -342,7 +390,11 @@ def optimise_squad(
     vice_id = next(player_ids[i] for i in range(n) if pulp.value(vice[i]) > 0.5)
 
     if season is not None and target_gw is not None:
-        xpts_by_id = dict(zip(df["id"], df["xpts_total"], strict=True))
+        # The decayed figure, matching the ILP's own captain variable, which
+        # ranks on `effective_score`. If these two disagreed the linear argmax
+        # inside the solve and the scenario-based pick after it would be
+        # answering different questions.
+        xpts_by_id = dict(zip(df["id"], df["xpts_objective"], strict=True))
         var_by_id = dict(zip(df["id"], df["var_total"], strict=True))
         captain_id = scenario_based_captain(
             season, target_gw, list(starting_ids), xpts_by_id, var_by_id, mu,

@@ -337,6 +337,29 @@ class OptimiserConfig:
     # Number of GWs to project ahead for transfer decisions
     transfer_planning_horizon_gws: int = 3
 
+    # Per-gameweek discount applied to the OBJECTIVE over a multi-gameweek
+    # horizon (2026-08-18). The i-th gameweek ahead is weighted `decay ** i`,
+    # so at 0.85 a five-gameweek horizon runs 1.00 / 0.85 / 0.72 / 0.61 / 0.52.
+    #
+    # Summing a horizon with equal weight — what this engine did until today —
+    # claims a projection five weeks out is worth as much as one for the match
+    # about to kick off. On the live GW1 frame that was measurably false: 22%
+    # of the squad's projected points came from gameweeks bookmakers had
+    # priced, 78% from the strength model with 17 of 20 teams still on
+    # prior-season fallback.
+    #
+    # Every serious FPL optimiser discounts. Sertalp Çay's
+    # `solve_multi_period_fpl` defaults to `decay_base = 0.84`; FPLReview's
+    # solvers recommend 0.80-0.95, lower for short-term aggression and higher
+    # for long-term planning. 0.85 sits in the middle of both and is the
+    # field's rough consensus.
+    #
+    # NOT calibrated on this project's own backtest — inherited from the
+    # field, same convention as the other heuristic constants here, and worth
+    # sweeping over the walk-forward gate once real 26/27 gameweeks exist.
+    # Set to 1.0 to restore the old equal-weight behaviour exactly.
+    gameweek_decay: float = 0.85
+
     # GWs to look ahead when building the GW1/pre-season initial squad
     # (fixture-difficulty-weighted, not just single-GW xPts) -- a distinct
     # knob from transfer_planning_horizon_gws since cold start is a one-shot

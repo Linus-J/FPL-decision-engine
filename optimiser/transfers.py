@@ -239,7 +239,16 @@ def evaluate_transfers(
         for pid in pid_list:
             x = float(gw_proj.get(pid, 0.0))
             v = float(gw_var.get(pid, 0.0)) if gw_var is not None else 0.0
-            scores_pw[(pid, w)] = risk_adjusted_score(x, v, eo_by_pid[pid], lam, mu)
+            # Discounted by how far ahead the gameweek is (2026-08-18, matching
+            # optimiser.squad._decay_weights). Without it a transfer justified
+            # only by week three of the plan counted exactly as much as one
+            # paying off this week, on a projection with no bookmaker odds
+            # behind it. `hit_cost_points` and the switching cost are NOT
+            # decayed: those are paid in real points, now, whatever the plan
+            # later turns out to be worth.
+            scores_pw[(pid, w)] = (
+                cfg.gameweek_decay ** w
+            ) * risk_adjusted_score(x, v, eo_by_pid[pid], lam, mu)
 
     prob = pulp.LpProblem("mp_transfers", pulp.LpMaximize)
 
