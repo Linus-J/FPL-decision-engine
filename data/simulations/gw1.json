@@ -2,8 +2,25 @@
   "schema_version": 1,
   "gameweek": 1,
   "label": "GW1 \u2014 21 Aug 2026",
-  "generated_at": "2026-08-18T15:16:42.854506+00:00",
+  "generated_at": "2026-08-18T15:38:53.698022+00:00",
   "squad": [
+    {
+      "player_id": 1,
+      "web_name": "Raya",
+      "position": "GKP",
+      "team_short": "ARS",
+      "now_cost": 6.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": true,
+      "bench_order": null,
+      "xpts": {
+        "p10": 0.0636,
+        "median": 5.529,
+        "mean": 5.529,
+        "p90": 10.9943
+      }
+    },
     {
       "player_id": 5,
       "web_name": "Gabriel",
@@ -12,7 +29,7 @@
       "now_cost": 8.0,
       "is_starting": true,
       "is_captain": false,
-      "is_vice_captain": true,
+      "is_vice_captain": false,
       "bench_order": null,
       "xpts": {
         "p10": 0.0,
@@ -56,23 +73,6 @@
       }
     },
     {
-      "player_id": 136,
-      "web_name": "Senesi",
-      "position": "DEF",
-      "team_short": "TOT",
-      "now_cost": 6.0,
-      "is_starting": true,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": null,
-      "xpts": {
-        "p10": 0.056,
-        "median": 4.8005,
-        "mean": 4.8005,
-        "p90": 9.545
-      }
-    },
-    {
       "player_id": 210,
       "web_name": "Thiago",
       "position": "FWD",
@@ -90,20 +90,20 @@
       }
     },
     {
-      "player_id": 305,
-      "web_name": "Mheuka",
-      "position": "FWD",
-      "team_short": "CHE",
-      "now_cost": 4.5,
+      "player_id": 232,
+      "web_name": "Van Hecke",
+      "position": "DEF",
+      "team_short": "TOT",
+      "now_cost": 5.0,
       "is_starting": false,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": 4,
+      "bench_order": 2,
       "xpts": {
         "p10": 0.0,
-        "median": 2.2751,
-        "mean": 2.2751,
-        "p90": 7.002
+        "median": 3.5817,
+        "mean": 3.5817,
+        "p90": 7.5544
       }
     },
     {
@@ -112,10 +112,10 @@
       "position": "DEF",
       "team_short": "EVE",
       "now_cost": 6.0,
-      "is_starting": false,
+      "is_starting": true,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": 2,
+      "bench_order": null,
       "xpts": {
         "p10": 0.0,
         "median": 4.7906,
@@ -138,6 +138,23 @@
         "median": 5.1648,
         "mean": 5.1648,
         "p90": 10.9374
+      }
+    },
+    {
+      "player_id": 478,
+      "web_name": "Szoboszlai",
+      "position": "MID",
+      "team_short": "LIV",
+      "now_cost": 7.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "xpts": {
+        "p10": 0.0,
+        "median": 5.2812,
+        "mean": 5.2812,
+        "p90": 11.4463
       }
     },
     {
@@ -209,37 +226,20 @@
       }
     },
     {
-      "player_id": 572,
-      "web_name": "Lammens",
-      "position": "GKP",
-      "team_short": "MUN",
-      "now_cost": 5.0,
-      "is_starting": true,
+      "player_id": 609,
+      "web_name": "Neave",
+      "position": "FWD",
+      "team_short": "NEW",
+      "now_cost": 4.5,
+      "is_starting": false,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": null,
+      "bench_order": 4,
       "xpts": {
         "p10": 0.0,
-        "median": 4.3487,
-        "mean": 4.3487,
-        "p90": 9.697
-      }
-    },
-    {
-      "player_id": 598,
-      "web_name": "Bruno G.",
-      "position": "MID",
-      "team_short": "ARS",
-      "now_cost": 7.0,
-      "is_starting": true,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": null,
-      "xpts": {
-        "p10": 0.0,
-        "median": 5.6073,
-        "mean": 5.6073,
-        "p90": 13.2931
+        "median": 2.1469,
+        "mean": 2.1469,
+        "p90": 5.8798
       }
     },
     {
