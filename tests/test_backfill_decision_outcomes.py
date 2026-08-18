@@ -29,9 +29,16 @@ def session(tmp_path, monkeypatch):
     s.close()
 
 
-def _gw(session, gw_id: int, finished: bool) -> None:
-    session.add(Gameweek(id=gw_id, season="2026-27", name=f"GW{gw_id}",
-                          deadline_time=datetime(2026, 9, 1), finished=finished))
+def _gw(session, gw_id: int, finished: bool, data_checked: bool | None = None) -> None:
+    """``data_checked`` defaults to ``finished`` — a settled gameweek is the
+    normal case for these tests. It is separable because scoring requires BOTH
+    (engine review §8): ``finished`` means the last ball was kicked, while
+    bonus and DefCon stay provisional until FPL marks the data checked."""
+    session.add(Gameweek(
+        id=gw_id, season="2026-27", name=f"GW{gw_id}",
+        deadline_time=datetime(2026, 9, 1), finished=finished,
+        data_checked=finished if data_checked is None else data_checked,
+    ))
     session.commit()
 
 
@@ -64,6 +71,28 @@ def test_unfinished_gw_is_skipped(session):
     assert n == 0
     row = session.query(DecisionLog).one()
     assert row.actual_outcome is None
+
+
+def test_played_but_unchecked_gw_is_skipped(session):
+    """Regression, 2026-08-18 (engine review §8).
+
+    ``finished`` only means the last ball was kicked. Bonus points and
+    defensive contributions are still provisional after it, and 26/27 moved
+    the gameweek lockdown from ~1 hour after the final whistle to 09:00 the
+    NEXT DAY — so the provisional window is now twelve hours or more.
+
+    ``run_weekly.py`` scores last gameweek before deciding this one, so a run
+    inside that window used to write provisional points into ``decision_log``
+    and ``sim_decision_log``: the calibration instrument and the persona
+    ranking. The scorer only ever revisits UNSCORED rows, so those numbers
+    would have been wrong permanently.
+    """
+    _gw(session, 10, finished=True, data_checked=False)
+    _stats(session, 1, 10, points=10)
+    _lineup(session, 10, [1, 2], [1], captain_id=1)
+
+    assert backfill_module.backfill("2026-27") == 0
+    assert session.query(DecisionLog).one().actual_outcome is None
 
 
 def test_finished_gw_computes_captain_doubled_starting_only(session):

@@ -52,6 +52,49 @@ def test_init_db_adds_new_columns(Session):
     assert "code" in pl_cols
 
 
+def test_data_checked_is_seeded_from_finished_when_the_column_is_added(tmp_path, monkeypatch):
+    """Regression, 2026-08-18 (engine review §8).
+
+    ``backfill_decision_outcomes`` now requires ``data_checked`` before it will
+    score a gameweek. ``ALTER TABLE ... ADD COLUMN`` can only fill a constant,
+    so every pre-existing row would land on the default (False) — including the
+    five backfilled historical seasons, whose data has been settled for years.
+    Historical re-scoring would have silently stopped working.
+    """
+    from sqlalchemy import text
+
+    from data import db as db_module
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'seed.db'}")
+    monkeypatch.setattr(db_module, "engine", engine)
+
+    # A database as it existed BEFORE data_checked: build the schema, then
+    # drop the column back off so init_db has to re-add it.
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE gameweeks DROP COLUMN data_checked"))
+        for gw_id, finished in ((1, 1), (2, 0)):
+            conn.execute(
+                text(
+                    "INSERT INTO gameweeks (id, season, name, deadline_time, finished, "
+                    "is_current, is_next, average_entry_score, highest_score, "
+                    "is_dgw, is_bgw) "
+                    "VALUES (:id, '2025-26', :name, '2025-08-15 17:30:00', :finished, "
+                    "0, 0, 0, 0, 0, 0)"
+                ),
+                {"id": gw_id, "name": f"GW{gw_id}", "finished": finished},
+            )
+
+    db_module.init_db()
+
+    with engine.begin() as conn:
+        seeded = dict(
+            conn.execute(text("SELECT id, data_checked FROM gameweeks")).fetchall()
+        )
+    # A finished historical gameweek is settled; an unfinished one is not.
+    assert seeded == {1: 1, 2: 0}
+
+
 def test_gameweek_same_number_two_seasons_ok(Session):
     s = Session()
     s.add_all([_gw(1, "2025-26"), _gw(1, "2026-27")])

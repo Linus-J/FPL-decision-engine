@@ -133,6 +133,15 @@ class Gameweek(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     deadline_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     finished: Mapped[bool] = mapped_column(Boolean, default=False)
+    # FPL's own "the data is FINAL" flag, distinct from `finished` (2026-08-18,
+    # engine review §8). `finished` means the last ball was kicked; bonus and
+    # defensive-contribution points are still provisional after it, and 26/27
+    # widened that window enormously -- the gameweek lockdown moved from ~1
+    # hour after the final whistle to 09:00 the NEXT DAY. Scoring a decision
+    # inside that window writes provisional points into decision_log and
+    # sim_decision_log, which are the calibration instrument and the persona
+    # ranking. Nothing read this before; the outcome scorer gated on `finished`.
+    data_checked: Mapped[bool] = mapped_column(Boolean, default=False)
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
     is_next: Mapped[bool] = mapped_column(Boolean, default=False)
     average_entry_score: Mapped[int] = mapped_column(Integer, default=0)

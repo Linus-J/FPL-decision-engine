@@ -76,9 +76,34 @@ def _add_missing_columns() -> list[str]:
     return added
 
 
+def _seed_data_checked_from_finished(added: list[str]) -> None:
+    """One-time, only on the run that ADDS ``gameweeks.data_checked``.
+
+    ``ALTER TABLE ... ADD COLUMN`` can only fill a constant, so every existing
+    row would land on the column default (False). For gameweeks already stored
+    as ``finished`` — the five backfilled historical seasons — that is simply
+    wrong: their data has been settled for years, and
+    ``backfill_decision_outcomes`` now requires ``data_checked`` before it will
+    score anything, so historical re-scoring would silently stop working.
+
+    Seeding from ``finished`` is right for exactly those rows. Live 2026-27
+    gameweeks get FPL's real flag from the next bootstrap ingest, which
+    overwrites this on conflict.
+    """
+    if "gameweeks.data_checked" not in added:
+        return
+    with engine.begin() as conn:
+        result = conn.execute(text("UPDATE gameweeks SET data_checked = finished"))
+    logger.info(
+        "Seeded gameweeks.data_checked from finished on %s existing rows "
+        "(one-time, on column creation)", result.rowcount,
+    )
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
-    _add_missing_columns()
+    added = _add_missing_columns()
+    _seed_data_checked_from_finished(added)
 
 
 def get_session() -> Session:

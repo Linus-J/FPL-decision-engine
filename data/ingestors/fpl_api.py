@@ -189,6 +189,10 @@ def upsert_gameweeks(bootstrap: dict, season: str = "2026-27") -> None:
                     name=gw["name"],
                     deadline_time=deadline,
                     finished=gw["finished"],
+                    # §8: FPL's "data is final" flag. Defaults False when the
+                    # key is absent so an older/partial payload is treated as
+                    # NOT final rather than silently final -- the safe side.
+                    data_checked=gw.get("data_checked", False),
                     is_current=gw["is_current"],
                     is_next=gw["is_next"],
                     average_entry_score=gw.get("average_entry_score") or 0,
@@ -202,6 +206,7 @@ def upsert_gameweeks(bootstrap: dict, season: str = "2026-27") -> None:
                         "name": gw["name"],
                         "deadline_time": deadline,
                         "finished": gw["finished"],
+                        "data_checked": gw.get("data_checked", False),
                         "is_current": gw["is_current"],
                         "is_next": gw["is_next"],
                         "average_entry_score": gw.get("average_entry_score") or 0,

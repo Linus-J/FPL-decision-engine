@@ -69,11 +69,32 @@ def _minutes_by_player(db, season: str, gameweek: int) -> dict[int, int]:
 
 
 def _gw_finished(db, season: str, gameweek: int) -> bool:
+    """Is this gameweek's data FINAL — not merely played?
+
+    2026-08-18 (engine review §8). This gated on ``finished`` alone, which
+    only means the last ball was kicked. Bonus points and defensive
+    contributions stay provisional after that, and 26/27 widened the window
+    from about an hour to twelve or more: the gameweek lockdown moved to
+    09:00 the day AFTER the final match.
+
+    ``run_weekly.py`` scores last gameweek before deciding this one, so a run
+    inside that window wrote provisional points into ``decision_log`` and
+    ``sim_decision_log`` — the calibration instrument and the persona ranking,
+    which the project names as its primary validation. Those rows are then
+    never revisited, because the scorer only picks up UNSCORED ones.
+
+    ``data_checked`` is FPL's own "this gameweek is settled" flag and is what
+    the question actually is. Both are required: a gameweek can be marked
+    checked while a postponed fixture leaves ``finished`` false.
+    """
     row = db.execute(
-        text("SELECT finished FROM gameweeks WHERE season = :season AND id = :gw"),
+        text(
+            "SELECT finished, data_checked FROM gameweeks "
+            "WHERE season = :season AND id = :gw"
+        ),
         {"season": season, "gw": gameweek},
     ).fetchone()
-    return bool(row and row[0])
+    return bool(row and row[0] and row[1])
 
 
 def _backfill_table(
