@@ -51,6 +51,7 @@ from data.db import get_session  # noqa: E402
 from data.ingestors.odds_api import odds_coverage_by_gameweek  # noqa: E402
 from optimiser.squad import optimise_squad  # noqa: E402
 from projection import cold_start  # noqa: E402
+from projection.cold_start import prior_season_of  # noqa: E402
 
 POSITION_ORDER = {"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
 
@@ -246,6 +247,75 @@ def _pool_section(
     return lines
 
 
+def _continuity_section(df: pd.DataFrame, season: str) -> list[str]:
+    """Who in this squad has actually played for the club he is now at.
+
+    The minutes model reads a player's own appearance record and nothing else,
+    so a settled record at a PREVIOUS club reads exactly like a settled record
+    at the current one. This is the check that separates the two, and it is
+    the shortlist worth reading a team-news article about — a manual review of
+    fifteen players is slow, a review of the three with no minutes is not.
+
+    It cannot see a managerial change, which breaks the same assumption for
+    players whose record is entirely at the right club. Nothing in the data
+    marks one; that stays a human input.
+    """
+    db = get_session()
+    try:
+        prior = pd.read_sql(text("""
+            SELECT s.player_id, s.team_id_season AS team, SUM(s.minutes) AS mins
+            FROM player_gw_stats s
+            WHERE s.season = :prior AND s.minutes > 0
+            GROUP BY s.player_id, s.team_id_season
+        """), db.bind, params={"prior": prior_season_of(season)})
+        codes = pd.read_sql(
+            text("SELECT season, team_id, code FROM team_season_strength"), db.bind
+        )
+    finally:
+        db.close()
+
+    if prior.empty or codes.empty:
+        return ["No prior-season appearance data available for this check."]
+
+    prior_code = {(r.season, r.team_id): r.code for r in codes.itertuples()}
+    now_code = {
+        r.team_id: r.code for r in codes[codes["season"] == season].itertuples()
+    }
+    prior_key = prior_season_of(season)
+    prior["code"] = [prior_code.get((prior_key, t)) for t in prior["team"]]
+
+    mins_at_club: dict[tuple[int, int], float] = {}
+    total_mins: dict[int, float] = {}
+    for r in prior.itertuples():
+        if r.code is None:
+            continue
+        mins_at_club[(int(r.player_id), int(r.code))] = float(r.mins)
+        total_mins[int(r.player_id)] = total_mins.get(int(r.player_id), 0.0) + float(r.mins)
+
+    rows = []
+    for r in df.itertuples():
+        code = now_code.get(int(r.team_id))
+        here = mins_at_club.get((int(r.id), code), 0.0) if code is not None else 0.0
+        rows.append((str(r.web_name), str(r.team), here, total_mins.get(int(r.id), 0.0)))
+
+    unseen = [x for x in rows if x[2] == 0.0]
+    lines = ["| player | club | mins at this club last season | mins anywhere |",
+             "| --- | --- | --- | --- |"]
+    for name, club, here, total in sorted(rows, key=lambda x: x[2]):
+        flag = "  **none**" if here == 0.0 else ""
+        lines.append(f"| {name} | {club} | {here:.0f}{flag} | {total:.0f} |")
+    lines.append("")
+    if unseen:
+        lines.append(
+            f"**{len(unseen)} of {len(rows)} have never played for their current club**: "
+            + ", ".join(x[0] for x in unseen)
+            + ". The model rates them on someone else's team, and cannot know it."
+        )
+    else:
+        lines.append("Every player in this squad has minutes for his current club on record.")
+    return lines
+
+
 def build_report(season: str, pool_size: int = 0) -> str:
     teams = _team_names()
     solution, projections = cold_start.build_initial_squad(season)
@@ -316,6 +386,11 @@ def build_report(season: str, pool_size: int = 0) -> str:
     out.append("## How much of this is measured, and how much is modelled")
     out.append("")
     out.extend(_provenance(projections, set(df["id"]), season, horizon))
+    out.append("")
+
+    out.append("## Who has actually played for this club")
+    out.append("")
+    out.extend(_continuity_section(df, season))
     out.append("")
 
     out.append("## Correlated exposure")

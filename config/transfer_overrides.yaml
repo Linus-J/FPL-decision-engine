@@ -144,11 +144,21 @@ exclude:
   source: 'user, BBC FPL preview'
 - code: 209036          # Marc Guehi, Man City
   reason: >-
-    BBC preview flags competition with Dias and Gvardiol. Our own data pushes
-    back -- 15 appearances after the January move, every one 60+ minutes -- but
-    the user's call is a veto, not a discount.
+    Manchester City have a new manager playing a different style. Guehi's 15
+    appearances after the January move were every one 60+ minutes, but all of
+    them under Pep Guardiola, so they say little about who this manager picks.
+    A managerial change breaks the assumption the whole minutes model rests on
+    -- that a player's own recent history predicts his next start -- and
+    nothing in the data marks it.
   as_of: '2026-08-18'
-  source: 'user, BBC FPL preview'
+  source: user
+- code: 208706          # Bruno G., Arsenal
+  reason: >-
+    May be competing for a full 90 rather than a guaranteed start, at least
+    early on. Same class of doubt as the others: a role question the minutes
+    model reads as settled because his appearance record is.
+  as_of: '2026-08-18'
+  source: user
 - code: 221466          # Marcos Senesi, Spurs
   reason: >-
     Summer move to Spurs after 37 Bournemouth appearances; centre-back depth
