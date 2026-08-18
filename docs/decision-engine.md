@@ -124,9 +124,9 @@ them are paired and far less noisy than any absolute score.
 
 | Limitation | Effect |
 |---|---|
-| Odds cover ~6/10 GW1 fixtures, none beyond | GW2+ projections use a flat league-average scoreline, so the multi-week horizon is weaker than its length suggests |
+| Odds cover ~6/10 GW1 fixtures, none beyond | Unpriced fixtures fall back to a calibrated team-strength model rather than a flat scoreline, so the horizon still differentiates fixtures — but on a weaker signal than the market |
 | Penalty duty is a published list, not observed | Right today, decays as duty changes; refresh in-season |
-| No teammate covariance in the optimiser | Two players in the same match are treated as independent when choosing the squad (captaincy does model it) |
+| No teammate covariance in the optimiser | Two players in the same match are treated as independent when choosing the squad. `captaincy.py` implements the covariance-aware version, but it is **dormant**: `mu_baseline` calibrated to 0, so it short-circuits to mean argmax |
 | Chip thresholds are untuned | Fitted against a model that could not bank, hit, or see past one gameweek; the persona sweep is what will retune them |
 | Cohort measures main effects only | One season cannot resolve interactions between parameters |
 
@@ -181,7 +181,10 @@ snapshots are joined as-of.
 Per fixture, per scenario (default a few thousand):
 
 1. **Team goals.** `team_goals.py::team_goals_from_odds` inverts de-vigged
-   1X2 + over/under-2.5 into `λ_home`, `λ_away`. No odds → flat 1.35/1.15.
+   1X2 + over/under-2.5 into `λ_home`, `λ_away`. No odds → `team_goals_from_strength`,
+   a calibrated fit of λ to league-relative team strengths (R²≈0.58, 39% less
+   error than the flat pair it replaced). Neither known → the league-average
+   fixture, 1.51/1.22.
 2. **Minutes.** `minutes_model.py::predict_minutes_bands` gives each player
    P(0 min), P(1–59), P(60+). A band is drawn per scenario; attacking output
    scales with the drawn minutes, not an average.
@@ -315,7 +318,8 @@ resolve gameweek → refresh projections → apply rumour discounts
   → load squad state (ids, bank, purchase prices, free transfers)
   → cold start?  yes → build initial 15, record, done
   → recommend chip
-  → wildcard/free hit? → optimise_squad     else → evaluate_transfers
+  → free hit? → optimise_squad     else → evaluate_transfers
+       (a wildcard takes the evaluate_transfers path with wildcard_active=True)
   → optimise_starting_xi
   → settle bank and purchase prices
   → record transfers + lineup (+ chip)
@@ -362,7 +366,11 @@ Values fall in three classes, and the file says which is which:
 
 ## Testing
 
-`pytest` (649 tests) and `ruff check` are the gates; mypy is not enforced.
+`pytest` (774 tests) and `ruff check` are the gates; mypy is not enforced.
+Both genuinely run as written — until 2026-08-18 a bare `pytest` collected
+nothing (55 import errors) and only `python -m pytest` worked, and eight tests
+were passing by reading the LIVE database. `conftest.py` now pins the suite to
+a throwaway DB, so no test can reach `fpl_bot_v2.db`.
 Two conventions worth preserving:
 
 - **Pure logic separated from live I/O.** Scrapers keep their mapping

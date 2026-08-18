@@ -16,6 +16,15 @@ design.
 closed.** Sections 1–9 cover projection, ingest and measurement; sections 10–17
 cover the optimiser, transfer and chip layer.
 
+> **Status, 2026-08-18: all seventeen are addressed.** Fifteen are fixed in
+> code; §7 (goalkeeper bonus re-calibration) is blocked on 26/27 BPS that does
+> not exist yet and is flagged in place; §16 was resolved as a documentation
+> correction, since the dormant risk layer is a defensible configuration and
+> only its description was wrong. Fixing §3 exposed a further defect, live in
+> the in-season path too: curse shrinkage was resurrecting players it had
+> zeroed. The GW1 squad, XI, bench order, captain and cost are **unchanged**
+> after all of it. See `docs/superpowers/plans/engine-fix-plan-2026-08-18.md`.
+
 ---
 
 ## 1. Two model features will read 0 for the whole season

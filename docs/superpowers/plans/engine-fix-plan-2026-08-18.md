@@ -3,12 +3,21 @@
 Remediation for the seventeen findings in `docs/engine-review-2026-08-18.md`.
 Section numbers below refer to that document.
 
+> **Completed 2026-08-18.** All tiers landed in one pass rather than being
+> staged, at the user's direction, with the GW1 re-run deferred to the end so
+> the fixes could be checked as a set rather than one at a time. Outcome: the
+> GW1 squad, XI, bench order, captain and cost are **identical** to the
+> committed baseline; the only baseline movement is two new chip-reachability
+> keys. Suite 774 passing, `ruff check` down from 117 findings to 53
+> (line-length only). §7 remains open by necessity — it needs 26/27 BPS that
+> does not exist yet.
+
 **Hard constraint:** the GW1 deadline is **Friday 2026-08-21 17:30**. Exactly
 one finding (§3) changes the GW1 squad. Everything else either bites from GW2
 or is measurement work. The plan is sequenced around that, not around severity.
 
-Every code change lands with `python -m pytest` green (note: `pytest` alone
-does not collect — see §9) and a `scripts/preflight.py` run, which diffs the
+Every code change lands with `pytest` green — which now genuinely runs, see
+§9 — and a `scripts/preflight.py` run, which diffs the
 decision surface against `config/preflight_baseline.json`. Where a fix is
 *expected* to change the answer, the baseline is updated in the same commit
 with the diff quoted in the message — changing the answer is allowed, changing
@@ -18,10 +27,10 @@ it silently is not.
 
 ## Tier 0 — before Friday's deadline
 
-### T0.1 — Decide §3 (curse shrinkage at cold start) — **needs your call**
+### T0.1 — §3 (curse shrinkage at cold start) — DONE, and it found another defect
 
-This is the only item that changes the squad you are about to enter, so it is a
-judgment call rather than a fix to apply.
+The only item that could change the squad about to be entered, so it was the
+one genuine judgment call in the set.
 
 `apply_curse_shrinkage` runs in `projection/pipeline.py:291` and never on the
 cold-start path, because `decision_engine.py:351` calls
@@ -44,15 +53,22 @@ spread, which under a budget constraint makes premiums relatively less
 attractive and spreads money down the squad. So expect a real change in shape,
 not in who the best midfielder is.
 
-**Recommendation:** do not blind-flip it three days out. Run it as a comparison
-first — the flag `OPTIMISER.curse_shrinkage_enabled` already disables it exactly,
-so wire cold start to honour the same flag, then run the GW1 decision both ways
-and diff the squads with preflight. Decide from the two concrete squads, not
-from the argument. That is ~30 minutes of work and it is reversible.
+**Outcome:** shrinkage is now applied on the cold-start path, behind the same
+`OPTIMISER.curse_shrinkage_enabled` flag as in-season. The GW1 squad did not
+change at all — same 15, same XI, same bench order, same captain, same £100.0m.
+Only the projected total moved, 59.97 → 54.74 xPts, which is exactly the 15%
+compression toward the group means doing its job: a more honest number for the
+same team.
 
-If the two squads differ only marginally, prefer shrinkage on (it is the
-theoretically correct default). If it materially restructures the squad,
-prefer off for GW1 and revisit with real data in the international break.
+Wiring it in immediately failed a departure-gate test, which turned out to be a
+real defect in the shrinkage itself and live in the in-season path too:
+**shrinkage was resurrecting players it had zeroed.** A zero in that frame means
+the player will not feature — the unavailable are zeroed and confirmed departures
+discounted to 0.0 before shrinkage runs — and pulling them toward a positive
+group mean gave a leaver 0.30 xPts and made them selectable again. They also
+dragged the mean down, making every real player's correction depend on how many
+non-participants were in that week's frame. Both fixed by shrinking only rows
+with `xpts > 0`.
 
 ### T0.2 — §10, wildcard free-transfer loss (one line, rule-verified)
 
