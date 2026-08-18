@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 1,
   "label": "GW1 \u2014 21 Aug 2026",
-  "generated_at": "2026-08-17T09:54:03.098683+00:00",
+  "generated_at": "2026-08-18T10:24:45.093485+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -39,6 +39,23 @@
       }
     },
     {
+      "player_id": 122,
+      "web_name": "Dubravka",
+      "position": "GKP",
+      "team_short": "TOT",
+      "now_cost": 4.0,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 1,
+      "xpts": {
+        "p10": 0.0,
+        "median": 2.2612,
+        "mean": 2.2612,
+        "p90": 5.136
+      }
+    },
+    {
       "player_id": 136,
       "web_name": "Senesi",
       "position": "DEF",
@@ -50,9 +67,26 @@
       "bench_order": null,
       "xpts": {
         "p10": 0.0,
-        "median": 4.2393,
-        "mean": 4.2393,
-        "p90": 8.6097
+        "median": 4.1425,
+        "mean": 4.1425,
+        "p90": 8.5129
+      }
+    },
+    {
+      "player_id": 204,
+      "web_name": "Yarmoliuk",
+      "position": "MID",
+      "team_short": "BRE",
+      "now_cost": 5.0,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 3,
+      "xpts": {
+        "p10": 0.0,
+        "median": 2.7488,
+        "mean": 2.7488,
+        "p90": 5.5098
       }
     },
     {
@@ -73,40 +107,6 @@
       }
     },
     {
-      "player_id": 213,
-      "web_name": "Furo",
-      "position": "FWD",
-      "team_short": "BRE",
-      "now_cost": 4.5,
-      "is_starting": false,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": 4,
-      "xpts": {
-        "p10": 0.0,
-        "median": 2.3593,
-        "mean": 2.3593,
-        "p90": 6.6478
-      }
-    },
-    {
-      "player_id": 220,
-      "web_name": "Verbruggen",
-      "position": "GKP",
-      "team_short": "BHA",
-      "now_cost": 4.5,
-      "is_starting": false,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": 1,
-      "xpts": {
-        "p10": 0.0,
-        "median": 3.4976,
-        "mean": 3.4976,
-        "p90": 7.0757
-      }
-    },
-    {
       "player_id": 356,
       "web_name": "Tarkowski",
       "position": "DEF",
@@ -118,16 +118,16 @@
       "bench_order": null,
       "xpts": {
         "p10": 0.0,
-        "median": 4.7573,
-        "mean": 4.7573,
-        "p90": 9.8532
+        "median": 4.3859,
+        "mean": 4.3859,
+        "p90": 9.4818
       }
     },
     {
-      "player_id": 401,
-      "web_name": "Wilson",
-      "position": "MID",
-      "team_short": "LEE",
+      "player_id": 464,
+      "web_name": "Virgil",
+      "position": "DEF",
+      "team_short": "LIV",
       "now_cost": 6.5,
       "is_starting": true,
       "is_captain": false,
@@ -135,9 +135,9 @@
       "bench_order": null,
       "xpts": {
         "p10": 0.0,
-        "median": 4.2995,
-        "mean": 4.2995,
-        "p90": 9.2127
+        "median": 4.2124,
+        "mean": 4.2124,
+        "p90": 8.8077
       }
     },
     {
@@ -152,9 +152,9 @@
       "bench_order": null,
       "xpts": {
         "p10": 0.0,
-        "median": 5.1939,
-        "mean": 5.1939,
-        "p90": 10.9767
+        "median": 4.8861,
+        "mean": 4.8861,
+        "p90": 10.6689
       }
     },
     {
@@ -169,9 +169,9 @@
       "bench_order": null,
       "xpts": {
         "p10": 0.0,
-        "median": 4.5875,
-        "mean": 4.5875,
-        "p90": 9.9252
+        "median": 4.2854,
+        "mean": 4.2854,
+        "p90": 9.6231
       }
     },
     {
@@ -203,9 +203,9 @@
       "bench_order": null,
       "xpts": {
         "p10": 0.0,
-        "median": 5.1947,
-        "mean": 5.1947,
-        "p90": 10.6572
+        "median": 4.903,
+        "mean": 4.903,
+        "p90": 10.3654
       }
     },
     {
@@ -219,27 +219,27 @@
       "is_vice_captain": false,
       "bench_order": null,
       "xpts": {
-        "p10": 0.9073,
-        "median": 4.8927,
-        "mean": 4.8927,
-        "p90": 8.8781
+        "p10": 0.4192,
+        "median": 4.4046,
+        "mean": 4.4046,
+        "p90": 8.39
       }
     },
     {
-      "player_id": 795,
-      "web_name": "Disasi",
-      "position": "DEF",
-      "team_short": "CHE",
+      "player_id": 744,
+      "web_name": "Scarlett",
+      "position": "FWD",
+      "team_short": "TOT",
       "now_cost": 4.5,
       "is_starting": false,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": 3,
+      "bench_order": 4,
       "xpts": {
         "p10": 0.0,
-        "median": 3.3603,
-        "mean": 3.3603,
-        "p90": 7.0596
+        "median": 2.0423,
+        "mean": 2.0423,
+        "p90": 5.825
       }
     },
     {
@@ -253,10 +253,10 @@
       "is_vice_captain": false,
       "bench_order": 2,
       "xpts": {
-        "p10": 0.4549,
-        "median": 3.4687,
-        "mean": 3.4687,
-        "p90": 6.4825
+        "p10": 0.0,
+        "median": 2.8564,
+        "mean": 2.8564,
+        "p90": 5.8703
       }
     }
   ],
@@ -298,30 +298,6 @@
       }
     },
     {
-      "player_id": 633,
-      "web_name": "Gibbs-White",
-      "position": "MID",
-      "team_short": "NFO",
-      "xpts": {
-        "p10": 5.194736842105263,
-        "median": 5.194736842105263,
-        "mean": 5.194736842105263,
-        "p90": 5.194736842105263
-      }
-    },
-    {
-      "player_id": 496,
-      "web_name": "Semenyo",
-      "position": "MID",
-      "team_short": "MCI",
-      "xpts": {
-        "p10": 5.193885490753911,
-        "median": 5.193885490753911,
-        "mean": 5.193885490753911,
-        "p90": 5.193885490753911
-      }
-    },
-    {
       "player_id": 210,
       "web_name": "Thiago",
       "position": "FWD",
@@ -334,15 +310,39 @@
       }
     },
     {
+      "player_id": 633,
+      "web_name": "Gibbs-White",
+      "position": "MID",
+      "team_short": "NFO",
+      "xpts": {
+        "p10": 4.902999077055874,
+        "median": 4.902999077055874,
+        "mean": 4.902999077055874,
+        "p90": 4.902999077055874
+      }
+    },
+    {
+      "player_id": 496,
+      "web_name": "Semenyo",
+      "position": "MID",
+      "team_short": "MCI",
+      "xpts": {
+        "p10": 4.886052261995756,
+        "median": 4.886052261995756,
+        "mean": 4.886052261995756,
+        "p90": 4.886052261995756
+      }
+    },
+    {
       "player_id": 20,
       "web_name": "Rice",
       "position": "MID",
       "team_short": "ARS",
       "xpts": {
-        "p10": 4.942982456140351,
-        "median": 4.942982456140351,
-        "mean": 4.942982456140351,
-        "p90": 4.942982456140351
+        "p10": 4.493821849859599,
+        "median": 4.493821849859599,
+        "mean": 4.493821849859599,
+        "p90": 4.493821849859599
       }
     },
     {
@@ -351,10 +351,10 @@
       "position": "MID",
       "team_short": "MCI",
       "xpts": {
-        "p10": 4.892684210526315,
-        "median": 4.892684210526315,
-        "mean": 4.892684210526315,
-        "p90": 4.892684210526315
+        "p10": 4.404610214878511,
+        "median": 4.404610214878511,
+        "mean": 4.404610214878511,
+        "p90": 4.404610214878511
       }
     },
     {
@@ -363,70 +363,10 @@
       "position": "DEF",
       "team_short": "EVE",
       "xpts": {
-        "p10": 4.757315789473684,
-        "median": 4.757315789473684,
-        "mean": 4.757315789473684,
-        "p90": 4.757315789473684
-      }
-    },
-    {
-      "player_id": 498,
-      "web_name": "Gu\u00e9hi",
-      "position": "DEF",
-      "team_short": "MCI",
-      "xpts": {
-        "p10": 4.5874739097744355,
-        "median": 4.5874739097744355,
-        "mean": 4.5874739097744355,
-        "p90": 4.5874739097744355
-      }
-    },
-    {
-      "player_id": 293,
-      "web_name": "Jo\u00e3o Pedro",
-      "position": "FWD",
-      "team_short": "CHE",
-      "xpts": {
-        "p10": 4.512298192631578,
-        "median": 4.512298192631578,
-        "mean": 4.512298192631578,
-        "p90": 4.512298192631578
-      }
-    },
-    {
-      "player_id": 264,
-      "web_name": "Gro\u00df",
-      "position": "MID",
-      "team_short": "BHA",
-      "xpts": {
-        "p10": 4.484435983379502,
-        "median": 4.484435983379502,
-        "mean": 4.484435983379502,
-        "p90": 4.484435983379502
-      }
-    },
-    {
-      "player_id": 368,
-      "web_name": "Garner",
-      "position": "MID",
-      "team_short": "EVE",
-      "xpts": {
-        "p10": 4.44948947368421,
-        "median": 4.44948947368421,
-        "mean": 4.44948947368421,
-        "p90": 4.44948947368421
-      }
-    },
-    {
-      "player_id": 464,
-      "web_name": "Virgil",
-      "position": "DEF",
-      "team_short": "LIV",
-      "xpts": {
-        "p10": 4.375,
-        "median": 4.375,
-        "mean": 4.375,
-        "p90": 4.375
+        "p10": 4.385927581790695,
+        "median": 4.385927581790695,
+        "mean": 4.385927581790695,
+        "p90": 4.385927581790695
       }
     },
     {
@@ -439,6 +379,66 @@
         "median": 4.35533428165007,
         "mean": 4.35533428165007,
         "p90": 4.35533428165007
+      }
+    },
+    {
+      "player_id": 498,
+      "web_name": "Gu\u00e9hi",
+      "position": "DEF",
+      "team_short": "MCI",
+      "xpts": {
+        "p10": 4.285376400139639,
+        "median": 4.285376400139639,
+        "mean": 4.285376400139639,
+        "p90": 4.285376400139639
+      }
+    },
+    {
+      "player_id": 464,
+      "web_name": "Virgil",
+      "position": "DEF",
+      "team_short": "LIV",
+      "xpts": {
+        "p10": 4.21244669369851,
+        "median": 4.21244669369851,
+        "mean": 4.21244669369851,
+        "p90": 4.21244669369851
+      }
+    },
+    {
+      "player_id": 15,
+      "web_name": "Saka",
+      "position": "MID",
+      "team_short": "ARS",
+      "xpts": {
+        "p10": 4.198217317487267,
+        "median": 4.198217317487267,
+        "mean": 4.198217317487267,
+        "p90": 4.198217317487267
+      }
+    },
+    {
+      "player_id": 68,
+      "web_name": "Watkins",
+      "position": "FWD",
+      "team_short": "AVL",
+      "xpts": {
+        "p10": 4.148744492210525,
+        "median": 4.148744492210525,
+        "mean": 4.148744492210525,
+        "p90": 4.148744492210525
+      }
+    },
+    {
+      "player_id": 136,
+      "web_name": "Senesi",
+      "position": "DEF",
+      "team_short": "TOT",
+      "xpts": {
+        "p10": 4.142481330808296,
+        "median": 4.142481330808296,
+        "mean": 4.142481330808296,
+        "p90": 4.142481330808296
       }
     }
   ],
