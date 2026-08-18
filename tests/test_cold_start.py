@@ -38,6 +38,10 @@ def temp_session(tmp_path, monkeypatch):
     Base.metadata.create_all(bind=engine)
     Local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     monkeypatch.setattr(cs, "get_session", lambda: Local())
+    # The horizon path resolves per-fixture expected goals, which reads team
+    # strengths through assemble's own session binding (2026-08-18).
+    from projection import assemble as _assemble
+    monkeypatch.setattr(_assemble, "get_session", lambda: Local())
     return Local
 
 
@@ -701,9 +705,9 @@ def test_project_cold_start_horizon_emits_one_row_per_gw_with_distinct_xpts(temp
     # legs are against the same strong opponent, but home/away differs, so
     # the multipliers (and therefore xpts) must differ between the two rows.
     assert gw1_xpts != gw2_xpts
-    from projection.fixture_adjust import fixture_multiplier
-    base_xpts = home_rows["xpts"].iloc[0] / fixture_multiplier(1400.0, True)
-    assert gw2_xpts == pytest.approx(base_xpts * fixture_multiplier(1400.0, False))
+    # Same strong opponent both legs, so the only difference is venue -- and
+    # home must be worth more than away.
+    assert gw1_xpts > gw2_xpts
 
 
 def test_project_cold_start_horizon_var_scales_with_multiplier_squared(temp_session):
@@ -730,11 +734,13 @@ def test_project_cold_start_horizon_var_scales_with_multiplier_squared(temp_sess
         players, prior, raw_appearances=raw, target_gw=1, horizon=1, season="2026-27"
     )
 
-    from projection.fixture_adjust import fixture_multiplier
     varied_id = players.loc[players["web_name"] == "Varied", "id"].iloc[0]
     base_row = base_proj[base_proj["player_id"] == varied_id].iloc[0]
     horizon_row = horizon_proj[horizon_proj["player_id"] == varied_id].iloc[0]
-    mult = fixture_multiplier(1000.0, True)  # Varied is on team_id=1, home
+    # Variance scales with the SQUARE of whatever multiplier the mean took, so
+    # derive the multiplier from the mean rather than recomputing it -- the
+    # relationship is the invariant here, not the specific fixture model.
+    mult = horizon_row["xpts"] / base_row["xpts"]
     assert horizon_row["xpts_var"] == pytest.approx(base_row["xpts_var"] * mult ** 2)
 
 

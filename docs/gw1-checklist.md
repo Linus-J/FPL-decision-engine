@@ -30,30 +30,35 @@ print('BEN:', [info[int(p)][1] for p, _ in sorted(d['bench_order'].items(), key=
 print('C  :', info[d['captain_id']][1], '| V:', info[d['vice_captain_id']][1])"
 ```
 
-**Starting XI** — 1-5-4-1
+**Starting XI** — 1-4-5-1
 
 | Pos | Player | Price |
 |---|---|---|
 | GKP | Raya **(V)** | £6.0m |
-| DEF | Gabriel | £8.0m |
+| DEF | Gabriel **(C)** | £8.0m |
 | DEF | Virgil | £6.5m |
-| DEF | Senesi | £6.0m |
 | DEF | Tarkowski | £6.0m |
 | DEF | Guéhi | £6.0m |
-| MID | B.Fernandes **(C)** | £12.0m |
+| MID | B.Fernandes | £12.0m |
 | MID | Semenyo | £8.5m |
 | MID | Gibbs-White | £8.0m |
+| MID | Rice | £7.5m |
 | MID | Anderson | £6.5m |
 | FWD | Thiago | £8.0m |
 
-**Bench, in order** — 1. Dubravka (GKP) £4.0m · 2. Yarmoliuk (MID) £5.0m ·
-3. Simms (FWD) £5.0m · 4. Scarlett (FWD) £4.5m
+**Bench, in order** — 1. Dubravka (GKP) £4.0m · 2. Targett (DEF) £4.0m ·
+3. Mheuka (FWD) £4.5m · 4. Furo (FWD) £4.5m
 
-> Changed 2026-08-18 by the engine review. Per-player shrinkage (§19) replaced
-> a flat one that provably could not change selection, and it moved the shape
-> from 4-5-1 to 5-4-1: van Dijk starts in place of Wilson, funded by a cheaper
-> bench (Verbruggen → Dubravka, Disasi → Yarmoliuk, Furo → Scarlett).
-> `OPTIMISER.curse_shrinkage_enabled = False` reverts to the previous squad.
+> Changed 2026-08-18. The cold start now prices fixtures from bookmakers'
+> odds where they exist, instead of a strength ratio whose entire GW1 range
+> was 0.89–1.10 against the market's 0.46–1.72. Arsenal at home to Coventry
+> is the swing: Gabriel becomes the highest-projected player in the league
+> for GW1 (8.50 xPts) and takes the armband.
+>
+> **The captain is a defender.** That follows from maximising expected points
+> with `risk_level = 0` — Gabriel's mean beats Haaland's 7.50, though his
+> ceiling is far lower. If you would rather captain for upside, that is the
+> `risk_level` / `mu_baseline` dial, not a bug.
 
 Bench order matters: it decides which substitute comes on if a starter
 blanks, and the outcome scorer replays FPL's real auto-substitution rules

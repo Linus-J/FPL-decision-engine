@@ -301,3 +301,57 @@ def test_shrinkage_target_is_price_banded_when_per_player():
     # Banded by price, the cheap player regresses toward ~2.0, not toward the
     # all-MID mean of ~5.5 -- so he must not be inflated past his own band.
     assert out.loc[4, "xpts"] < 3.0
+
+
+def test_a_lone_premium_is_still_shrunk():
+    """The top of the price ladder must not opt out of the correction.
+
+    Fixed £1.0m bands are well populated up to about £7m and then collapse to
+    one or two players a step. Measured on the real GW1 frame before this was
+    fixed: every band above £9m fell short of MIN_SHRINKAGE_GROUP_SIZE, so
+    100% of players over £9m — Haaland alone at £15.5m, Bruno Fernandes alone
+    at £12.0m — were skipped and shrunk by exactly 0.0, while the rest of the
+    field was correctly deflated. That is the wrong nine players out of 564 to
+    miss: they carry the most budget per pick.
+    """
+    projections = pd.DataFrame([
+        {"player_id": 1, "gameweek": 1, "xpts": 4.0, "estimation_se": 0.5},
+        {"player_id": 2, "gameweek": 1, "xpts": 4.4, "estimation_se": 0.5},
+        {"player_id": 3, "gameweek": 1, "xpts": 3.6, "estimation_se": 0.5},
+        # Alone in his own £1.0m band, well above the pack.
+        {"player_id": 4, "gameweek": 1, "xpts": 9.0, "estimation_se": 0.5},
+    ])
+    players = _priced([
+        (1, "FWD", 6.0), (2, "FWD", 6.5), (3, "FWD", 6.2), (4, "FWD", 15.5),
+    ])
+    out = apply_curse_shrinkage(projections, players).set_index("player_id")
+
+    assert out.loc[4, "xpts"] < 9.0, "a lone premium must not escape shrinkage"
+    # ...but only in proportion to how well his own mean is measured. A
+    # well-observed premium keeps most of his distance from the pooled mean,
+    # so merging his band downward must not drag him to the cheap band's level.
+    assert out.loc[4, "xpts"] > 8.0
+
+
+def test_merging_sparse_bands_leaves_populated_bands_untouched():
+    """The merge is a targeted repair of the sparse top end, not a regrouping
+    of the whole field: a player whose own band already clears the minimum
+    must shrink toward that band exactly as before."""
+    rows, priced = [], []
+    for pid in range(1, 7):  # six players in one well-populated band
+        rows.append({"player_id": pid, "gameweek": 1, "xpts": 5.0 + 0.1 * pid,
+                     "estimation_se": 0.4})
+        priced.append((pid, "MID", 5.5))
+    banded = apply_curse_shrinkage(
+        pd.DataFrame(rows), _priced(priced)
+    ).set_index("player_id")["xpts"]
+
+    # Adding a lone premium in a far-away band must not move any of them.
+    rows.append({"player_id": 99, "gameweek": 1, "xpts": 9.0, "estimation_se": 0.4})
+    priced.append((99, "MID", 12.0))
+    with_premium = apply_curse_shrinkage(
+        pd.DataFrame(rows), _priced(priced)
+    ).set_index("player_id")["xpts"]
+
+    for pid in range(1, 7):
+        assert with_premium.loc[pid] == pytest.approx(banded.loc[pid])

@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -16,8 +17,24 @@ def _enable_wal_mode(dbapi_connection, _connection_record):
     cursor.close()
 
 
+def _resolve_db_path(raw: str) -> str:
+    """A relative DB_PATH is anchored to the repository root, not the cwd.
+
+    The live crontab spent five weeks in 2026 reading a stale, wrong-schema
+    database because a relative path resolved against whatever directory the
+    scheduler happened to start in, and SQLite's answer to a missing file is
+    to create an empty one rather than fail. An absolute path in .env is
+    still the clearest thing to write; this makes the relative form safe
+    instead of silently wrong.
+    """
+    path = Path(raw)
+    if path.is_absolute() or raw.startswith(("file:", ":memory:")):
+        return raw
+    return str((Path(__file__).resolve().parents[1] / path).resolve())
+
+
 engine = create_engine(
-    f"sqlite:///{settings.db_path}",
+    f"sqlite:///{_resolve_db_path(settings.db_path)}",
     connect_args={"check_same_thread": False},
 )
 

@@ -78,11 +78,45 @@ def risk_adjusted_score(
     eo_pct: float,
     lam: float,
     mu: float,
+    upside: float | None = None,
+    downside: float | None = None,
 ) -> float:
     """Per-player-per-GW ILP objective coefficient, replacing raw xpts.
     Linear in the selection variable, so it drops into the existing
-    squad.py/transfers.py MILP formulations with no solver change."""
-    return xpts * differential_multiplier(eo_pct, lam) + mu * xpts_var
+    squad.py/transfers.py MILP formulations with no solver change.
+
+    ``upside`` (2026-08-18): the player's upper semi-deviation --
+    ``sqrt(E[max(0, x - mean)^2])`` over his own per-appearance scores -- in
+    POINTS. Used in place of ``xpts_var`` for the risk term whenever it is
+    available, because variance is the wrong quantity for a risk appetite and
+    measurably so.
+
+    Measured on the real 2025-26 season. Haaland returns 13+ points in 22.9% of
+    his appearances against Gabriel's 6.2%, and their upper semi-deviations are
+    3.63 and 2.83. But the modelled ``xpts_var`` runs the other way -- 36.8 for
+    Haaland, 50.5 for Gabriel -- because unconditional variance is dominated by
+    the level of the mean and by availability, not by how big the good weeks
+    are. A positive ``mu`` on ``xpts_var`` therefore rewarded the STEADIER
+    player, which is the opposite of what a risk-seeking persona is asking for.
+
+    Note the units. ``mu * upside`` is points x points; ``mu * xpts_var`` was
+    points x points-squared. The scale of ``mu`` differs accordingly, which is
+    why ``OptimiserConfig.mu_range`` moved with this change.
+    """
+    # Which SIDE of the distribution the appetite is about (2026-08-18).
+    # Chasing risk means wanting big good weeks; avoiding it means wanting few
+    # bad ones, and those are different players. Penalising upside instead --
+    # which is what a single risk term does -- makes a risk-averse persona
+    # select against GOOD players rather than against blank-prone ones, so its
+    # squads were contrasting but useless.
+    chosen = upside if mu >= 0 else downside
+    # NaN is "not measured", not "zero" -- and left alone it propagates through
+    # the whole ILP objective and silently produces a meaningless solution.
+    if chosen is None or chosen != chosen:
+        risk_term = xpts_var
+    else:
+        risk_term = chosen
+    return xpts * differential_multiplier(eo_pct, lam) + mu * risk_term
 
 
 def add_effective_score(
@@ -122,8 +156,16 @@ def add_effective_score(
     else:
         eo_pct = pd.Series(0.0, index=out.index)
 
+    def _col(name):
+        if name in out.columns:
+            return out[name]
+        return pd.Series([None] * len(out), index=out.index)
+
     out["effective_score"] = [
-        risk_adjusted_score(xpts, var, eo, lam, mu)
-        for xpts, var, eo in zip(out["xpts"], out["xpts_var"], eo_pct, strict=True)
+        risk_adjusted_score(xpts, var, eo, lam, mu, up, down)
+        for xpts, var, eo, up, down in zip(
+            out["xpts"], out["xpts_var"], eo_pct,
+            _col("upside"), _col("downside"), strict=True,
+        )
     ]
     return out

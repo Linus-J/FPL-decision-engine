@@ -343,12 +343,21 @@ def load_team_strength_rel(season: str) -> dict[int, dict[str, float]]:
         "strength_attack_home", "strength_attack_away",
         "strength_defence_home", "strength_defence_away",
     ]
-    usable = rows[(rows[cols] >= _PLAUSIBLE_STRENGTH_FLOOR).all(axis=1)]
+    # Per COLUMN, not per row (2026-08-18). Requiring all four to be published
+    # dropped a team outright when FPL had released, say, defence but not
+    # attack -- even though `team_goals_from_strength` is explicitly built to
+    # degrade one term at a time. Below-floor values become NaN and that
+    # promise is honoured; a row with nothing usable falls out naturally.
+    usable = rows.copy()
+    for col in cols:
+        usable.loc[usable[col] < _PLAUSIBLE_STRENGTH_FLOOR, col] = np.nan
+    usable = usable[usable[cols].notna().any(axis=1)]
     if usable.empty:
         return {}
 
     current = usable[usable["season"] == season].set_index("team_id")
-    prior_by_code = usable[usable["season"] != season].set_index("code")
+    prior_by_code = usable[usable["season"] != season].dropna(subset=["code"])
+    prior_by_code = prior_by_code.set_index("code")
     # team_id -> code, taken from whichever season knows it.
     code_by_team = (
         rows.dropna(subset=["code"]).set_index("team_id")["code"].astype(int).to_dict()
@@ -364,14 +373,21 @@ def load_team_strength_rel(season: str) -> dict[int, dict[str, float]]:
             if code is None or code not in prior_by_code.index:
                 continue
             src = prior_by_code.loc[code]
-        resolved[team_id] = {c: float(src[c]) for c in cols}
+        resolved[team_id] = {
+            c: float(src[c]) for c in cols if pd.notna(src[c])
+        }
 
     if not resolved:
         return {}
 
-    means = {c: float(np.mean([v[c] for v in resolved.values()])) for c in cols}
+    means = {}
+    for c in cols:
+        vals = [v[c] for v in resolved.values() if c in v]
+        means[c] = float(np.mean(vals)) if vals else 0.0
     return {
-        team_id: {c: v[c] / means[c] if means[c] > 0 else 1.0 for c in cols}
+        team_id: {
+            c: v[c] / means[c] for c in cols if c in v and means[c] > 0
+        }
         for team_id, v in resolved.items()
     }
 
@@ -952,6 +968,53 @@ _SHRINKAGE_PRICE_BAND = 1.0
 CURSE_SHRINKAGE_STRENGTH = 0.15
 
 
+def _shrinkage_groups(out: pd.DataFrame, plays: pd.Series, group_keys: list[str]):
+    """Yields ``(members, reference)`` index pairs — the rows to shrink, and
+    the rows whose spread defines what they shrink toward.
+
+    Usually these are the same set. They come apart only at the sparse top of
+    the price ladder, and keeping them SEPARATE is the whole point: pooling a
+    premium into a cheap band to give him a peer group would drag that band's
+    mean up and inflate every cheap player in it, which is exactly the
+    contamination price-banding was introduced to stop. A player's own band,
+    when populated, therefore always defines its own mean — untouched by
+    whoever is borrowing it.
+
+    Sparse bands are first pooled with each OTHER (premiums regress toward
+    premiums, which is the honest peer group); only if that pool is still
+    short of ``MIN_SHRINKAGE_GROUP_SIZE`` does it borrow the nearest populated
+    band, one-way, purely to have a mean at all.
+    """
+    playing = out[plays]
+    if playing.empty:
+        return
+    if "_price_band" not in group_keys:
+        for _key, group in playing.groupby(group_keys):
+            yield group.index, group.index
+        return
+
+    outer = [k for k in group_keys if k != "_price_band"]
+    for _key, block in playing.groupby(outer):
+        counts = block["_price_band"].value_counts()
+        populated = sorted(b for b, n in counts.items() if n >= MIN_SHRINKAGE_GROUP_SIZE)
+        sparse = sorted(b for b, n in counts.items() if n < MIN_SHRINKAGE_GROUP_SIZE)
+
+        for band in populated:
+            idx = block.index[block["_price_band"] == band]
+            yield idx, idx
+
+        if not sparse:
+            continue
+        sparse_idx = block.index[block["_price_band"].isin(sparse)]
+        if len(sparse_idx) >= MIN_SHRINKAGE_GROUP_SIZE:
+            yield sparse_idx, sparse_idx
+        elif populated:
+            centre = float(pd.Series(sparse).mean())
+            nearest = min(populated, key=lambda b: abs(b - centre))
+            reference = block.index[block["_price_band"] == nearest].union(sparse_idx)
+            yield sparse_idx, reference
+
+
 def apply_curse_shrinkage(projections: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
     """Shrinks ``xpts`` toward its (gameweek, position) group mean by a
     fixed fraction (``CURSE_SHRINKAGE_STRENGTH``) — corrects the "optimiser's
@@ -1012,11 +1075,17 @@ def apply_curse_shrinkage(projections: pd.DataFrame, players: pd.DataFrame) -> p
     Returns ``projections`` unchanged (no-op, not even ``xpts_raw`` added)
     if it's empty or ``players`` lacks ``position`` — a minimal test/caller
     fixture without position data has nothing this can safely group by."""
-    if projections.empty or "position" not in players.columns:
+    has_position = "position" in projections.columns or "position" in players.columns
+    if projections.empty or not has_position:
         return projections
 
-    merge_cols = ["id", "position"]
-    if "now_cost" in players.columns:
+    # Take only what `projections` does not already carry -- the cold-start
+    # frame now brings its own `position`, and merging a second one produces
+    # position_x/position_y and a KeyError below.
+    merge_cols = ["id"]
+    if "position" not in projections.columns:
+        merge_cols.append("position")
+    if "now_cost" in players.columns and "now_cost" not in projections.columns:
         merge_cols.append("now_cost")
     out = projections.merge(
         players[merge_cols], left_on="player_id", right_on="id", how="left"
@@ -1061,12 +1130,41 @@ def apply_curse_shrinkage(projections: pd.DataFrame, players: pd.DataFrame) -> p
     group_keys = ["gameweek", "position"]
     if has_se and "now_cost" in out.columns:
         out["_price_band"] = (out["now_cost"] // _SHRINKAGE_PRICE_BAND) * _SHRINKAGE_PRICE_BAND
+        # Sparse bands must be merged, or the top of the market silently opts
+        # OUT of the correction entirely (2026-08-18). Fixed £1.0m bands are
+        # well populated up to about £7m and then collapse: measured on the
+        # real GW1 frame, every band above £9m held one or two players against
+        # a `MIN_SHRINKAGE_GROUP_SIZE` of 3, so 100% of players over £9m --
+        # Haaland alone in FWD/£15.0, Bruno Fernandes alone in MID/£12.0 --
+        # were skipped by the `continue` below and shrunk by exactly 0.0.
+        #
+        # That is the wrong nine players out of 564 to miss. The curse being
+        # corrected is about over-trusting whichever estimate looks best, and
+        # these carry the most budget per pick, so an unshrunk premium
+        # competes against a correctly-deflated field. Merging each sparse
+        # band down into the nearest populated one gives them a peer group
+        # without touching the 555 players whose own band already qualifies.
+        #
+        # Pooling a £15.5m striker with £7m ones would be a bad shrink target
+        # if the shrink were flat -- but it isn't. `keep = tau^2/(tau^2+se^2)`
+        # is driven by how well the player's OWN mean is measured, so a
+        # premium with a full prior season keeps nearly all of his distance
+        # from whatever mean he is pooled against. The merge restores a
+        # correction proportional to real uncertainty; it does not impose the
+        # cheap players' level on him.
         group_keys.append("_price_band")
 
-    for _key, group in out[plays].groupby(group_keys):
-        if len(group) < MIN_SHRINKAGE_GROUP_SIZE:
+    for member_idx, reference_idx in _shrinkage_groups(out, plays, group_keys):
+        reference = out.loc[reference_idx]
+        if len(reference) < MIN_SHRINKAGE_GROUP_SIZE:
             continue
-        group_mean = group["xpts"].mean()
+        group = out.loc[member_idx]
+        # Mean and spread come from the REFERENCE rows, which are the group's
+        # own members in every case except a borrowed premium target — see
+        # _shrinkage_groups. For a populated band the two are identical, so
+        # this is byte-for-byte the previous behaviour.
+        group_mean = reference["xpts"].mean()
+        reference_deviation = reference["xpts"] - group_mean
         deviation = group["xpts"] - group_mean
         if has_se:
             # Empirical Bayes. An estimate keeps the share of its deviation
@@ -1084,12 +1182,19 @@ def apply_curse_shrinkage(projections: pd.DataFrame, players: pd.DataFrame) -> p
             # Where an SE is missing the player falls back to the flat rate, so
             # a partially-annotated frame degrades one player at a time.
             se = pd.to_numeric(group.get("estimation_se"), errors="coerce")
-            tau_sq = max(float(deviation.var(ddof=1)) if len(group) > 1 else 0.0, 1e-9)
+            # tau^2 is the spread of TRUE ability across the peer group, so it
+            # is measured on the reference rows (identical to `deviation` for a
+            # populated band; for a borrowed target it is the peer group's
+            # spread, not the one or two premiums' own).
+            tau_sq = max(
+                float(reference_deviation.var(ddof=1)) if len(reference) > 1 else 0.0,
+                1e-9,
+            )
             keep = tau_sq / (tau_sq + se.pow(2))
             keep = keep.fillna(1.0 - CURSE_SHRINKAGE_STRENGTH).clip(0.0, 1.0)
         else:
             keep = 1.0 - CURSE_SHRINKAGE_STRENGTH
-        shrunk.loc[group.index] = group_mean + keep * deviation
+        shrunk.loc[member_idx] = group_mean + keep * deviation
 
     out["xpts"] = shrunk
     return out.drop(columns=[c for c in ("position", "now_cost", "_price_band")
