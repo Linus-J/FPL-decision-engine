@@ -46,6 +46,46 @@ def test_match_fixture_requires_both_home_and_away_to_match():
     assert _match_fixture("Wolves", "Arsenal", "", db_fixtures) == 1
 
 
+def test_match_fixture_resolves_fpl_abbreviations_to_bookmaker_names():
+    """The four real GW1 fixtures that went unpriced three days before the
+    2026-27 deadline.
+
+    Substring matching handles a club whose FPL name is a prefix of the
+    bookmaker's ("Brighton" inside "Brighton and Hove Albion"), but not one
+    where FPL abbreviates a word: "man city" is not a substring of
+    "manchester city" in either direction. The failure is silent -- the
+    fixture simply keeps its strength-model lambda instead of the odds -- and
+    it cost the odds signal on Man City v Bournemouth, the fixture the most
+    expensive asset in the game plays in.
+    """
+    db_fixtures = [
+        {"id": 1, "team_h_name": "Man City", "team_a_name": "Bournemouth",
+         "kickoff_time": None},
+        {"id": 2, "team_h_name": "Hull City", "team_a_name": "Man Utd",
+         "kickoff_time": None},
+        {"id": 3, "team_h_name": "Nott'm Forest", "team_a_name": "Leeds",
+         "kickoff_time": None},
+        {"id": 4, "team_h_name": "Brentford", "team_a_name": "Spurs",
+         "kickoff_time": None},
+    ]
+    assert _match_fixture("Manchester City", "AFC Bournemouth", "", db_fixtures) == 1
+    assert _match_fixture("Hull City", "Manchester United", "", db_fixtures) == 2
+    assert _match_fixture("Nottingham Forest", "Leeds United", "", db_fixtures) == 3
+    assert _match_fixture("Brentford", "Tottenham Hotspur", "", db_fixtures) == 4
+
+
+def test_aliases_do_not_collapse_two_different_clubs():
+    """The alias map must not make distinct clubs interchangeable — the two
+    Manchester clubs share a canonical prefix and would be a cheap way to
+    attach City's odds to United's fixture."""
+    db_fixtures = [
+        {"id": 1, "team_h_name": "Man City", "team_a_name": "Arsenal",
+         "kickoff_time": None},
+    ]
+    assert _match_fixture("Manchester United", "Arsenal", "", db_fixtures) is None
+    assert _match_fixture("Manchester City", "Arsenal", "", db_fixtures) == 1
+
+
 def test_match_fixture_no_away_match_returns_none():
     db_fixtures = [
         {"id": 1, "team_h_name": "Wolves", "team_a_name": "Arsenal", "kickoff_time": None},

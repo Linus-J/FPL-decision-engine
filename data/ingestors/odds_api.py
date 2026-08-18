@@ -135,6 +135,50 @@ def _extract_over25(bookmakers: list[dict]) -> float:
     return 0.0
 
 
+# FPL's short names against the bookmakers' full club names, for the four
+# clubs where neither string contains the other (2026-08-18). Substring
+# matching alone covers most of the league -- "Brighton" sits inside "Brighton
+# and Hove Albion", "Bournemouth" inside "AFC Bournemouth" -- but it silently
+# fails wherever FPL abbreviates a word rather than dropping one, and a failed
+# match is invisible: the fixture just keeps its strength-model lambda.
+#
+# Measured on the live GW1 frame three days before the deadline: 6 of 10
+# fixtures priced. The four missing were exactly Man City v Bournemouth,
+# Hull City v Man Utd, Nott'm Forest v Leeds and Brentford v Spurs -- every
+# one of them failing on one of the names below, and one of them the fixture
+# the most expensive asset in the game plays in.
+_TEAM_NAME_ALIASES = {
+    "man city": "manchester city",
+    "man utd": "manchester united",
+    "man united": "manchester united",
+    "nott'm forest": "nottingham forest",
+    "notts forest": "nottingham forest",
+    "spurs": "tottenham hotspur",
+    "wolves": "wolverhampton wanderers",
+    "sheffield utd": "sheffield united",
+    "west brom": "west bromwich albion",
+}
+
+
+def _name_matches(db_name: str, api_name: str) -> bool:
+    """True when a DB team name and a bookmaker's team name are the same club.
+
+    Substring either way (the original rule), plus an alias lookup applied to
+    BOTH sides so it works whichever vocabulary each source happens to use.
+    """
+    db_lower = db_name.lower().strip()
+    api_lower = api_name.lower().strip()
+    db_canon = _TEAM_NAME_ALIASES.get(db_lower, db_lower)
+    api_canon = _TEAM_NAME_ALIASES.get(api_lower, api_lower)
+    return (
+        db_lower in api_lower
+        or api_lower in db_lower
+        or db_canon == api_canon
+        or db_canon in api_canon
+        or api_canon in db_canon
+    )
+
+
 def _match_fixture(
     home_team_name: str,
     away_team_name: str,
@@ -150,20 +194,11 @@ def _match_fixture(
     with zero odds coverage. Now requires BOTH team names to match, and
     breaks ties (a genuine same-week double-header) by nearest kickoff
     time to the odds event's own ``commence_time``."""
-    home_lower = home_team_name.lower()
-    away_lower = away_team_name.lower()
-
     candidates = [
         fix
         for fix in db_fixtures
-        if (
-            fix["team_h_name"].lower() in home_lower
-            or home_lower in fix["team_h_name"].lower()
-        )
-        and (
-            fix["team_a_name"].lower() in away_lower
-            or away_lower in fix["team_a_name"].lower()
-        )
+        if _name_matches(fix["team_h_name"], home_team_name)
+        and _name_matches(fix["team_a_name"], away_team_name)
     ]
     if not candidates:
         return None
