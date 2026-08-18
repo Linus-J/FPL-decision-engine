@@ -58,6 +58,33 @@ def _run_or_warn(step_name: str, args: list[str], env: dict[str, str] | None = N
         )
 
 
+def _season_has_started(season: str) -> bool:
+    """Has a single gameweek of ``season`` actually been played?
+
+    The match-event scrapers exist to collect what happened in matches. Before
+    a season's first kickoff there are no matches, so running them is at best a
+    slow no-op -- and at worst not a no-op at all: asked for a season FBref has
+    no match reports for, the scrape wanders off fetching pages that have
+    nothing to do with the current season (a 1926-1927 archive page was
+    observed on 2026-08-18), burning browser time against Cloudflare for data
+    that could only ever be discarded.
+
+    Nothing was written -- the ingest keys on the requested season, so the junk
+    had nowhere to land -- but a step whose only possible outcomes are "no-op"
+    and "wrong" should not run at all.
+    """
+    from projection.pipeline import season_has_played_history
+
+    try:
+        return season_has_played_history(season)
+    except Exception as exc:
+        # Unreadable DB: assume it HAS started, so a real in-season week is
+        # never silently skipped. Pre-season the cost of being wrong is a
+        # wasted scrape; in-season it is stale DefCon and bonus data.
+        logger.warning("Could not tell whether %s has started (%s) — not skipping", season, exc)
+        return True
+
+
 def _current_gameweek() -> int | None:
     """The gameweek whose deadline has just passed -- the one to sample a
     fresh ownership snapshot for (see ingest_ownership.py's own caveat:
@@ -86,6 +113,14 @@ def main() -> None:
 
     if args.skip_match_events:
         logger.info("Skipping FBref/WhoScored match-event refresh (--skip-match-events)")
+    elif not _season_has_started(args.season):
+        logger.info(
+            "Skipping FBref/WhoScored/set-piece refresh — %s has no played "
+            "gameweeks yet, so there are no match events to collect. Resumes "
+            "by itself once GW1 has been played. To refresh a PRIOR season's "
+            "events, run scripts/scrape_fbref.py with that season directly.",
+            args.season,
+        )
     else:
         # scrape_fbref.py's own default is headless, but FBref sits behind
         # Cloudflare and headless mode cannot clear its CAPTCHA (confirmed

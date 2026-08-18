@@ -509,7 +509,14 @@ def _assemble_rows(  # pragma: no cover - exercised by the live path
 
 
 # Key columns -- never part of the update payload below.
+#
+# `source` is excluded too, deliberately (2026-08-18). FBref runs FIRST and
+# WhoScored then patches the same row and stamps 'fbref+whoscored'; letting a
+# later FBref re-parse write its own 'fbref' back would erase that, which is
+# the provenance defect §4 existed to fix, reintroduced from the other side.
+# The value is still set on INSERT, where it is correct by construction.
 _EVENT_KEY_COLS = ("player_id", "season", "game_id")
+_EVENT_NO_OVERWRITE_COLS = ("source",)
 
 
 def _write_events(rows: list[dict]) -> int:  # pragma: no cover - live DB write
@@ -532,7 +539,10 @@ def _write_events(rows: list[dict]) -> int:  # pragma: no cover - live DB write
     written = 0
     try:
         for values in rows:
-            updatable = {k: v for k, v in values.items() if k not in _EVENT_KEY_COLS}
+            updatable = {
+                k: v for k, v in values.items()
+                if k not in _EVENT_KEY_COLS and k not in _EVENT_NO_OVERWRITE_COLS
+            }
             stmt = (
                 insert(PlayerMatchEvents)
                 .values(**values)
