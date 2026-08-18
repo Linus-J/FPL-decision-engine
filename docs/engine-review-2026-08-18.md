@@ -12,11 +12,11 @@ hypothesis did not survive checking it is recorded as refuted rather than
 dropped, because several plausible-sounding concerns turned out to be sound
 design.
 
-**Eighteen defects, two of them in the same failure class the last audit
+**Nineteen defects, three of them in the same failure class the last audit
 closed.** Sections 1–9 cover projection, ingest and measurement; sections 10–17
 cover the optimiser, transfer and chip layer.
 
-> **Status, 2026-08-18: all eighteen are addressed.** Fifteen are fixed in
+> **Status, 2026-08-18: all nineteen are addressed.** Fifteen are fixed in
 > code; §7 (goalkeeper bonus re-calibration) is blocked on 26/27 BPS that does
 > not exist yet and is flagged in place; §16 was resolved as a documentation
 > correction, since the dormant risk layer is a defensible configuration and
@@ -485,6 +485,61 @@ is outcome variance rather than estimation variance. Until a real
 estimation-uncertainty signal exists (multi-seed reassembly variance is the
 obvious candidate), the selection half of this correction is unimplemented, and
 should not be described as done.
+
+---
+
+## 20. Every rolling rate discards the most recent gameweek, and GW2 has none at all
+
+The worst of the late findings, and nothing in 780 tests or the preflight
+baseline would have shown it — GW1 is a cold start, so it only bites from the
+first in-season decision onward.
+
+`_build_rolling_features` computed each rate as
+`x.shift(1).rolling(5, min_periods=1).mean()`. The `shift(1)` came, as the
+docstring says, from the "same pattern as `points_model._build_features`" — an
+ML feature builder, where the frame legitimately contains the row being
+predicted and shifting is the only thing standing between you and a leak.
+
+Here the frame is `history`, already strictly prior to the target gameweek. The
+shift was guarding against a leak the truncation had already prevented, and it
+cost the newest and most informative gameweek every week.
+
+Measured by giving one player a distinct CBIT each gameweek, so the resulting
+rate says unambiguously which gameweeks built it:
+
+| played | CBIT | engine rate | if all used | if newest dropped |
+|---|---|---|---|---|
+| GW1 | 10 | **0.00** | 10.00 | — |
+| GW1–2 | 10, 20 | **10.00** | 15.00 | 10.00 |
+| GW1–3 | 10, 20, 30 | **15.00** | 20.00 | 15.00 |
+| GW1–4 | 10, 20, 30, 40 | **20.00** | 25.00 | 20.00 |
+
+The engine matched "newest dropped" exactly, at every length.
+
+Two consequences, the first much worse than the second:
+
+**At GW2, every rate is zero.** `shift(1)` on a one-row group is NaN, and the
+`fillna(0.0)` at the end turns that into a confident zero — the project's own
+recurring failure shape, a fallback that makes missing data indistinguishable
+from a real measurement. So on the first in-season decision of the season,
+`goal_weight`, `assist_weight`, `defcon_rate`, `key_pass_rate`, `dribble_rate`
+and both card rates are all 0. Team goals get split by all-zero weights,
+DefCon's Poisson rate is 0 so the CBIT ≥ 10 threshold is unreachable, and two
+BPS channels are dead. GW2 projections collapse to appearance points plus clean
+sheets and saves — and GW2 is the first week transfers are made.
+
+**All season, form is a week stale.** The five-gameweek window is really
+gameweeks n−5…n−1. That is worst exactly where recency matters most: the week
+after an injury return, a positional change, or a transfer, the one informative
+match is the one ignored.
+
+**Fix:** drop the shift, and give the function `target_gw` so it owns the
+leakage boundary itself rather than trusting callers to have pre-truncated —
+the same "a comment cannot hold an invariant that spans two files" reasoning
+that produced the shared `team_goals` derivation after audit defect 8. Three
+regression tests: rates use every played gameweek, a single gameweek yields a
+real rate rather than zero, and an untruncated frame still cannot see the
+target gameweek.
 
 ---
 

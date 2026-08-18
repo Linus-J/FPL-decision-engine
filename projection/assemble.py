@@ -499,13 +499,42 @@ def _build_rolling_features(
     history: pd.DataFrame,
     defcon_events: pd.DataFrame,
     penalty_duty: dict[int, float] | None = None,
+    target_gw: int | None = None,
 ) -> pd.DataFrame:
-    """Per player, as-of ``history`` (rows with ``gameweek < target_gw``):
-    leakage-free (``shift(1)`` rolling) rates feeding the components — same
+    """Per player, as-of ``history``: leakage-free rolling rates feeding the
+    components — same
     pattern as ``points_model._build_features``, over the raw columns the MC
     components need instead of an ML model's feature set. Indexed by
-    ``player_id``, one row (latest as-of) each."""
+    ``player_id``, one row (latest as-of) each.
+
+    ``target_gw`` (2026-08-18, engine review §20): the gameweek being projected.
+    Rows at or after it are dropped here, so this function owns the leakage
+    boundary rather than trusting callers to have pre-truncated.
+
+    **The ``shift(1)`` this used to carry has been removed, and that is the
+    point of the parameter.** It was inherited from
+    ``points_model._build_features``, where the frame legitimately contains the
+    row being predicted and shifting is the only thing standing between you and
+    a leak. Here the frame is already strictly prior to ``target_gw``, so the
+    shift was protecting against a leak that truncation had already prevented —
+    and it cost the most recent, most informative gameweek, permanently:
+
+    - With ONE played gameweek, ``shift(1)`` on a single row is NaN, and the
+      ``fillna(0.0)`` below turned that into a confident zero. So at GW2, the
+      first in-season decision of the season, EVERY rate was 0: goal_weight,
+      assist_weight, defcon_rate, key_pass_rate, dribble_rate, cards. Attacking
+      returns went unattributed, DefCon could not reach its threshold, and
+      projections collapsed to appearance points plus clean sheets and saves.
+    - From then on the five-gameweek "form" window was really gameweeks n-5..n-1
+      rather than n-4..n — always a week stale, and worst precisely after an
+      injury return or a transfer, when the ignored match is the informative one.
+
+    Verified by giving one player a different CBIT each week and checking which
+    gameweeks the resulting rate could have come from.
+    """
     df = history.sort_values(["player_id", "gameweek"]).copy()
+    if target_gw is not None and "gameweek" in df.columns:
+        df = df[df["gameweek"] < target_gw]
     if not defcon_events.empty:
         de = defcon_events.copy()
         de["cbit"] = de["clearances"] + de["blocks"] + de["interceptions"] + de["tackles"]
@@ -530,7 +559,7 @@ def _build_rolling_features(
         if src not in df.columns:
             df[src] = 0.0
         df[out] = grp[src].transform(
-            lambda x: x.shift(1).rolling(_ROLLING_WINDOW, min_periods=1).mean()
+            lambda x: x.rolling(_ROLLING_WINDOW, min_periods=1).mean()
         )
 
     last = df.groupby("player_id").last()
@@ -655,7 +684,9 @@ def assemble_gw_projections(
     strength_rel = strength_rel or {}
 
     feat = _build_rolling_features(
-        history, defcon_events, penalty_duty=load_penalty_duty(season) if season else None
+        history, defcon_events,
+        penalty_duty=load_penalty_duty(season) if season else None,
+        target_gw=target_gw,
     )
     bands = predict_minutes_bands(history, minutes_model)
 
