@@ -78,14 +78,22 @@ def _xpts_entry(
     right WIDTH, which is the part that carries information, and a
     zero-width bar is not a more honest alternative — it implies certainty
     that does not exist. Real samples always take precedence.
+
+    ``approx`` marks which of the two a reader is looking at. Under the normal
+    approximation ``median`` is not an estimated quantile at all — it equals
+    ``mean`` by definition, because a normal is symmetric — so publishing the
+    two side by side with nothing to distinguish them invites the reader to
+    treat their agreement as evidence about the distribution when it is an
+    artefact of the method. Real MC quantiles carry ``approx: false`` and a
+    median that genuinely differs.
     """
     if player_id in dist:
-        return dist[player_id]
+        return {**dist[player_id], "approx": False}
     if fallback_mean is None or pd.isna(fallback_mean):
         return None
     mean = float(fallback_mean)
     if fallback_var is None or pd.isna(fallback_var) or float(fallback_var) <= 0:
-        return {"p10": mean, "median": mean, "mean": mean, "p90": mean}
+        return {"p10": mean, "median": mean, "mean": mean, "p90": mean, "approx": True}
     sd = float(fallback_var) ** 0.5
     # Floored at zero: a negative score needs a card or own goal, which is far
     # rarer than a symmetric normal implies down there.
@@ -94,6 +102,7 @@ def _xpts_entry(
         "median": round(mean, 4),
         "mean": round(mean, 4),
         "p90": round(mean - _Z10 * sd, 4),
+        "approx": True,
     }
 
 
@@ -138,7 +147,16 @@ def _build_top15_entries(
             "web_name": row["web_name"],
             "position": row["position"],
             "team_short": team_names.get(int(row["team_id"]), ""),
-            "xpts": _xpts_entry(player_id, dist, row["xpts_mean"]),
+            # `xpts_var` matters here as much as it does for the squad
+            # (2026-08-18). Omitting it made `_xpts_entry` take its
+            # no-variance branch, which returns p10 == median == mean == p90,
+            # so every one of the top fifteen rendered as a zero-width bar.
+            # The squad path was fixed for exactly this and this one was left
+            # behind; `get_latest_projections` has carried the column all
+            # along, non-null and positive for every row.
+            "xpts": _xpts_entry(
+                player_id, dist, row["xpts_mean"], row.get("xpts_var")
+            ),
         })
     return entries
 
