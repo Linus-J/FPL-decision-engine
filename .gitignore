@@ -88,5 +88,6 @@ config/transfer_overrides_candidates.yaml
 # Ad-hoc DB table dumps taken before destructive migrations (P2.4 etc.)
 backups/
 
-# Internal development documentation
+# Private dev documentation — design notes, reviews, plans, checklists.
+# Public docs are the README and the top-level .md files beside it.
 docs/

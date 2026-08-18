@@ -101,8 +101,12 @@ def _current_gameweek() -> int | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--live", action="store_true", help="Force live submission")
-    parser.add_argument("--dry-run", action="store_true", help="Force dry-run (no submission)")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Accepted and ignored (2026-08-18). This engine has no submission "
+             "path, so every run is what --dry-run used to mean. Kept so "
+             "documented commands and the systemd unit keep working.",
+    )
     parser.add_argument("--chip", default=None, help="Force a specific chip")
     parser.add_argument("--season", default="2026-27")
     parser.add_argument(
@@ -167,10 +171,6 @@ def main() -> None:
     )
 
     agent_args = [sys.executable, "scripts/run_agent.py", "--season", args.season]
-    if args.live:
-        agent_args.append("--live")
-    if args.dry_run:
-        agent_args.append("--dry-run")
     if args.chip:
         agent_args.extend(["--chip", args.chip])
 

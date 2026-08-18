@@ -73,7 +73,7 @@ def selling_price(purchase_price: float, now_cost: float) -> float:
 
     You keep only HALF of any price RISE since you bought them, rounded DOWN
     to the nearest £0.1m; a price FALL is taken in full. Nothing in this
-    project modelled that -- ``agent/fpl_client.py`` read ``selling_price``
+    project modelled that -- the old FPL client read ``selling_price``
     off the API purely to build a submission payload, and the optimiser's
     affordability constraint used ``now_cost`` for everything, so it believed
     an appreciated squad was worth more than it could actually be sold for.

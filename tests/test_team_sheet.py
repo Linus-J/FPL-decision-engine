@@ -1,4 +1,4 @@
-"""agent/fpl_client.py::_build_picks
+"""agent/team_sheet.py::build_picks
 
 Real bug found 2026-08-01 (user's own repo-cleanup request): the old
 per-player position helper always returned a FIXED slot per position
@@ -10,7 +10,7 @@ live (dry-run only so far, so this was a live landmine, not yet triggered).
 
 from __future__ import annotations
 
-from agent.fpl_client import _build_picks
+from agent.team_sheet import build_picks
 
 
 def _squad_with_realistic_formation() -> list[dict]:
@@ -47,7 +47,7 @@ def _squad_with_realistic_formation() -> list[dict]:
 
 def test_every_position_value_is_unique():
     squad, _ = _squad_with_realistic_formation()
-    picks = _build_picks(squad, captain_id=squad[1]["id"], vice_captain_id=squad[2]["id"])
+    picks = build_picks(squad, captain_id=squad[1]["id"], vice_captain_id=squad[2]["id"])
     positions = [p["position"] for p in picks]
     assert len(positions) == 15
     assert len(set(positions)) == 15, "duplicate position values would be rejected by FPL's API"
@@ -56,14 +56,14 @@ def test_every_position_value_is_unique():
 
 def test_starting_goalkeeper_is_always_slot_one():
     squad, ids = _squad_with_realistic_formation()
-    picks = _build_picks(squad, captain_id=ids["gk"], vice_captain_id=ids["defs"][0])
+    picks = build_picks(squad, captain_id=ids["gk"], vice_captain_id=ids["defs"][0])
     gk_pick = next(p for p in picks if p["element"] == ids["gk"])
     assert gk_pick["position"] == 1
 
 
 def test_starters_are_grouped_before_bench():
     squad, ids = _squad_with_realistic_formation()
-    picks = _build_picks(squad, captain_id=ids["gk"], vice_captain_id=ids["defs"][0])
+    picks = build_picks(squad, captain_id=ids["gk"], vice_captain_id=ids["defs"][0])
     by_id = {p["element"]: p["position"] for p in picks}
     starter_ids = [ids["gk"], *ids["defs"], *ids["mids"], *ids["fwds"]]
     bench_ids = [ids["bench_gk"], ids["bench_def"], ids["bench_mid"], ids["bench_fwd"]]
@@ -76,7 +76,7 @@ def test_bench_order_field_is_respected_not_squad_list_order():
     their bench_order field (GK=0, DEF=1, FWD=2, MID=3 -- FWD before MID)
     -- the payload must follow bench_order, not raw list position."""
     squad, ids = _squad_with_realistic_formation()
-    picks = _build_picks(squad, captain_id=ids["gk"], vice_captain_id=ids["defs"][0])
+    picks = build_picks(squad, captain_id=ids["gk"], vice_captain_id=ids["defs"][0])
     by_id = {p["element"]: p["position"] for p in picks}
     assert by_id[ids["bench_gk"]] == 12
     assert by_id[ids["bench_def"]] == 13
@@ -86,7 +86,7 @@ def test_bench_order_field_is_respected_not_squad_list_order():
 
 def test_captain_and_vice_captain_flags_set_correctly():
     squad, ids = _squad_with_realistic_formation()
-    picks = _build_picks(squad, captain_id=ids["gk"], vice_captain_id=ids["defs"][0])
+    picks = build_picks(squad, captain_id=ids["gk"], vice_captain_id=ids["defs"][0])
     by_id = {p["element"]: p for p in picks}
     assert by_id[ids["gk"]]["is_captain"] is True
     assert by_id[ids["defs"][0]]["is_vice_captain"] is True

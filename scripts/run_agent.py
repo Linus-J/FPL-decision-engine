@@ -14,8 +14,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-from agent import decision_engine, fpl_client, notifier
-from config.settings import settings
+from agent import decision_engine, notifier, team_sheet
 from config.strategy import OPTIMISER
 from data.ingestors.fpl_api import run_full_ingest
 from data.ingestors.injury_parser import run_injury_parser
@@ -25,11 +24,13 @@ from optimiser.chips import Chip
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="FPL autonomous agent")
-    p.add_argument("--dry-run", action="store_true", default=None, help="Override DRY_RUN=true")
+    p = argparse.ArgumentParser(
+        description="Build this gameweek's FPL decision. Nothing is submitted."
+    )
     p.add_argument(
-        "--live", action="store_true", default=False,
-        help="Force live submission (overrides DRY_RUN)",
+        "--dry-run", action="store_true", default=False,
+        help="Accepted and ignored. This engine never submits; kept so existing "
+             "commands and the systemd unit do not break.",
     )
     p.add_argument(
         "--chip", choices=[c.value for c in Chip], default=None,
@@ -43,18 +44,11 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
 
-    if args.live:
-        dry_run = False
-    elif args.dry_run:
-        dry_run = True
-    else:
-        dry_run = settings.dry_run
-
     force_chip = Chip(args.chip) if args.chip else None
 
     logging.getLogger().info(
-        "Starting FPL agent — season=%s dry_run=%s chip=%s",
-        args.season, dry_run, force_chip,
+        "Building GW decision — season=%s chip=%s (no submission path exists)",
+        args.season, force_chip,
     )
 
     # 2026-07-30 (user's own live-smoke-test follow-up): this script used
@@ -102,26 +96,22 @@ def main() -> None:
     decision = decision_engine.run(
         season=args.season,
         force_chip=force_chip,
-        dry_run=dry_run,
     )
 
     if "error" in decision:
         logging.getLogger().error("Decision engine error: %s", decision["error"])
         sys.exit(1)
 
-    submission = fpl_client.submit(
+    sheet = team_sheet.build(
         squad=decision["squad"],
         captain_id=decision["captain_id"],
         vice_captain_id=decision["vice_captain_id"],
         transfers_in=decision["transfers_in"],
         transfers_out=decision["transfers_out"],
-        hits_taken=decision["hits_taken"],
         chip=decision["chip"],
-        free_transfers=max(0, 1 - len(decision["transfers_in"])),
-        dry_run=dry_run,
     )
 
-    output = {**decision, "submission": submission}
+    output = {**decision, "team_sheet": sheet}
 
     notifier.notify_sync(decision)
 

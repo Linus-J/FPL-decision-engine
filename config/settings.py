@@ -23,7 +23,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8")
 
     fpl_email: str = Field(default="", alias="FPL_EMAIL")
-    fpl_password: str = Field(default="", alias="FPL_PASSWORD")
     fpl_team_id: int = Field(default=0, alias="FPL_TEAM_ID")
 
     the_odds_api_key: str = Field(default="", alias="THE_ODDS_API_KEY")
@@ -33,7 +32,10 @@ class Settings(BaseSettings):
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
 
-    dry_run: bool = Field(default=True, alias="DRY_RUN")
+    # DRY_RUN and FPL_PASSWORD were removed on 2026-08-18 along with the
+    # submission path. There is no live mode to switch on and no login to
+    # perform, so a stale value in .env can no longer mean anything. Extra
+    # keys in .env are ignored, so an old file keeps working.
     db_path: str = Field(default="fpl_bot.db", alias="DB_PATH")
 
 

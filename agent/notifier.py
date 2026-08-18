@@ -38,13 +38,10 @@ def _chip_emoji(chip: str | None) -> str:
     }.get(chip or "", "")
 
 
-def _status_emoji(dry_run: bool) -> str:
-    return "🔕 DRY RUN" if dry_run else "✅ LIVE"
 
 
 def format_decision_message(decision: dict) -> str:
     gw = decision.get("gameweek", "?")
-    dry_run = decision.get("dry_run", True)
     chip = decision.get("chip")
     transfers_in = decision.get("transfers_in", [])
     transfers_out = decision.get("transfers_out", [])
@@ -59,7 +56,7 @@ def format_decision_message(decision: dict) -> str:
     vice = next((p for p in squad if p.get("is_vice_captain")), None)
 
     lines = [
-        f"<b>FPL GW{gw} Decision {_status_emoji(dry_run)}</b>",
+        f"<b>FPL GW{gw} Decision</b>",
         "",
     ]
 

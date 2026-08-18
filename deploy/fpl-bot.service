@@ -1,5 +1,5 @@
 [Unit]
-Description=FPL Bot — autonomous GW decision and submission
+Description=FPL decision engine — builds the gameweek decision (never submits)
 After=network-online.target
 Wants=network-online.target
 
