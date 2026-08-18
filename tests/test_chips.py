@@ -60,8 +60,8 @@ def test_clears_threshold_no_scenario_data_uses_point_estimate():
 
 
 def test_clears_threshold_scenario_probability_can_block_a_passing_mean():
-    # mean of these scenarios is well above the threshold, but only 2/5 draws
-    # actually clear it -- a real chip that's a coin-flip, not a sure thing.
+    # The mean clears the bar, but the gain is actually NEGATIVE in 3/5 draws
+    # -- a coin-flip chip, not a sure thing. P(gain >= 0) = 0.4 < 0.6.
     scenarios = pd.Series([7.0, 7.0, -100.0, -100.0, -100.0])
     assert chips._clears_threshold(7.0, 6.0, scenarios, 0.6) is False
 
@@ -69,6 +69,24 @@ def test_clears_threshold_scenario_probability_can_block_a_passing_mean():
 def test_clears_threshold_scenario_probability_can_pass():
     scenarios = pd.Series([7.0, 7.0, 7.0, 7.0, 3.0])
     assert chips._clears_threshold(7.0, 6.0, scenarios, 0.6) is True
+
+
+def test_clears_threshold_keeps_the_point_estimate_bar_when_samples_exist():
+    """Regression, 2026-08-18 (§14). The scenario test used to be applied
+    INSTEAD of the point estimate, so a sub-threshold mean passed as long as
+    the draws were reliably positive. config.strategy has always specified
+    "IN ADDITION to the point-estimate thresholds"."""
+    reliable = pd.Series([1.0, 1.0, 1.0, 1.0, 1.0])
+    assert chips._clears_threshold(2.0, 6.0, reliable, 0.6) is False
+    assert chips._clears_threshold(7.0, 6.0, reliable, 0.6) is True
+
+
+def test_clears_threshold_does_not_reuse_the_threshold_as_a_probability_bar():
+    """The specific mis-implementation: ``P(value >= threshold)``. These draws
+    never reach the 6.0 threshold individually, but the gain is always
+    positive and the mean clears — so the chip must be allowed."""
+    always_positive_never_six = pd.Series([1.0, 2.0, 1.5, 2.5, 1.0])
+    assert chips._clears_threshold(7.0, 6.0, always_positive_never_six, 0.6) is True
 
 
 # --- _bench_player_ids -------------------------------------------------------
@@ -142,13 +160,18 @@ def test_recommend_chip_tc_fallback_triggers_without_season():
     assert rec.chip == chips.Chip.TRIPLE_CAPTAIN
 
 
-def test_recommend_chip_tc_blocked_by_low_payoff_probability(session):
+def test_recommend_chip_tc_blocked_when_the_gain_is_often_negative(session):
+    """2026-08-18 (§14): the scenario bar is ``P(gain >= 0)``, per
+    config.strategy. For Triple Captain the gain IS the captain's own points
+    (one extra copy of them), so this blocks only a pick whose downside is
+    genuinely realised — red cards, own goals — not merely one that blanks.
+
+    Previously this tested ``P(points >= 4.0)``, i.e. the threshold was reused
+    as a probability bar. Player 1 scores negative in 3/5 scenarios here, so
+    P(gain >= 0) = 0.4 < 0.6.
+    """
     created = pd.Timestamp.now("UTC").to_pydatetime()
-    # 2026-07-30: the scenario gate now checks the CAPTAIN's OWN per-scenario
-    # points (load_scenario_totals), not a relative gain vs the runner-up.
-    # Player 1 (the best pick) blanks in 3/5 real scenarios -> P(>=4.0) < 0.6
-    # even though the point-estimate (10.0) clears easily.
-    rows = _rows_for(1, 5, "2099-00", 0, [20.0, 20.0, 1.0, 1.0, 1.0], created)
+    rows = _rows_for(1, 5, "2099-00", 0, [20.0, 20.0, -2.0, -2.0, -2.0], created)
     _insert(session, rows)
     projections = _minimal_projections(5, best_xpts=10.0, second_xpts=3.0)  # gain=10.0 >= 4.0
     rec = chips.recommend_chip(
@@ -160,10 +183,9 @@ def test_recommend_chip_tc_blocked_by_low_payoff_probability(session):
 
 
 def test_recommend_chip_tc_passes_with_high_payoff_probability(session):
+    """Player 1 goes negative in only 1/5 scenarios -> P(gain >= 0) = 0.8."""
     created = pd.Timestamp.now("UTC").to_pydatetime()
-    # Player 1 (the best pick) blanks in only 1/5 real scenarios -> P(>=4.0)
-    # = 0.8 >= 0.6.
-    rows = _rows_for(1, 5, "2099-00", 0, [20.0, 20.0, 20.0, 20.0, 1.0], created)
+    rows = _rows_for(1, 5, "2099-00", 0, [20.0, 20.0, 20.0, 20.0, -2.0], created)
     _insert(session, rows)
     projections = _minimal_projections(5, best_xpts=10.0, second_xpts=3.0)  # gain=10.0 >= 4.0
     rec = chips.recommend_chip(
@@ -172,6 +194,94 @@ def test_recommend_chip_tc_passes_with_high_payoff_probability(session):
         **_skip_bb_fh_wc_kwargs(),
     )
     assert rec.chip == chips.Chip.TRIPLE_CAPTAIN
+
+
+def test_recommend_chip_point_estimate_bar_still_applies_when_samples_exist(session):
+    """Regression, 2026-08-18 (§14), the half that actually loosened things.
+
+    The scenario bar was applied INSTEAD of the point estimate, not in
+    addition, so ``point_value`` was discarded entirely whenever samples
+    existed. A captain projecting well below ``triple_captain_min_gain`` would
+    still fire the chip as long as its draws were reliably non-negative.
+
+    Here the point estimate (1.0) is far under the 4.0 bar while every
+    scenario is comfortably positive — the chip must still be declined.
+    """
+    created = pd.Timestamp.now("UTC").to_pydatetime()
+    rows = _rows_for(1, 5, "2099-00", 0, [3.0, 3.0, 3.0, 3.0, 3.0], created)
+    _insert(session, rows)
+    projections = _minimal_projections(5, best_xpts=1.0, second_xpts=0.5)
+    rec = chips.recommend_chip(
+        current_gw=5, current_squad_ids=[1, 2], projections=projections, players=pd.DataFrame(),
+        available_budget=100.0, free_transfers=1, season="2099-00",
+        **_skip_bb_fh_wc_kwargs(),
+    )
+    assert rec.chip is None
+
+
+def _wildcard_scenario() -> tuple[pd.DataFrame, list[int], pd.DataFrame]:
+    """A legal 15 of poor players inside a much better pool, over the full
+    wildcard evaluation horizon."""
+    rows = []
+    pid = 0
+    for team in range(1, 16):
+        for pos, count in (("GKP", 2), ("DEF", 5), ("MID", 5), ("FWD", 3)):
+            for _ in range(count):
+                pid += 1
+                rows.append({
+                    "id": pid, "web_name": f"p{pid}", "position": pos,
+                    "team_id": team, "now_cost": 4.0, "status": "a",
+                })
+    players = pd.DataFrame(rows)
+    squad, per_club = [], {}
+    for pos, count in (("GKP", 2), ("DEF", 5), ("MID", 5), ("FWD", 3)):
+        taken = 0
+        for r in players[players["position"] == pos].itertuples():
+            if per_club.get(r.team_id, 0) < 3:
+                squad.append(r.id)
+                per_club[r.team_id] = per_club.get(r.team_id, 0) + 1
+                taken += 1
+            if taken == count:
+                break
+    owned = set(squad)
+    proj = pd.DataFrame([
+        {"player_id": r.id, "gameweek": gw,
+         "xpts": 1.0 if r.id in owned else 6.0,
+         "xpts_var": 1.0, "start_probability": 0.9}
+        for gw in range(5, 10) for r in players.itertuples()
+    ])
+    return players, squad, proj
+
+
+def test_recommend_chip_wildcard_fires_and_is_evaluated_by_the_executing_optimiser():
+    """2026-08-18 (§12). Nothing previously asserted the wildcard was ever
+    RECOMMENDED, so `_try_wc`'s body was unexercised by the suite.
+
+    It now evaluates the rebuild with the same
+    ``evaluate_transfers(wildcard_active=True)`` call the decision engine uses
+    to execute a played wildcard — previously it used ``optimise_squad``, a
+    different objective with no bank or purchase-price constraint and no
+    multi-period view, so the chip fired on a gain that would never be
+    realised.
+    """
+    from optimiser.chips import Chip
+
+    players, squad, proj = _wildcard_scenario()
+    rec = chips.recommend_chip(
+        current_gw=5,
+        current_squad_ids=squad,
+        projections=proj,
+        players=players,
+        available_budget=200.0,
+        free_transfers=1,
+        # Only the wildcard is left available this half.
+        chips_used=[(Chip.BENCH_BOOST, 5), (Chip.FREE_HIT, 5), (Chip.TRIPLE_CAPTAIN, 5)],
+        squad_age_gws=99,
+    )
+    assert rec.chip == Chip.WILDCARD
+    # The gain must be a squad_xpts figure (best XI + captain), not a 15-man
+    # sum: 11 starters improving by 5.0 plus a doubled captain, over 5 GWs.
+    assert rec.expected_gain == pytest.approx(5 * (11 * 5.0 + 5.0), rel=0.05)
 
 
 def test_recommend_chip_chip_timing_param_overrides_without_monkeypatch():

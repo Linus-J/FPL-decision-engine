@@ -86,7 +86,18 @@ def selling_price(purchase_price: float, now_cost: float) -> float:
     return (purchase_tenths + (now_tenths - purchase_tenths) // 2) / 10
 
 
-def _squad_xpts(squad_ids: list[int], projections: pd.DataFrame, horizon: int) -> float:
+def squad_xpts(squad_ids: list[int], projections: pd.DataFrame, horizon: int) -> float:
+    """What a squad is actually worth over ``horizon`` gameweeks: the best
+    ELEVEN each week, plus a second copy of the best of those for the captain.
+
+    Public because it is the project's one definition of squad value and
+    ``optimiser/chips.py`` must use the same one (2026-08-18, engine review
+    §13). The chip evaluations previously summed all FIFTEEN players' xpts and
+    credited no captain — so a Free Hit, which plays eleven, was judged partly
+    on four players who would not take the field, against thresholds
+    calibrated for neither definition. Bench Boost is the one chip for which a
+    fifteen-man sum is correct, and it has its own path.
+    """
     gws = sorted(projections["gameweek"].unique())[:horizon]
     subset = projections[
         projections["gameweek"].isin(gws) & projections["player_id"].isin(squad_ids)
@@ -112,8 +123,18 @@ def evaluate_transfers(
     transfer_rules: TransferRules | None = None,
     bank: float | None = None,
     purchase_prices: dict[int, float] | None = None,
+    horizon: int | None = None,
 ) -> TransferPlan:
-    """``ownership`` (P3-3, optional, default None): see ``optimise_squad``'s
+    """``horizon`` (optional): how many gameweeks to plan over. Defaults to
+    ``cfg.transfer_planning_horizon_gws``, which is what every ordinary weekly
+    call wants. ``optimiser/chips.py`` overrides it with
+    ``CHIP_TIMING.wildcard_eval_horizon_gws`` so a wildcard is judged over the
+    window its threshold was written for — the horizons must match or the gain
+    is compared against a bar meant for a different number of gameweeks, which
+    is the failure ``config.strategy.assert_horizons_consistent`` exists to
+    prevent.
+
+    ``ownership`` (P3-3, optional, default None): see ``optimise_squad``'s
     docstring — ``None`` (the current live reality — EO sampling can't
     produce real data pre-GW1) makes EO a uniform 0% for every candidate, a
     constant rescale that doesn't change which transfers get made.
@@ -133,7 +154,7 @@ def evaluate_transfers(
     inequality. It is a generalisation, not a second code path."""
     cfg = config or OPTIMISER
     trules = transfer_rules or TRANSFERS
-    horizon = cfg.transfer_planning_horizon_gws
+    horizon = horizon if horizon is not None else cfg.transfer_planning_horizon_gws
     # P1.2: `ft` has lowBound=1, so ft[0] == 0 makes the whole model
     # Infeasible -- which this function catches and reports as "no transfers",
     # indistinguishable from a genuine decision not to transfer. FPL always
@@ -208,7 +229,7 @@ def evaluate_transfers(
     has_var = "xpts_var" in projections.columns
 
     # xpts_gain/net_xpts_gain reporting reads straight from `projections` via
-    # _squad_xpts (true expected points) -- only the ILP's own objective
+    # squad_xpts (true expected points) -- only the ILP's own objective
     # coefficients need the risk-adjusted score.
     scores_pw: dict[tuple[int, int], float] = {}
     for w, gw in enumerate(gws):
@@ -407,8 +428,8 @@ def evaluate_transfers(
     )
 
     new_squad_ids = [pid for pid in current_squad_ids if pid not in set(gw0_out)] + gw0_in
-    xpts_after = _squad_xpts(new_squad_ids, projections, horizon)
-    xpts_before = _squad_xpts(current_squad_ids, projections, horizon)
+    xpts_after = squad_xpts(new_squad_ids, projections, horizon)
+    xpts_before = squad_xpts(current_squad_ids, projections, horizon)
     xpts_gain = xpts_after - xpts_before
     net_xpts_gain = xpts_gain + actual_hits * trules.hit_cost_points
 

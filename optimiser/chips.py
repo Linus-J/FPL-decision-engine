@@ -11,6 +11,7 @@ from config.strategy import CHIP_TIMING, CHIPS, ChipTimingThresholds, OptimiserC
 from data.db import get_session
 from optimiser.chip_scenarios import gain_distribution, load_scenario_totals
 from optimiser.squad import optimise_squad
+from optimiser.transfers import evaluate_transfers, squad_xpts
 
 logger = logging.getLogger(__name__)
 
@@ -25,17 +26,42 @@ def _clears_threshold(
     scenario_values: pd.Series,
     min_probability: float,
 ) -> bool:
-    """The old rule was ``point_value >= threshold`` (point-estimate xpts vs
-    a fixed constant). P3-5: when real MC scenarios (P3-1) exist for the
-    decision, replace it with the actual ``P(scenario_value >= threshold) >=
-    min_probability`` — a genuine probability-of-payoff, not just whether the
-    mean clears the bar, so a reliable small gain can outrank a
-    coin-flip gain with the same mean. Falls back to the point-estimate rule
-    when no scenario data is available (cold start, or the backtest
-    walk-forward, which never persists samples per P3-1)."""
+    """Both bars, as ``config.strategy`` has always specified: the
+    point-estimate threshold, AND — where MC scenarios exist — a minimum
+    ``P(gain >= 0)``.
+
+    Fixed 2026-08-18 (engine review §14). This used to test
+    ``P(scenario_value >= threshold) >= min_probability`` and to apply it
+    *instead of* the point estimate, discarding ``point_value`` entirely
+    whenever samples existed. Both halves diverged from the documented design,
+    which reads: *"minimum P(gain >= 0) ... required, IN ADDITION to the
+    point-estimate thresholds above"*.
+
+    The effect was a far stricter gate than any of the constants intend.
+    "Mean gain >= 25" and "60% chance of a gain >= 25" are wildly different
+    tests, and for a right-skewed FPL distribution the second is much harder —
+    a wildcard needing a 60% probability of a >=25-point five-gameweek gain
+    would essentially never fire. It mattered doubly because samples exist in
+    live serving and NEVER in the backtest (P3-1 does not persist them there),
+    so the gate that ran in production was not the gate that ran in any run
+    used to tune it.
+
+    ``scenario_values`` is each chip's own gain distribution: an explicit
+    ``gain_distribution`` for Wildcard and Free Hit, whose rebuilds can
+    genuinely come out worse than the squad they replace; and the raw totals
+    for Triple Captain and Bench Boost, for which the gain simply IS the total
+    (one extra copy of the captain, or the bench's own points). The bar
+    therefore rarely binds for those two, which is correct — their downside is
+    bounded near zero by construction, not by luck.
+
+    Falls back to the point estimate alone when no scenario data is available
+    (cold start, or the backtest walk-forward).
+    """
+    if point_value < threshold:
+        return False
     if scenario_values.empty:
-        return point_value >= threshold
-    return float((scenario_values >= threshold).mean()) >= min_probability
+        return True
+    return float((scenario_values >= 0.0).mean()) >= min_probability
 
 
 @lru_cache(maxsize=16)
@@ -213,8 +239,16 @@ def recommend_chip(
     season: str | None = None,
     chip_timing: ChipTimingThresholds | None = None,
     config: OptimiserConfig | None = None,
+    bank: float | None = None,
+    purchase_prices: dict[int, float] | None = None,
 ) -> ChipRecommendation:
-    """``chip_timing``/``config`` (optional): override the global
+    """``bank``/``purchase_prices`` (optional, 2026-08-18): the real
+    affordability ledger, forwarded to the wildcard's own
+    ``evaluate_transfers`` call so the squad the chip is judged on is the squad
+    that can actually be bought. Omitting them reproduces the old
+    budget-cap-only behaviour exactly (see ``evaluate_transfers``).
+
+    ``chip_timing``/``config`` (optional): override the global
     ``CHIP_TIMING``/``OPTIMISER`` for this call only — used by the
     simulation engine to vary chip-timing aggressiveness and risk posture
     per persona (the latter feeds the internal Free Hit/Wildcard scenario
@@ -234,11 +268,6 @@ def recommend_chip(
     )
 
     gws = sorted(projections["gameweek"].unique())[:horizon]
-    current_xpts = float(
-        projections[
-            projections["gameweek"].isin(gws) & projections["player_id"].isin(current_squad_ids)
-        ]["xpts"].sum()
-    )
 
     def _try_tc() -> ChipRecommendation | None:
         if _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, chips_used, current_gw, season) <= 0:
@@ -303,18 +332,12 @@ def recommend_chip(
         )
         fh_gws = sorted(projections["gameweek"].unique())[:1]
         fh_squad_ids = fh_solution.squad["id"].tolist()
-        fh_xpts = float(
-            projections[
-                projections["gameweek"].isin(fh_gws)
-                & projections["player_id"].isin(fh_squad_ids)
-            ]["xpts"].sum()
-        )
-        current_gw_xpts = float(
-            projections[
-                (projections["gameweek"] == current_gw)
-                & projections["player_id"].isin(current_squad_ids)
-            ]["xpts"].sum()
-        )
+        # §13: a Free Hit plays ELEVEN, and doubles a captain. This used to sum
+        # all fifteen and credit no captain, so the gain included four players
+        # who would never take the field. `squad_xpts` is the project's single
+        # definition of what a squad is worth; both sides must use it.
+        fh_xpts = squad_xpts(fh_squad_ids, projections, horizon=1)
+        current_gw_xpts = squad_xpts(current_squad_ids, projections, horizon=1)
         gain = fh_xpts - current_gw_xpts
         fh_scenarios = pd.Series(dtype=float)
         if season is not None and fh_gws == [current_gw]:
@@ -335,17 +358,36 @@ def recommend_chip(
             return None
         if squad_age_gws < timing.wildcard_min_managed_gws:
             return None
-        wc_solution = optimise_squad(
-            projections=projections, players=players, budget=available_budget, horizon=horizon,
-            current_squad_ids=current_squad_ids, free_transfers=15, config=config,
+        # §12 (2026-08-18): decide with the SAME optimiser that will execute
+        # it. A played wildcard is run through
+        # `evaluate_transfers(wildcard_active=True)` by the decision engine, so
+        # evaluating it here with `optimise_squad` measured the gain of a
+        # rebuild that would never actually be built — a different objective, no
+        # bank or purchase-price constraint, and no multi-period view. The chip
+        # fired on one number and delivered another.
+        #
+        # `horizon` is passed explicitly because evaluate_transfers otherwise
+        # plans over transfer_planning_horizon_gws (3) while the wildcard
+        # threshold is written for wildcard_eval_horizon_gws (5).
+        wc_plan = evaluate_transfers(
+            current_squad_ids=current_squad_ids,
+            projections=projections,
+            players=players,
+            free_transfers=free_transfers,
+            available_budget=available_budget,
+            wildcard_active=True,
+            config=config,
+            bank=bank,
+            purchase_prices=purchase_prices,
+            horizon=horizon,
         )
-        wc_squad_ids = wc_solution.squad["id"].tolist()
-        wc_gws_xpts = float(
-            projections[
-                projections["gameweek"].isin(gws) & projections["player_id"].isin(wc_squad_ids)
-            ]["xpts"].sum()
-        )
-        wc_gain = wc_gws_xpts - current_xpts
+        # xpts_gain is already squad_xpts-based (best XI + captain) on both
+        # sides, so §13 is satisfied by construction here.
+        wc_gain = wc_plan.xpts_gain
+        out_ids = {t["player_id"] for t in wc_plan.transfers_out}
+        wc_squad_ids = [p for p in current_squad_ids if p not in out_ids] + [
+            t["player_id"] for t in wc_plan.transfers_in
+        ]
         wc_scenarios = pd.Series(dtype=float)
         if season is not None:
             wc_scenarios = gain_distribution(season, gws, wc_squad_ids, current_squad_ids)

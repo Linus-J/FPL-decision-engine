@@ -516,6 +516,12 @@ def _run_decision_cycle(
             season=season,
             chip_timing=chip_timing,
             config=config,
+            # 2026-08-18 (§12): the wildcard is evaluated with the same
+            # evaluate_transfers call that will execute it, so it needs the
+            # same affordability ledger. Without these it would judge a
+            # rebuild it could not afford to buy.
+            bank=state.bank,
+            purchase_prices=state.purchase_prices,
         )
 
     wildcard_active = chip_rec.chip == Chip.WILDCARD
