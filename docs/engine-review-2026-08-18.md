@@ -12,11 +12,11 @@ hypothesis did not survive checking it is recorded as refuted rather than
 dropped, because several plausible-sounding concerns turned out to be sound
 design.
 
-**Seventeen defects, two of them in the same failure class the last audit
+**Eighteen defects, two of them in the same failure class the last audit
 closed.** Sections 1–9 cover projection, ingest and measurement; sections 10–17
 cover the optimiser, transfer and chip layer.
 
-> **Status, 2026-08-18: all seventeen are addressed.** Fifteen are fixed in
+> **Status, 2026-08-18: all eighteen are addressed.** Fifteen are fixed in
 > code; §7 (goalkeeper bonus re-calibration) is blocked on 26/27 BPS that does
 > not exist yet and is flagged in place; §16 was resolved as a documentation
 > correction, since the dormant risk layer is a defensible configuration and
@@ -355,6 +355,32 @@ these hard structural gates, and the panic force-play at the boundary covers
 the normal case — two of the four first-half chips expire unused by
 construction, and nothing reports it.
 
+**Resolved 2026-08-18, and the original framing here was too soft.** Waiting
+for a double gameweek is not merely *risky*, it is unsound, because the chip
+being saved cannot be carried over: each half issues its own set of four and
+destroys whatever is left at the boundary. A chip held back for a double that
+never comes is not saved, it is thrown away — and a bench scores *something*
+every week, so playing Bench Boost on an ordinary gameweek strictly beats not
+playing it at all.
+
+Both preconditions are removed. A double gameweek now expresses itself where it
+belongs, in the *number*: a doubled bench scores roughly twice as much and
+clears `bench_boost_min_bench_xpts` easily, while an ordinary bench clears it
+only when genuinely strong. That is a preference, not a gate.
+
+Backing it is a budget rule, `must_play_a_chip_now`. Only one chip may be
+played per gameweek, so a half's remaining gameweeks are *slots* and its unused
+chips are *items*. Once the items reach the slots, declining today makes it
+arithmetically impossible to play them all, and the engine forces the best
+available chip instead of letting the calendar bin one. Triple Captain, Bench
+Boost and Free Hit all quantify a one-gameweek point gain, so under a forced
+play they are directly comparable and the largest wins; the wildcard's gain is a
+multi-gameweek figure and is the fallback rather than a rival.
+
+This replaces a narrower rule that force-played only Triple Captain, and only
+in a half's last two gameweeks — leaving the other three to evaporate in
+silence.
+
 ## 16. The entire risk and variance layer is inert at the default config
 
 `mu_baseline` was calibrated to **0.0** (`strategy.py:393`), and
@@ -410,6 +436,55 @@ until GW2. It is worth instrumenting before it fires.
   ignoring formation legality, so `bench_xpts` can name a player who would
   actually start. Documented as an approximation and consistent with
   `_bench_xpts`, but it gates a real chip decision.
+
+---
+
+## 19. The curse correction cannot change who gets picked
+
+Found while verifying §3, and it reframes what that fix achieves.
+
+`apply_curse_shrinkage` computes `xpts' = (1 - s)·xpts + s·m_p`, where `m_p` is
+the mean of the player's own `(gameweek, position)` group. That is an **affine
+transform with a per-group offset**, which has two consequences:
+
+- **Within a position, the ranking is exactly preserved.** Which defender or
+  midfielder is best cannot change, at any shrinkage strength.
+- **Squad quotas are fixed at 2/5/5/3**, so `Σ s·m_p` over the fifteen is the
+  same constant for every feasible squad.
+
+The only channels left are the starting XI's positional shape and the captain's
+position, where composition varies. Measured on the live cold start, neither
+bites:
+
+| | shrinkage on | shrinkage off |
+|---|---|---|
+| squad | identical | identical |
+| starting XI | identical | identical |
+| cost | £100.0m | £100.0m |
+
+Spearman correlation between shrunk and raw GW1 projections: **0.9996** across
+568 rows (below 1.0 only because the comparison spans positions with different
+offsets).
+
+So the initial squad being unchanged after §3 is not reassurance that the fix
+was safe — it is a structural property. **A uniform within-group shrink cannot
+correct a selection bias**, because selection within a group is exactly what it
+leaves alone. What it does correct is the *level*: the reported GW1 total drops
+59.97 → 54.74, which is the honest number and feeds calibration.
+
+It is not inert everywhere. In-season, gains are compared against absolute bars
+— the 1.5 switching cost, the 4-point hit — so compressing a gap by 15% can flip
+those comparisons and genuinely suppress churn. That is where the correction
+earns its place.
+
+But the optimiser's curse proper — the tendency to over-select players whose
+estimate is inflated by noise — needs a correction that is *non-uniform*,
+shrinking each estimate by its own estimation uncertainty. The docstring already
+records that the James-Stein version was tried and reverted, because `xpts_var`
+is outcome variance rather than estimation variance. Until a real
+estimation-uncertainty signal exists (multi-seed reassembly variance is the
+obvious candidate), the selection half of this correction is unimplemented, and
+should not be described as done.
 
 ---
 

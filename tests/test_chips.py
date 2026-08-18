@@ -384,7 +384,7 @@ def test_recommend_chip_panic_forces_tc_on_expiry_gw_when_nothing_else_clears():
         **_skip_bb_fh_wc_kwargs(current_gw=19),
     )
     assert rec.chip == chips.Chip.TRIPLE_CAPTAIN
-    assert "Panic" in rec.reason
+    assert "Forced before expiry" in rec.reason
 
 
 def test_recommend_chip_panic_forces_tc_one_gw_before_expiry_too():
@@ -399,7 +399,7 @@ def test_recommend_chip_panic_forces_tc_one_gw_before_expiry_too():
         **_skip_bb_fh_wc_kwargs(current_gw=18),
     )
     assert rec.chip == chips.Chip.TRIPLE_CAPTAIN
-    assert "Panic" in rec.reason
+    assert "Forced before expiry" in rec.reason
 
 
 def test_recommend_chip_no_panic_force_away_from_expiry():
@@ -452,7 +452,19 @@ def test_recommend_chip_free_hit_triggers_on_dgw_without_bgw_blanks():
     assert "DGW" in rec.reason
 
 
-def test_recommend_chip_free_hit_does_not_trigger_without_dgw_or_bgw():
+def test_recommend_chip_free_hit_can_trigger_on_merit_without_a_dgw_or_bgw():
+    """Changed 2026-08-18. This used to assert that Free Hit CANNOT fire
+    without a double or blank gameweek. That gate was wrong: doubles and blanks
+    only arise from postponements, so a half can contain none at all — and a
+    half's unused chips are destroyed at the boundary rather than carried over.
+    Requiring a structural event to unlock the chip therefore guaranteed it was
+    wasted in exactly those halves.
+
+    A Free Hit's value is the one-week gain of the best legal XI over the
+    current one, which is measurable every gameweek. A blank or a double simply
+    makes that number large, which is what the threshold is for. Here the pool
+    offers a big enough one-week upgrade to clear it on merit alone.
+    """
     players, projections, current_squad_ids = _dgw_free_hit_pool()
     rec = chips.recommend_chip(
         current_gw=10, current_squad_ids=current_squad_ids, projections=projections,
@@ -460,7 +472,53 @@ def test_recommend_chip_free_hit_does_not_trigger_without_dgw_or_bgw():
         chips_used=[(chips.Chip.WILDCARD, 10)], squad_age_gws=0,
         dgw_gws=set(), bgw_affected_count=0,
     )
-    assert rec.chip is None
+    assert rec.chip == chips.Chip.FREE_HIT
+
+
+def test_recommend_chip_free_hit_still_declines_a_weak_week():
+    """The threshold, not a structural gate, is what holds the chip back now —
+    so it must still hold it back when the upgrade is not worth it."""
+    players, projections, current_squad_ids = _dgw_free_hit_pool()
+    # Flatten the pool: nothing to gain from a one-week rebuild.
+    projections = projections.copy()
+    projections["xpts"] = 2.0
+    rec = chips.recommend_chip(
+        current_gw=10, current_squad_ids=current_squad_ids, projections=projections,
+        players=players, available_budget=100.0, free_transfers=1, season=None,
+        chips_used=[(chips.Chip.WILDCARD, 10)], squad_age_gws=0,
+        dgw_gws=set(), bgw_affected_count=0,
+    )
+    assert rec.chip != chips.Chip.FREE_HIT
+
+
+# --- must-play arithmetic (2026-08-18) ---------------------------------------
+
+def test_must_play_when_chips_outnumber_remaining_gameweeks():
+    """Only one chip may be played per gameweek and a half's leftovers are
+    destroyed at the boundary, so once the chips outnumber the slots, declining
+    today mathematically guarantees one is binned."""
+    # GW17, first half expires at GW19 -> slots 17, 18, 19 = 3.
+    used_all_but_three = [(chips.Chip.WILDCARD, 5)]
+    assert chips.must_play_a_chip_now(used_all_but_three, current_gw=17) is True   # 3 left, 3 slots
+    # With only one chip left and three slots there is still real slack.
+    only_tc_left = [
+        (chips.Chip.WILDCARD, 5), (chips.Chip.FREE_HIT, 6), (chips.Chip.BENCH_BOOST, 7),
+    ]
+    assert chips.must_play_a_chip_now(only_tc_left, current_gw=16) is False
+    # ...but never let the final two gameweeks pass holding one.
+    assert chips.must_play_a_chip_now(only_tc_left, current_gw=18) is True
+    # Nothing left to play is not a must-play.
+    all_used = [
+        (chips.Chip.WILDCARD, 5), (chips.Chip.FREE_HIT, 6),
+        (chips.Chip.BENCH_BOOST, 7), (chips.Chip.TRIPLE_CAPTAIN, 8),
+    ]
+    assert chips.must_play_a_chip_now(all_used, current_gw=18) is False
+
+
+def test_chips_available_this_half_counts_only_unused():
+    used = [(chips.Chip.WILDCARD, 5), (chips.Chip.BENCH_BOOST, 7)]
+    available = chips.chips_available_this_half(used, current_gw=10)
+    assert set(available) == {chips.Chip.FREE_HIT, chips.Chip.TRIPLE_CAPTAIN}
 
 
 # --- TC vs. a coming DGW / an active DGW (2026-07-30) ------------------------

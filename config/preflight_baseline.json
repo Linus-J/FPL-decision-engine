@@ -5,8 +5,8 @@
     "Simms",
     "Furo"
   ],
-  "bgw_gws_first_half": 0,
   "captain": "B.Fernandes",
+  "chips_left_this_half": 4,
   "cost": 100.0,
   "degenerate": [
     "injury_severity",
@@ -17,7 +17,7 @@
     "penalty_xg_per_game",
     "press_sentiment"
   ],
-  "dgw_gws_first_half": 0,
+  "gws_left_this_half": 19,
   "n_features": 37,
   "squad": [
     "Anderson",

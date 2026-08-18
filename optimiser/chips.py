@@ -224,6 +224,49 @@ def _chip_uses_remaining(
     return max(0, 1 - uses_this_half)
 
 
+def chips_available_this_half(
+    chips_used: list[tuple[Chip, int]], current_gw: int, season: str | None = None
+) -> list[Chip]:
+    """Which of the four chips still have a use left in ``current_gw``'s half."""
+    return [
+        chip for chip in Chip
+        if _chip_uses_remaining(chip, chips_used, current_gw, season) > 0
+    ]
+
+
+def must_play_a_chip_now(
+    chips_used: list[tuple[Chip, int]], current_gw: int, season: str | None = None
+) -> bool:
+    """Is declining every chip this week guaranteed to waste one?
+
+    Two hard FPL facts combine (2026-08-18): only ONE chip may be played per
+    gameweek, and a half's unused chips are destroyed at its boundary rather
+    than carried over — you simply receive a fresh set of four.
+
+    So the half's remaining gameweeks are slots, and the remaining chips are
+    items. Once there are as many chips as slots, every remaining gameweek has
+    to carry one, and skipping today makes it arithmetically impossible to play
+    them all. At that point the question stops being "is this a good week for
+    this chip" and becomes "which chip is worth most this week", because the
+    alternative is not saving it — the alternative is losing it.
+
+    Thresholds are the right instrument while there is slack; this is what
+    takes over when there is none.
+    """
+    gws_left = _current_half_expiry_gw(current_gw, season) - current_gw + 1
+    available = len(chips_available_this_half(chips_used, current_gw, season))
+    if gws_left <= 0 or available == 0:
+        return False
+    # Arithmetic: as many chips as slots, so today has to carry one.
+    if available >= gws_left:
+        return True
+    # Robustness, inherited from the narrower TC-only rule this replaced: never
+    # let the last two gameweeks of a half pass with a chip still in hand. A
+    # postponement or one missed weekly run at the boundary would otherwise bin
+    # it, and there is no way to get it back.
+    return gws_left <= 2
+
+
 def recommend_chip(
     current_gw: int,
     current_squad_ids: list[int],
@@ -269,7 +312,7 @@ def recommend_chip(
 
     gws = sorted(projections["gameweek"].unique())[:horizon]
 
-    def _try_tc() -> ChipRecommendation | None:
+    def _try_tc(force: bool = False) -> ChipRecommendation | None:
         if _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, chips_used, current_gw, season) <= 0:
             return None
         tc_gain, best_id, second_id = _evaluate_triple_captain(
@@ -288,17 +331,29 @@ def recommend_chip(
             # Raises the bar rather than blocking outright -- an
             # exceptional normal week can still justify using it now.
             threshold *= timing.triple_captain_dgw_wait_multiplier
-        if not _clears_threshold(
+        if not force and not _clears_threshold(
             tc_gain, threshold, tc_scenarios, timing.triple_captain_min_payoff_probability
         ):
             return None
         logger.info("TC recommended: captain xPts=%.2f", tc_gain)
         return ChipRecommendation(Chip.TRIPLE_CAPTAIN, f"TC captain xPts {tc_gain:.1f}", tc_gain)
 
-    def _try_bb() -> ChipRecommendation | None:
+    def _try_bb(force: bool = False) -> ChipRecommendation | None:
         if _chip_uses_remaining(Chip.BENCH_BOOST, chips_used, current_gw, season) <= 0:
             return None
-        if bench_xpts is None or not dgw_active_now:
+        # No DGW requirement (2026-08-18). This used to return None unless a
+        # double gameweek was active, which meant Bench Boost was UNPLAYABLE in
+        # any half without one -- and doubles only arise from postponements, so
+        # a first half often has none at all. The chip then expired unused,
+        # which is strictly worse than playing it on an ordinary week: a bench
+        # is worth some points every single gameweek, and there are two full
+        # sets of chips with no carryover.
+        #
+        # A DGW is now expressed where it belongs -- in the NUMBER. A doubled
+        # bench scores roughly twice as much, so it clears
+        # bench_boost_min_bench_xpts easily, while an ordinary bench clears it
+        # only if it is genuinely strong. That is a preference, not a gate.
+        if bench_xpts is None:
             return None
         bb_scenarios = pd.Series(dtype=float)
         if season is not None:
@@ -306,16 +361,19 @@ def recommend_chip(
             if bench_ids:
                 bb_scenarios = load_scenario_totals(season, current_gw, bench_ids)
         threshold = timing.bench_boost_min_bench_xpts * _panic_shrink(current_gw, season, timing)
-        if not _clears_threshold(
+        if not force and not _clears_threshold(
             bench_xpts, threshold, bb_scenarios, timing.bench_boost_min_payoff_probability
         ):
             return None
-        logger.info("BB recommended: bench_xpts=%.2f in DGW%d", bench_xpts, current_gw)
+        context = "DGW " if dgw_active_now else ""
+        logger.info("BB recommended: bench_xpts=%.2f at GW%d", bench_xpts, current_gw)
         return ChipRecommendation(
-            Chip.BENCH_BOOST, f"DGW bench xPts {bench_xpts:.1f} exceeds threshold", bench_xpts
+            Chip.BENCH_BOOST,
+            f"{context}bench xPts {bench_xpts:.1f} exceeds threshold",
+            bench_xpts,
         )
 
-    def _try_fh() -> ChipRecommendation | None:
+    def _try_fh(force: bool = False) -> ChipRecommendation | None:
         if _chip_uses_remaining(Chip.FREE_HIT, chips_used, current_gw, season) <= 0:
             return None
         # 2026-07-30 (user's own review: "the free hit is usually handy
@@ -324,8 +382,13 @@ def recommend_chip(
         # blank-filling rationale. A DGW is the other classic real-world
         # Free Hit case: load the WHOLE XI with double-fixture players for
         # one week without permanently restructuring the squad.
-        if not (bgw_affected_count >= 5 or dgw_active_now):
-            return None
+        # No DGW/BGW requirement (2026-08-18), same reasoning as Bench Boost
+        # above: gating a chip on fixture structure that may never occur before
+        # the half expires guarantees it is wasted. A Free Hit's value is the
+        # one-week gain of the best legal XI over the current one, which is
+        # measurable every gameweek; a blank or double simply makes that number
+        # large. free_hit_single_gw_gain_threshold is what decides it.
+        _ = bgw_affected_count  # retained for the trigger label below
         fh_solution = optimise_squad(
             projections=projections, players=players, budget=available_budget, horizon=1,
             config=config,
@@ -345,7 +408,7 @@ def recommend_chip(
         threshold = timing.free_hit_single_gw_gain_threshold * _panic_shrink(
             current_gw, season, timing
         )
-        if not _clears_threshold(
+        if not force and not _clears_threshold(
             gain, threshold, fh_scenarios, timing.free_hit_min_payoff_probability
         ):
             return None
@@ -353,10 +416,10 @@ def recommend_chip(
         logger.info("FH recommended: gain=%.2f (%s, blanks=%d)", gain, trigger, bgw_affected_count)
         return ChipRecommendation(Chip.FREE_HIT, f"{trigger} free hit gain {gain:.1f} xPts", gain)
 
-    def _try_wc() -> ChipRecommendation | None:
+    def _try_wc(force: bool = False) -> ChipRecommendation | None:
         if _chip_uses_remaining(Chip.WILDCARD, chips_used, current_gw, season) <= 0:
             return None
-        if squad_age_gws < timing.wildcard_min_managed_gws:
+        if not force and squad_age_gws < timing.wildcard_min_managed_gws:
             return None
         # §12 (2026-08-18): decide with the SAME optimiser that will execute
         # it. A played wildcard is run through
@@ -392,7 +455,7 @@ def recommend_chip(
         if season is not None:
             wc_scenarios = gain_distribution(season, gws, wc_squad_ids, current_squad_ids)
         threshold = timing.wildcard_pts_gain_threshold * _panic_shrink(current_gw, season, timing)
-        if not _clears_threshold(
+        if not force and not _clears_threshold(
             wc_gain, threshold, wc_scenarios, timing.wildcard_min_payoff_probability
         ):
             return None
@@ -416,30 +479,55 @@ def recommend_chip(
         if rec is not None:
             return rec
 
-    # Last resort (user's own words: TC "should NEVER be left unplayed in
-    # both halves of the season" -- "at worst the default behaviour is to
-    # panic and use the triple captain on the last day before the chips
-    # reset or the season ends"). Reached only once every threshold above
-    # -- already shrunk by _panic_shrink for the whole panic window -- has
-    # failed to clear. Triggers on the FINAL TWO gameweeks of the half, not
-    # just the literal last one, so a single skipped/missing decision point
-    # right at the boundary (a postponement, a data gap) can't silently
-    # cost the whole half's chip -- once forced, ``chips_used`` marks it
-    # used immediately, so this can't double-fire across both gameweeks.
-    if (
-        current_gw >= _current_half_expiry_gw(current_gw, season) - 1
-        and _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, chips_used, current_gw, season) > 0
-    ):
-        tc_gain, best_id, _second_id = _evaluate_triple_captain(
-            current_squad_ids, projections, current_gw
+    # Nothing cleared its bar. If there is still slack in the half that is a
+    # real decision -- wait for a better week. If there is not, it is not:
+    # only one chip may be played per gameweek and the half's leftovers are
+    # destroyed at the boundary, so once the chips outnumber the remaining
+    # gameweeks, declining today mathematically guarantees one is binned.
+    #
+    # Replaces a narrower rule that force-played only TRIPLE CAPTAIN, and only
+    # in the final two gameweeks. That left Bench Boost, Free Hit and Wildcard
+    # to evaporate in silence -- which, before this same commit removed their
+    # DGW/BGW preconditions, is exactly what a half without a double gameweek
+    # guaranteed.
+    if not must_play_a_chip_now(chips_used, current_gw, season):
+        return ChipRecommendation(None, "No chip threshold met", 0.0)
+
+    # Triple Captain, Bench Boost and Free Hit all quantify a ONE-GAMEWEEK
+    # point gain, so their numbers are directly comparable and the best one
+    # wins. The wildcard's gain is measured over a multi-gameweek horizon and
+    # is not comparable to them, so it is the fallback rather than a rival --
+    # and a forced wildcard is nearly free anyway, being a squad rebuild rather
+    # than a wager on one week.
+    forced: list[ChipRecommendation] = []
+    for candidate in (_try_tc, _try_bb, _try_fh):
+        rec = candidate(force=True)
+        if rec is not None:
+            forced.append(rec)
+
+    if forced:
+        best = max(forced, key=lambda r: r.expected_gain)
+        logger.info(
+            "CHIP FORCED at GW%d (%d chips left, %d gameweeks left this half): "
+            "%s, gain=%.2f",
+            current_gw,
+            len(chips_available_this_half(chips_used, current_gw, season)),
+            _current_half_expiry_gw(current_gw, season) - current_gw + 1,
+            best.chip.value if best.chip else "none",
+            best.expected_gain,
         )
-        if best_id is not None:
-            logger.info(
-                "TC PANIC-forced at half/season expiry GW%d: gain=%.2f", current_gw, tc_gain
-            )
-            return ChipRecommendation(
-                Chip.TRIPLE_CAPTAIN, f"Panic TC at expiry (gain {tc_gain:.1f} xPts)", tc_gain
-            )
+        return ChipRecommendation(
+            best.chip,
+            f"Forced before expiry — {best.reason}",
+            best.expected_gain,
+        )
+
+    wc = _try_wc(force=True)
+    if wc is not None:
+        logger.info("WILDCARD FORCED at GW%d before expiry", current_gw)
+        return ChipRecommendation(
+            wc.chip, f"Forced before expiry — {wc.reason}", wc.expected_gain
+        )
 
     return ChipRecommendation(None, "No chip threshold met", 0.0)
 

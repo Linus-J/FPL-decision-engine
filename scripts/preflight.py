@@ -37,6 +37,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pandas as pd  # noqa: E402
+
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
 logger = logging.getLogger(__name__)
@@ -278,60 +280,85 @@ def check_model_features_are_usable(result: Result) -> dict:
 
 
 def check_chips_are_reachable(db, result: Result) -> dict:
-    """Can each chip actually fire this half, given the data that exists?
+    """Can every chip still be spent before this half's boundary?
 
-    2026-08-18 (engine review §15/§17). Every other check here asks whether a
-    value is right. This one asks whether a DECISION is reachable at all, which
-    is a different failure and the one the chip layer actually has.
+    2026-08-18. Every other check here asks whether a value is right. This one
+    asks whether a DECISION is reachable, which is a different failure and the
+    one the chip layer actually had: Bench Boost and Free Hit used to require an
+    active double or blank gameweek, and those only arise from postponements, so
+    a half can contain none at all. Both chips were then unplayable and expired
+    unused — which is strictly worse than playing them on an ordinary week,
+    because a half's leftovers are destroyed rather than carried over.
 
-    Bench Boost requires an active double gameweek; Free Hit requires one of
-    those or five blanking squad players. Doubles and blanks only arise from
-    postponements, so the published fixture list has none — every gameweek
-    holds exactly ten fixtures — and they cluster in the second half of the
-    season when cup replays start biting. ``_panic_shrink`` lowers chip
-    THRESHOLDS as a half expires but cannot relax those structural gates, and
-    the panic force-play at the boundary covers only Triple Captain. So if no
-    DGW or five-blank BGW materialises before the GW19 deadline, two of the
-    four first-half chips expire unused by construction.
-
-    That is a strategy question, not a bug, and it is the user's call — but it
-    should be a number they see weekly rather than something discovered in
-    January. Reported, never failed on.
+    Those preconditions are gone. What is worth watching now is the budget:
+    only ONE chip may be played per gameweek, so the half's remaining gameweeks
+    are slots and the unused chips are items. Once the items reach the slots,
+    ``optimiser.chips.must_play_a_chip_now`` forces the best one rather than
+    letting arithmetic bin it. Reported, never failed on — how aggressively to
+    spend chips is a strategy call, but it should be a number seen weekly
+    rather than a surprise in January.
     """
     from sqlalchemy import text
 
-    from optimiser.chips import _get_wc_half_boundary
+    from optimiser.chips import (
+        _get_wc_half_boundary,
+        chips_available_this_half,
+        chips_used_this_season,
+        must_play_a_chip_now,
+    )
 
-    print("\n[chip reachability]")
+    print("\n[chip budget]")
     rows = db.execute(
         text(
-            "SELECT gameweek, COUNT(*) FROM fixtures WHERE season = :s "
-            "GROUP BY gameweek"
+            "SELECT gameweek, COUNT(*) FROM fixtures WHERE season = :s GROUP BY gameweek"
         ),
         {"s": SEASON},
     ).fetchall()
     per_gw = {int(gw): int(n) for gw, n in rows}
     if not per_gw:
-        result.note("fixtures loaded", "none — cannot assess chip reachability")
-        return {"dgw_gws_first_half": 0, "bgw_gws_first_half": 0}
+        result.note("fixtures loaded", "none — cannot assess the chip budget")
+        return {"chips_left_this_half": 0, "gws_left_this_half": 0}
 
-    teams = db.execute(
-        text("SELECT COUNT(*) FROM teams"), {}
-    ).scalar() or 20
-    full_slate = teams // 2
+    current_gw = db.execute(
+        text(
+            "SELECT id FROM gameweeks WHERE season = :s AND (is_next = 1 OR is_current = 1) "
+            "ORDER BY id LIMIT 1"
+        ),
+        {"s": SEASON},
+    ).scalar() or 1
+    current_gw = int(current_gw)
+
+    log = pd.read_sql(
+        text("SELECT gameweek, decision_type, details FROM decision_log"), db.bind
+    )
+    used = chips_used_this_season(log)
+    available = chips_available_this_half(used, current_gw, SEASON)
     boundary = _get_wc_half_boundary(SEASON)
+    expiry = boundary if current_gw <= boundary else len(per_gw)
+    gws_left = expiry - current_gw + 1
 
-    dgw = sorted(gw for gw, n in per_gw.items() if n > full_slate and gw <= boundary)
-    bgw = sorted(gw for gw, n in per_gw.items() if n < full_slate and gw <= boundary)
+    teams = db.execute(text("SELECT COUNT(*) FROM teams"), {}).scalar() or 20
+    full_slate = teams // 2
+    dgw = sorted(gw for gw, n in per_gw.items() if n > full_slate and gw <= expiry)
+    bgw = sorted(gw for gw, n in per_gw.items() if n < full_slate and gw <= expiry)
 
-    result.note(f"double gameweeks before GW{boundary}", dgw or "none")
-    result.note(f"blank gameweeks before GW{boundary}", bgw or "none")
-    if not dgw and not bgw:
+    result.note("chips unused this half", [c.value for c in available] or "none")
+    result.note(f"gameweeks left this half (to GW{expiry})", gws_left)
+    result.note("doubles / blanks scheduled this half", f"{len(dgw)} / {len(bgw)}")
+    result.check(
+        len(available) <= gws_left,
+        "every unused chip still has a gameweek to be played in",
+        f"{len(available)} chips, {gws_left} gameweeks",
+    )
+    if must_play_a_chip_now(used, current_gw, SEASON):
         result.note(
-            "Bench Boost / Free Hit reachability",
-            "UNREACHABLE this half on current fixtures — both need a DGW/BGW",
+            "chip budget",
+            f"MUST PLAY at GW{current_gw} — {len(available)} chips for {gws_left} gameweeks",
         )
-    return {"dgw_gws_first_half": len(dgw), "bgw_gws_first_half": len(bgw)}
+    return {
+        "chips_left_this_half": len(available),
+        "gws_left_this_half": gws_left,
+    }
 
 
 def check_site_export_matches(db, result: Result) -> None:
