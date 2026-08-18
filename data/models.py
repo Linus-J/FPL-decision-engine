@@ -59,7 +59,9 @@ class Player(Base):
     now_cost: Mapped[float] = mapped_column(Float, nullable=False)  # in £m (divided by 10)
     cost_change_start: Mapped[float] = mapped_column(Float, default=0.0)
 
-    status: Mapped[str] = mapped_column(String(1), default="a")  # a=available, d=doubtful, i=injured, u=unavailable, s=suspended, n=not in squad
+    # a=available, d=doubtful, i=injured, u=unavailable, s=suspended,
+    # n=not in squad
+    status: Mapped[str] = mapped_column(String(1), default="a")
     news: Mapped[str] = mapped_column(String, default="")
     news_added: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -88,12 +90,18 @@ class Player(Base):
     transfers_out_event: Mapped[int] = mapped_column(Integer, default=0)
     injury_severity: Mapped[int] = mapped_column(Integer, default=0)
 
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
     team: Mapped["Team"] = relationship("Team", back_populates="players")
-    gw_stats: Mapped[list["PlayerGameweekStats"]] = relationship("PlayerGameweekStats", back_populates="player")
+    gw_stats: Mapped[list["PlayerGameweekStats"]] = relationship(
+        "PlayerGameweekStats", back_populates="player"
+    )
     xg_stats: Mapped[list["PlayerXGStats"]] = relationship("PlayerXGStats", back_populates="player")
-    projections: Mapped[list["PlayerProjection"]] = relationship("PlayerProjection", back_populates="player")
+    projections: Mapped[list["PlayerProjection"]] = relationship(
+        "PlayerProjection", back_populates="player"
+    )
 
 
 class Fixture(Base):
@@ -117,8 +125,12 @@ class Fixture(Base):
     kickoff_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_dgw: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    team_h: Mapped["Team"] = relationship("Team", foreign_keys=[team_h_id], back_populates="home_fixtures")
-    team_a: Mapped["Team"] = relationship("Team", foreign_keys=[team_a_id], back_populates="away_fixtures")
+    team_h: Mapped["Team"] = relationship(
+        "Team", foreign_keys=[team_h_id], back_populates="home_fixtures"
+    )
+    team_a: Mapped["Team"] = relationship(
+        "Team", foreign_keys=[team_a_id], back_populates="away_fixtures"
+    )
     odds: Mapped[list["FixtureOdds"]] = relationship("FixtureOdds", back_populates="fixture")
 
 
@@ -451,7 +463,9 @@ class HistoricalFixtureOdds(Base):
 
 class PlayerProjection(Base):
     __tablename__ = "player_projections"
-    __table_args__ = (UniqueConstraint("player_id", "gameweek", "created_at", name="uq_projection"),)
+    __table_args__ = (
+        UniqueConstraint("player_id", "gameweek", "created_at", name="uq_projection"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.id"), nullable=False)

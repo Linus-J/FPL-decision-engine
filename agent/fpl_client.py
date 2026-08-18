@@ -59,7 +59,10 @@ async def _submit_transfers(
         in_player = t_in["player_id"]
         out_player = t_out["player_id"]
         selling_price = next(
-            (p["selling_price"] for p in current_team.get("picks", []) if p["element"] == out_player),
+            (
+                p["selling_price"] for p in current_team.get("picks", [])
+                if p["element"] == out_player
+            ),
             int(t_out.get("cost", 0) * 10),
         )
         purchase_price = int(t_in.get("cost", 0) * 10)
@@ -80,7 +83,8 @@ async def _submit_transfers(
     }
 
     url = f"{BASE_URL}/transfers/"
-    async with session.post(url, json=payload, headers={**HEADERS, "Content-Type": "application/json"}) as resp:
+    headers = {**HEADERS, "Content-Type": "application/json"}
+    async with session.post(url, json=payload, headers=headers) as resp:
         if resp.status not in (200, 201):
             body = await resp.text()
             raise RuntimeError(f"Transfer submission failed: HTTP {resp.status} — {body}")
@@ -138,7 +142,8 @@ async def _submit_lineup(
         payload["chip"] = chip
 
     url = f"{BASE_URL}/my-team/{settings.fpl_team_id}/"
-    async with session.patch(url, json=payload, headers={**HEADERS, "Content-Type": "application/json"}) as resp:
+    headers = {**HEADERS, "Content-Type": "application/json"}
+    async with session.patch(url, json=payload, headers=headers) as resp:
         if resp.status not in (200, 201):
             body = await resp.text()
             raise RuntimeError(f"Lineup submission failed: HTTP {resp.status} — {body}")

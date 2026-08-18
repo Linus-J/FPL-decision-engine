@@ -26,9 +26,15 @@ def session(tmp_path):
     s.close()
 
 
-def _add_samples(session, player_id: int, gw: int, season: str, values: list[float], created_at: datetime | None = None) -> None:
+def _add_samples(
+    session, player_id: int, gw: int, season: str, values: list[float],
+    created_at: datetime | None = None,
+) -> None:
     session.add_all([
-        ProjectionSample(player_id=player_id, gameweek=gw, season=season, scenario_id=i, xpts=v, created_at=created_at)
+        ProjectionSample(
+            player_id=player_id, gameweek=gw, season=season,
+            scenario_id=i, xpts=v, created_at=created_at,
+        )
         for i, v in enumerate(values)
     ])
     session.commit()
@@ -36,8 +42,14 @@ def _add_samples(session, player_id: int, gw: int, season: str, values: list[flo
 
 def test_get_projection_distributions_returns_summary_per_player(session):
     batch_ts = datetime(2026, 8, 1, 6, 0)
-    _add_samples(session, player_id=1, gw=3, season="2026-27", values=[2.0, 4.0, 6.0, 8.0, 10.0], created_at=batch_ts)
-    _add_samples(session, player_id=2, gw=3, season="2026-27", values=[1.0, 1.0, 1.0, 1.0, 1.0], created_at=batch_ts)
+    _add_samples(
+        session, player_id=1, gw=3, season="2026-27",
+        values=[2.0, 4.0, 6.0, 8.0, 10.0], created_at=batch_ts,
+    )
+    _add_samples(
+        session, player_id=2, gw=3, season="2026-27",
+        values=[1.0, 1.0, 1.0, 1.0, 1.0], created_at=batch_ts,
+    )
 
     dist = payload_module.get_projection_distributions(session, gw=3, season="2026-27")
 
@@ -51,7 +63,10 @@ def test_get_projection_distributions_returns_summary_per_player(session):
 
 def test_get_projection_distributions_ignores_other_gameweeks_and_seasons(session):
     batch_ts = datetime(2026, 8, 1, 6, 0)
-    _add_samples(session, player_id=1, gw=3, season="2026-27", values=[5.0, 5.0], created_at=batch_ts)
+    _add_samples(
+        session, player_id=1, gw=3, season="2026-27",
+        values=[5.0, 5.0], created_at=batch_ts,
+    )
     _add_samples(session, player_id=1, gw=4, season="2026-27", values=[99.0], created_at=batch_ts)
     _add_samples(session, player_id=1, gw=3, season="2025-26", values=[99.0], created_at=batch_ts)
 
@@ -68,8 +83,14 @@ def test_get_projection_distributions_empty_when_no_samples(session):
 def test_get_projection_distributions_uses_only_latest_batch(session):
     batch1_ts = datetime(2026, 8, 1, 6, 0)
     batch2_ts = datetime(2026, 8, 3, 6, 0)
-    _add_samples(session, player_id=1, gw=3, season="2026-27", values=[1.0, 1.0, 4.0], created_at=batch1_ts)
-    _add_samples(session, player_id=1, gw=3, season="2026-27", values=[7.0, 8.0, 9.0], created_at=batch2_ts)
+    _add_samples(
+        session, player_id=1, gw=3, season="2026-27",
+        values=[1.0, 1.0, 4.0], created_at=batch1_ts,
+    )
+    _add_samples(
+        session, player_id=1, gw=3, season="2026-27",
+        values=[7.0, 8.0, 9.0], created_at=batch2_ts,
+    )
 
     dist = payload_module.get_projection_distributions(session, gw=3, season="2026-27")
 
@@ -150,7 +171,10 @@ def test_build_squad_entries_orders_bench_gk_first_then_by_xpts():
 
 def test_build_top15_entries_takes_first_15_and_maps_team_short():
     projections_df = pd.DataFrame([
-        {"player_id": i, "web_name": f"P{i}", "position": "MID", "team_id": 1, "xpts_mean": 20.0 - i}
+        {
+            "player_id": i, "web_name": f"P{i}", "position": "MID",
+            "team_id": 1, "xpts_mean": 20.0 - i,
+        }
         for i in range(20)
     ])
     team_names = {1: "ARS"}

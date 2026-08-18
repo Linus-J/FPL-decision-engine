@@ -20,12 +20,17 @@ def test_write_run_file_creates_dir_and_file(tmp_path):
 def test_update_index_creates_new_index_when_absent(tmp_path):
     out_dir = tmp_path / "simulations"
 
-    path = writer.update_index(out_dir, gw=3, label="GW3 — 3 Aug", generated_at="2026-08-03T06:00:00Z")
+    path = writer.update_index(
+        out_dir, gw=3, label="GW3 — 3 Aug", generated_at="2026-08-03T06:00:00Z"
+    )
 
     index = json.loads(path.read_text())
     assert index == {
         "schema_version": 1,
-        "runs": [{"id": "gw3", "gameweek": 3, "label": "GW3 — 3 Aug", "generated_at": "2026-08-03T06:00:00Z"}],
+        "runs": [{
+            "id": "gw3", "gameweek": 3, "label": "GW3 — 3 Aug",
+            "generated_at": "2026-08-03T06:00:00Z",
+        }],
     }
 
 
@@ -33,7 +38,9 @@ def test_update_index_replaces_existing_entry_for_same_gw(tmp_path):
     out_dir = tmp_path / "simulations"
     writer.update_index(out_dir, gw=3, label="GW3 — old label", generated_at="2026-08-03T06:00:00Z")
 
-    path = writer.update_index(out_dir, gw=3, label="GW3 — 3 Aug", generated_at="2026-08-03T07:00:00Z")
+    path = writer.update_index(
+        out_dir, gw=3, label="GW3 — 3 Aug", generated_at="2026-08-03T07:00:00Z"
+    )
 
     index = json.loads(path.read_text())
     assert len(index["runs"]) == 1

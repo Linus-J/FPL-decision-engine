@@ -108,7 +108,8 @@ def optimise_squad(
 
     df = players.copy()
     df = df[df["status"].isin(["a", "d"])]
-    df = df[df["start_probability"] >= cfg.min_start_probability] if "start_probability" in df.columns else df
+    if "start_probability" in df.columns:
+        df = df[df["start_probability"] >= cfg.min_start_probability]
     df = df[~df["id"].isin(force_exclude_ids)]
 
     df["xpts_total"] = df["id"].map(xpts_by_player).fillna(0.0)
@@ -235,7 +236,10 @@ def optimise_squad(
                 prob2 += selected2[idx[pid]] == 1
         prob2.solve(pulp.PULP_CBC_CMD(msg=False))
         if pulp.LpStatus[prob2.status] == "Optimal":
-            logger.warning("max_transfers=%d infeasible; falling back to unconstrained squad", max_transfers)
+            logger.warning(
+                "max_transfers=%d infeasible; falling back to unconstrained squad",
+                max_transfers,
+            )
             selected = selected2
             starting = starting2
             captain = captain2
@@ -243,7 +247,9 @@ def optimise_squad(
             prob = prob2
 
     if pulp.LpStatus[prob.status] != "Optimal":
-        raise RuntimeError(f"ILP solver did not find optimal solution: {pulp.LpStatus[prob.status]}")
+        raise RuntimeError(
+            f"ILP solver did not find optimal solution: {pulp.LpStatus[prob.status]}"
+        )
 
     selected_ids = {player_ids[i] for i in range(n) if pulp.value(selected[i]) > 0.5}
     starting_ids = {player_ids[i] for i in range(n) if pulp.value(starting[i]) > 0.5}
@@ -268,7 +274,9 @@ def optimise_squad(
     bench = squad_df[~squad_df["is_starting"]].copy()
     bench = bench.sort_values(
         ["position", "xpts_total"],
-        key=lambda s: s.map({"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}) if s.name == "position" else -s,
+        key=lambda s: (
+            s.map({"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}) if s.name == "position" else -s
+        ),
         ascending=[True, True],
     )
     bench_order = {pid: i for i, pid in enumerate(bench["id"])}
@@ -418,7 +426,9 @@ def optimise_starting_xi(
     bench = squad_out[~squad_out["is_starting"]].copy()
     bench = bench.sort_values(
         ["position", "xpts"],
-        key=lambda s: s.map({"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}) if s.name == "position" else -s,
+        key=lambda s: (
+            s.map({"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}) if s.name == "position" else -s
+        ),
         ascending=[True, True],
     )
     bench_order = {pid: i for i, pid in enumerate(bench["id"])}

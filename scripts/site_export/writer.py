@@ -21,7 +21,9 @@ def update_index(out_dir: Path, gw: int, label: str, generated_at: str) -> Path:
 
     run_id = f"gw{gw}"
     index["runs"] = [r for r in index["runs"] if r["id"] != run_id]
-    index["runs"].append({"id": run_id, "gameweek": gw, "label": label, "generated_at": generated_at})
+    index["runs"].append(
+        {"id": run_id, "gameweek": gw, "label": label, "generated_at": generated_at}
+    )
     index["runs"].sort(key=lambda r: r["gameweek"], reverse=True)
 
     index_path.write_text(json.dumps(index, indent=2) + "\n")

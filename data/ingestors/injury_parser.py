@@ -12,7 +12,8 @@ _SEVERITY_3 = re.compile(
     re.IGNORECASE,
 )
 _SEVERITY_2 = re.compile(
-    r"\b(\d+)[\s-]*(week|month)s?\b|expected back|hamstring|knee|ankle|thigh|calf|hip|groin|shoulder|back injury|muscle injury",
+    r"\b(\d+)[\s-]*(week|month)s?\b|expected back|hamstring|knee|ankle"
+    r"|thigh|calf|hip|groin|shoulder|back injury|muscle injury",
     re.IGNORECASE,
 )
 _SEVERITY_1 = re.compile(

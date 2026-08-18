@@ -68,7 +68,8 @@ def format_decision_message(decision: dict) -> str:
         lines.append("")
 
     if transfers_in:
-        lines.append(f"<b>Transfers ({len(transfers_in)} in{f', -{hits*4}pts hit' if hits else ''}):</b>")
+        hit_note = f", -{hits * 4}pts hit" if hits else ""
+        lines.append(f"<b>Transfers ({len(transfers_in)} in{hit_note}):</b>")
         for t_in, t_out in zip(transfers_in, transfers_out):
             lines.append(f"  ➡️ {t_in['web_name']} (£{t_in['cost']}m) ← {t_out['web_name']}")
         lines.append(f"  📊 Net xPts gain: <b>+{net_gain:.1f}</b>")
@@ -78,9 +79,15 @@ def format_decision_message(decision: dict) -> str:
         lines.append("")
 
     if captain:
-        lines.append(f"⭐ <b>Captain:</b> {captain['web_name']} ({captain['position']} £{captain['now_cost']}m)")
+        lines.append(
+            f"⭐ <b>Captain:</b> {captain['web_name']} "
+            f"({captain['position']} £{captain['now_cost']}m)"
+        )
     if vice:
-        lines.append(f"🔸 <b>Vice:</b> {vice['web_name']} ({vice['position']} £{vice['now_cost']}m)")
+        lines.append(
+            f"🔸 <b>Vice:</b> {vice['web_name']} "
+            f"({vice['position']} £{vice['now_cost']}m)"
+        )
     lines.append("")
 
     starting = [p for p in squad if p.get("is_starting") and not p.get("is_captain")]

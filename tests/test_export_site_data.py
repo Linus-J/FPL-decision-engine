@@ -25,7 +25,9 @@ def test_run_wires_payload_write_index_and_commit_in_order(monkeypatch, tmp_path
     monkeypatch.setattr(cli, "write_run_file", fake_write_run_file)
     monkeypatch.setattr(
         cli, "update_index",
-        lambda out_dir, gw, label, generated_at: (calls.append(("index", gw)), tmp_path / "index.json")[1],
+        lambda out_dir, gw, label, generated_at: (
+            calls.append(("index", gw)), tmp_path / "index.json"
+        )[1],
     )
     monkeypatch.setattr(
         cli, "commit_and_push",

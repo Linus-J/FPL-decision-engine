@@ -143,7 +143,9 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
             grp["minutes"].transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
         )
         df[f"avg_points_{window}gw"] = (
-            grp["total_points"].transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+            grp["total_points"].transform(
+                lambda x: x.shift(1).rolling(window, min_periods=1).mean()
+            )
         )
         df[f"starts_rate_{window}gw"] = (
             grp["minutes"].transform(
@@ -386,7 +388,11 @@ def _pin_degenerate(X: pd.DataFrame, pinned: dict[str, float]) -> pd.DataFrame:
     return X
 
 
-def train(save: bool = True, df_override: pd.DataFrame | None = None, fast: bool = False) -> Pipeline:
+def train(
+    save: bool = True,
+    df_override: pd.DataFrame | None = None,
+    fast: bool = False,
+) -> Pipeline:
     df = df_override if df_override is not None else _load_training_data()
     df = _build_features(df)
 

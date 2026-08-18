@@ -465,7 +465,10 @@ def _run_decision_cycle(
     ).drop(columns=["player_id"], errors="ignore")
 
     if not squad_ids:
-        logger.warning("No saved squad found — running full squad optimisation (season start / first run)")
+        logger.warning(
+            "No saved squad found — running full squad optimisation "
+            "(season start / first run)"
+        )
         available_budget = 100.0
         free_transfers = 15
 
@@ -560,7 +563,10 @@ def _run_decision_cycle(
 
         new_squad_ids = (
             [t["player_id"] for t in transfer_plan.transfers_in]
-            + [pid for pid in squad_ids if pid not in {t["player_id"] for t in transfer_plan.transfers_out}]
+            + [
+                pid for pid in squad_ids
+                if pid not in {t["player_id"] for t in transfer_plan.transfers_out}
+            ]
         ) if transfer_plan.transfers_in else squad_ids
 
         squad_df = players[players["id"].isin(new_squad_ids)].copy()
@@ -594,7 +600,10 @@ def _run_decision_cycle(
         "transfers_out": transfer_plan.transfers_out,
         "hits_taken": transfer_plan.hits_taken,
         "net_xpts_gain": round(transfer_plan.net_xpts_gain, 2),
-        "squad": squad_solution.squad[["id", "web_name", "position", "now_cost", "is_starting", "is_captain", "is_vice_captain", "bench_order"]].to_dict("records"),
+        "squad": squad_solution.squad[[
+            "id", "web_name", "position", "now_cost", "is_starting",
+            "is_captain", "is_vice_captain", "bench_order",
+        ]].to_dict("records"),
         "captain_id": xi_solution.captain_id,
         "vice_captain_id": xi_solution.vice_captain_id,
         "total_xpts": round(xi_solution.total_xpts, 2),
@@ -680,7 +689,9 @@ def _run_decision_cycle(
         len(transfer_plan.transfers_in),
         transfer_plan.hits_taken,
         xi_solution.total_xpts,
-        squad_solution.squad.loc[squad_solution.squad["id"] == xi_solution.captain_id, "web_name"].values[0]
+        squad_solution.squad.loc[
+            squad_solution.squad["id"] == xi_solution.captain_id, "web_name"
+        ].values[0]
         if xi_solution.captain_id else "?",
     )
 

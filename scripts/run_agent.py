@@ -27,8 +27,14 @@ from optimiser.chips import Chip
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="FPL autonomous agent")
     p.add_argument("--dry-run", action="store_true", default=None, help="Override DRY_RUN=true")
-    p.add_argument("--live", action="store_true", default=False, help="Force live submission (overrides DRY_RUN)")
-    p.add_argument("--chip", choices=[c.value for c in Chip], default=None, help="Force a specific chip")
+    p.add_argument(
+        "--live", action="store_true", default=False,
+        help="Force live submission (overrides DRY_RUN)",
+    )
+    p.add_argument(
+        "--chip", choices=[c.value for c in Chip], default=None,
+        help="Force a specific chip",
+    )
     p.add_argument("--season", default="2026-27", help="Season string (default: 2026-27)")
     p.add_argument("--json-out", type=Path, default=None, help="Write decision JSON to this path")
     return p.parse_args()

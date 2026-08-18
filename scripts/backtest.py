@@ -580,12 +580,17 @@ def run_backtest(
                         config=_BACKTEST_CONFIG,
                     )
                     new_squad_ids = solution.squad["id"].tolist()
-                    transfers_made = len([p for p in new_squad_ids if p not in set(current_squad_ids)])
+                    transfers_made = len(
+                        [p for p in new_squad_ids if p not in set(current_squad_ids)]
+                    )
                     hits = 0
                     squad_df = solution.squad
                     free_transfers = 1
                     chips_used.append((Chip.WILDCARD, gw))
-                    logger.info("GW%d: WILDCARD played — gain=%.1f xPts", gw, chip_rec.expected_gain)
+                    logger.info(
+                        "GW%d: WILDCARD played — gain=%.1f xPts",
+                        gw, chip_rec.expected_gain,
+                    )
 
                 elif chip_played == Chip.FREE_HIT:
                     fh_solution = optimise_squad(
@@ -603,12 +608,18 @@ def run_backtest(
                     squad_df = fh_solution.squad
                     free_hit_active = True
                     chips_used.append((Chip.FREE_HIT, gw))
-                    logger.info("GW%d: FREE HIT played — gain=%.1f xPts", gw, chip_rec.expected_gain)
+                    logger.info(
+                        "GW%d: FREE HIT played — gain=%.1f xPts",
+                        gw, chip_rec.expected_gain,
+                    )
 
                 else:
                     if chip_played in (Chip.BENCH_BOOST, Chip.TRIPLE_CAPTAIN):
                         chips_used.append((chip_played, gw))
-                        logger.info("GW%d: %s played — gain=%.1f xPts", gw, chip_played.value, chip_rec.expected_gain)
+                        logger.info(
+                            "GW%d: %s played — gain=%.1f xPts",
+                            gw, chip_played.value, chip_rec.expected_gain,
+                        )
 
                     transfer_plan = evaluate_transfers(
                         current_squad_ids=current_squad_ids,
@@ -627,7 +638,10 @@ def run_backtest(
                     hits = transfer_plan.hits_taken
                     squad_df = players[players["id"].isin(new_squad_ids)].copy()
                     expected_pos = {"GKP": 2, "DEF": 5, "MID": 5, "FWD": 3}
-                    actual_counts = squad_df["position"].value_counts().to_dict() if "position" in squad_df.columns else {}
+                    actual_counts = (
+                        squad_df["position"].value_counts().to_dict()
+                        if "position" in squad_df.columns else {}
+                    )
                     if len(squad_df) != 15 or actual_counts != expected_pos:
                         logger.warning(
                             "GW%d: squad_df has %d players (pos=%s) — rebuilding from scratch",
@@ -654,8 +668,14 @@ def run_backtest(
                 squad_df, projections, gw, season=season, config=_BACKTEST_CONFIG
             )
         except RuntimeError as e:
-            pos_counts = squad_df["position"].value_counts().to_dict() if "position" in squad_df.columns else {}
-            logger.error("GW%d: starting XI infeasible — squad size=%d pos=%s — %s", gw, len(squad_df), pos_counts, e)
+            pos_counts = (
+                squad_df["position"].value_counts().to_dict()
+                if "position" in squad_df.columns else {}
+            )
+            logger.error(
+                "GW%d: starting XI infeasible — squad size=%d pos=%s — %s",
+                gw, len(squad_df), pos_counts, e,
+            )
             continue
         starting_ids = xi_solution.starting_xi["id"].tolist()
         captain_id = xi_solution.captain_id
@@ -715,7 +735,9 @@ def run_backtest(
             "hit_penalty": hit_penalty,
             "net_pts": net_pts,
             "captain": captain_name,
-            "squad_cost": round(squad_df["now_cost"].sum() if "now_cost" in squad_df.columns else 0, 1),
+            "squad_cost": round(
+                squad_df["now_cost"].sum() if "now_cost" in squad_df.columns else 0, 1
+            ),
             "transfers_made": transfers_made,
             "chip_played": chip_played.value if chip_played else None,
             "free_transfers_start": free_transfers,
