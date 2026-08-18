@@ -70,6 +70,7 @@ def pick_captain(
     var_by_id: Mapping[int, float],
     mu: float,
     fixture_groups: Sequence[pd.DataFrame],
+    semidev_by_id: Mapping[int, float] | None = None,
 ) -> int:
     """Pure core. ``fixture_groups``: one DataFrame per real fixture (index=
     scenario id, columns=player_id restricted to ``candidate_ids``, values=
@@ -81,6 +82,26 @@ def pick_captain(
         raise ValueError("pick_captain: candidate_ids must be non-empty")
     if mu == 0.0:
         return max(candidate_ids, key=lambda pid: xpts_by_id.get(pid, 0.0))
+
+    # One-SIDED risk, when the caller can supply it (2026-08-18). Doubling a
+    # player doubles his contribution to whichever tail the manager cares
+    # about, and those are different players: at a negative `mu` a symmetric
+    # spread measure penalises the biggest scorer hardest and hands the armband
+    # to the least consequential man in the XI -- it was captaining a 2.2-xPts
+    # midfielder. `semidev_by_id` is the upper semi-deviation when chasing
+    # upside and the lower one when avoiding blanks, matching
+    # optimiser.scoring.risk_adjusted_score exactly so the squad and the
+    # captain are chosen on the same definition of risk.
+    #
+    # The covariance path below stays for the symmetric case: it is the only
+    # thing that sees a captain sharing a fixture with his own teammates, and
+    # computing genuine one-sided team-total semi-deviations would need the
+    # per-scenario totals rather than their variance.
+    if semidev_by_id is not None:
+        return max(
+            candidate_ids,
+            key=lambda pid: xpts_by_id.get(pid, 0.0) + mu * semidev_by_id.get(pid, 0.0),
+        )
 
     candidate_set = set(candidate_ids)
     grouped_pid_data: dict[int, tuple[pd.Series, float, pd.Series]] = {}
@@ -189,6 +210,7 @@ def scenario_based_captain(
     xpts_by_id: Mapping[int, float],
     var_by_id: Mapping[int, float],
     mu: float,
+    semidev_by_id: Mapping[int, float] | None = None,
 ) -> int:
     """Orchestrator: skips the DB entirely at ``mu == 0`` (the common case —
     balanced risk mode, or any caller not opting into risk-aware captaincy),
@@ -198,5 +220,10 @@ def scenario_based_captain(
         raise ValueError("scenario_based_captain: candidate_ids must be non-empty")
     if mu == 0.0:
         return max(candidate_ids, key=lambda pid: xpts_by_id.get(pid, 0.0))
+    if semidev_by_id is not None:
+        # No DB read needed: the one-sided measure is per player, not joint.
+        return pick_captain(
+            candidate_ids, xpts_by_id, var_by_id, mu, [], semidev_by_id=semidev_by_id
+        )
     fixture_groups = load_fixture_groups(season, gameweek, candidate_ids)
     return pick_captain(candidate_ids, xpts_by_id, var_by_id, mu, fixture_groups)

@@ -893,6 +893,7 @@ def project_cold_start(
 
         estimation_se = float("nan")
         upside = float("nan")
+        downside = float("nan")
         has_prior = r.appearances >= MIN_PRIOR_APPEARANCES
         if has_prior:
             mean_played = max(_MIN_XPTS, float(r.ppg_played)) + pen_mean
@@ -911,8 +912,18 @@ def project_cold_start(
                 upside_played = float(
                     np.sqrt(np.mean(np.maximum(0.0, own_points - m_played) ** 2))
                 )
+                # And the mirror: how bad his BAD weeks are. A risk-averse
+                # manager wants a player who rarely blanks, which is a
+                # different question from who rarely hauls -- and the two come
+                # apart. Rice and Gabriel have almost the same upside (2.93 vs
+                # 2.83) and very different downside (1.81 vs 2.82).
+                downside_played = float(
+                    np.sqrt(np.mean(np.minimum(0.0, own_points - m_played) ** 2))
+                )
             else:
-                upside_played = float(np.sqrt(max(0.0, var_played) / 2.0))
+                symmetric = float(np.sqrt(max(0.0, var_played) / 2.0))
+                upside_played = symmetric
+                downside_played = symmetric
             p_appear = 1.0
             if has_p_appear and not pd.isna(r.p_appear):
                 p_appear = float(r.p_appear)
@@ -924,6 +935,7 @@ def project_cold_start(
             # Same per-appearance -> per-gameweek scaling the mean takes. A
             # week he does not feature is not upside, so it simply scales down.
             upside = p_appear * upside_played
+            downside = p_appear * downside_played
             start_prob = float(r.starts_rate)
             source = "prior_season"
             # §19: how well we know this player's MEAN, not how spiky he is.
@@ -995,6 +1007,7 @@ def project_cold_start(
             # NaN for tiers with no per-appearance samples of their own; filled
             # from the symmetric assumption below.
             "upside": upside,
+            "downside": downside,
             # NaN for the pooled/synthetic tiers; filled in below once the
             # measured prior-season scale is known.
             "estimation_se": estimation_se if source == "prior_season" else float("nan"),
@@ -1050,6 +1063,7 @@ def project_cold_start(
             "proj_source": base["proj_source"],
             "position": base.get("position"),
             "upside": base.get("upside", float("nan")) * mult,
+            "downside": base.get("downside", float("nan")) * mult,
             # SE is in the same units as xpts, so it scales with the fixture
             # multiplier exactly as the mean does. Dropping it here would have
             # silently disabled the per-player shrinkage for every horizon
@@ -1060,7 +1074,8 @@ def project_cold_start(
 
 
 def _fill_missing_upside(df: pd.DataFrame) -> pd.DataFrame:
-    """Upside for players with no per-appearance samples of their own.
+    """Upside and downside for players with no per-appearance samples of their
+    own.
 
     A pooled or synthetic estimate says nothing about whether THIS player
     hauls, so assuming no special skew is the honest default: for a symmetric
@@ -1069,14 +1084,16 @@ def _fill_missing_upside(df: pd.DataFrame) -> pd.DataFrame:
     xpts directly, and mixing points with points-squared across players would
     quietly wreck the comparison.
     """
-    if df.empty or "upside" not in df.columns:
+    if df.empty or "xpts_var" not in df.columns:
         return df
     out = df.copy()
-    missing = out["upside"].isna()
-    if missing.any():
-        out.loc[missing, "upside"] = (
-            np.sqrt(out.loc[missing, "xpts_var"].clip(lower=0.0)) / np.sqrt(2.0)
-        )
+    symmetric = np.sqrt(out["xpts_var"].clip(lower=0.0)) / np.sqrt(2.0)
+    for col in ("upside", "downside"):
+        if col not in out.columns:
+            out[col] = np.nan
+        missing = out[col].isna()
+        if missing.any():
+            out.loc[missing, col] = symmetric[missing]
     return out
 
 

@@ -63,6 +63,31 @@ def _multi_gw_var(projections: pd.DataFrame, horizon: int) -> pd.Series:
     return subset.groupby("player_id")["xpts_var"].sum()
 
 
+def _multi_gw_semidev(projections: pd.DataFrame, horizon: int, col: str) -> pd.Series:
+    """Per-player summed upper/lower semi-deviation over the horizon.
+
+    Summed, like ``xpts``, rather than combined in quadrature: these feed a
+    LINEAR objective alongside summed points, so they have to be on the same
+    footing. Treating them as independent and adding variances would make a
+    five-gameweek risk term incomparable to a five-gameweek points term.
+    """
+    if col not in projections.columns:
+        return pd.Series(dtype=float)
+    gws = sorted(projections["gameweek"].unique())[:horizon]
+    subset = projections[projections["gameweek"].isin(gws)]
+    return subset.groupby("player_id")[col].sum()
+
+
+def _semidev_by_id(df, mu: float) -> dict | None:
+    """The tail that matches the appetite: upper semi-deviation when chasing
+    upside, lower when avoiding blanks. ``None`` when the frame carries
+    neither, so captaincy keeps its covariance-aware behaviour."""
+    col = "upside" if mu >= 0 else "downside"
+    if col not in df.columns or df[col].isna().all():
+        return None
+    return dict(zip(df["id"], df[col].fillna(0.0), strict=True))
+
+
 def optimise_squad(
     projections: pd.DataFrame,
     players: pd.DataFrame,
@@ -114,6 +139,17 @@ def optimise_squad(
 
     df["xpts_total"] = df["id"].map(xpts_by_player).fillna(0.0)
     df["var_total"] = df["id"].map(var_by_player).fillna(0.0)
+    # One-sided risk over the same horizon (2026-08-18). Without these the
+    # objective falls back to variance, which is symmetric and so cannot tell a
+    # player with big good weeks from one with big bad weeks -- the distinction
+    # the whole risk axis exists to express.
+    for _col in ("upside", "downside"):
+        # A player absent from the projections has no points either, so a
+        # zero risk term is both neutral and never selected on. NaN here would
+        # propagate straight into the objective and make the ILP nonsense.
+        df[_col] = df["id"].map(
+            _multi_gw_semidev(projections, horizon, _col)
+        ).astype(float).fillna(0.0)
 
     lam, mu = lambda_mu_for_risk_level(
         cfg.risk_level, cfg.max_ownership_differential, cfg.mu_baseline, cfg.mu_range
@@ -124,8 +160,11 @@ def optimise_squad(
     else:
         df["eo_pct"] = 0.0
     df["effective_score"] = [
-        risk_adjusted_score(x, v, e, lam, mu)
-        for x, v, e in zip(df["xpts_total"], df["var_total"], df["eo_pct"], strict=True)
+        risk_adjusted_score(x, v, e, lam, mu, up, down)
+        for x, v, e, up, down in zip(
+            df["xpts_total"], df["var_total"], df["eo_pct"],
+            df["upside"], df["downside"], strict=True,
+        )
     ]
 
     if current_squad_ids:
@@ -260,7 +299,8 @@ def optimise_squad(
         xpts_by_id = dict(zip(df["id"], df["xpts_total"], strict=True))
         var_by_id = dict(zip(df["id"], df["var_total"], strict=True))
         captain_id = scenario_based_captain(
-            season, target_gw, list(starting_ids), xpts_by_id, var_by_id, mu
+            season, target_gw, list(starting_ids), xpts_by_id, var_by_id, mu,
+            semidev_by_id=_semidev_by_id(df, mu),
         )
         if captain_id == vice_id:
             remaining = [pid for pid in starting_ids if pid != captain_id]
@@ -412,7 +452,8 @@ def optimise_starting_xi(
         xpts_by_id = dict(zip(df["id"], df["xpts"], strict=True))
         var_by_id = dict(zip(df["id"], df["xpts_var"], strict=True))
         captain_id = scenario_based_captain(
-            season, gw, list(starting_ids), xpts_by_id, var_by_id, mu
+            season, gw, list(starting_ids), xpts_by_id, var_by_id, mu,
+            semidev_by_id=_semidev_by_id(df, mu),
         )
         if captain_id == vice_id:
             remaining = [pid for pid in starting_ids if pid != captain_id]

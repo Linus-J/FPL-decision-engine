@@ -79,6 +79,7 @@ def risk_adjusted_score(
     lam: float,
     mu: float,
     upside: float | None = None,
+    downside: float | None = None,
 ) -> float:
     """Per-player-per-GW ILP objective coefficient, replacing raw xpts.
     Linear in the selection variable, so it drops into the existing
@@ -102,7 +103,19 @@ def risk_adjusted_score(
     points x points-squared. The scale of ``mu`` differs accordingly, which is
     why ``OptimiserConfig.mu_range`` moved with this change.
     """
-    risk_term = xpts_var if upside is None else upside
+    # Which SIDE of the distribution the appetite is about (2026-08-18).
+    # Chasing risk means wanting big good weeks; avoiding it means wanting few
+    # bad ones, and those are different players. Penalising upside instead --
+    # which is what a single risk term does -- makes a risk-averse persona
+    # select against GOOD players rather than against blank-prone ones, so its
+    # squads were contrasting but useless.
+    chosen = upside if mu >= 0 else downside
+    # NaN is "not measured", not "zero" -- and left alone it propagates through
+    # the whole ILP objective and silently produces a meaningless solution.
+    if chosen is None or chosen != chosen:
+        risk_term = xpts_var
+    else:
+        risk_term = chosen
     return xpts * differential_multiplier(eo_pct, lam) + mu * risk_term
 
 
@@ -143,14 +156,16 @@ def add_effective_score(
     else:
         eo_pct = pd.Series(0.0, index=out.index)
 
-    upside = (
-        out["upside"] if "upside" in out.columns
-        else pd.Series([None] * len(out), index=out.index)
-    )
+    def _col(name):
+        if name in out.columns:
+            return out[name]
+        return pd.Series([None] * len(out), index=out.index)
+
     out["effective_score"] = [
-        risk_adjusted_score(xpts, var, eo, lam, mu, up)
-        for xpts, var, eo, up in zip(
-            out["xpts"], out["xpts_var"], eo_pct, upside, strict=True
+        risk_adjusted_score(xpts, var, eo, lam, mu, up, down)
+        for xpts, var, eo, up, down in zip(
+            out["xpts"], out["xpts_var"], eo_pct,
+            _col("upside"), _col("downside"), strict=True,
         )
     ]
     return out
