@@ -130,12 +130,16 @@ def test_label_for_gw_falls_back_when_gameweek_missing(session):
 
 def test_xpts_entry_uses_distribution_when_available():
     dist = {1: {"p10": 1.0, "median": 2.0, "mean": 2.5, "p90": 4.0}}
-    assert payload_module._xpts_entry(1, dist, fallback_mean=99.0) == dist[1]
+    assert payload_module._xpts_entry(1, dist, fallback_mean=99.0) == {
+        **dist[1], "approx": False
+    }
 
 
 def test_xpts_entry_falls_back_to_flat_mean_when_no_samples():
     entry = payload_module._xpts_entry(1, {}, fallback_mean=5.0)
-    assert entry == {"p10": 5.0, "median": 5.0, "mean": 5.0, "p90": 5.0}
+    assert entry == {
+        "p10": 5.0, "median": 5.0, "mean": 5.0, "p90": 5.0, "approx": True
+    }
 
 
 def test_xpts_entry_returns_none_when_nothing_available():
@@ -166,7 +170,9 @@ def test_build_squad_entries_orders_bench_gk_first_then_by_xpts():
     assert by_id[2]["bench_order"] == 1   # GK bench slot always first (despite lowest xPts)
     assert by_id[4]["bench_order"] == 2   # then outfield by xPts descending
     assert by_id[3]["bench_order"] == 3
-    assert by_id[1]["xpts"] == {"p10": 8.0, "median": 8.0, "mean": 8.0, "p90": 8.0}
+    assert by_id[1]["xpts"] == {
+        "p10": 8.0, "median": 8.0, "mean": 8.0, "p90": 8.0, "approx": True
+    }
 
 
 def test_build_top15_entries_takes_first_15_and_maps_team_short():
@@ -306,7 +312,8 @@ def test_real_monte_carlo_quantiles_take_precedence():
 
     real = {"p10": 1.0, "median": 4.0, "mean": 4.5, "p90": 9.0}
     out = _xpts_entry(7, {7: real}, fallback_mean=99.0, fallback_var=99.0)
-    assert out == real
+    assert out == {**real, "approx": False}
+    assert out["approx"] is False, "real quantiles must not be labelled approximate"
 
 
 def test_spread_is_derived_from_variance_when_samples_are_missing():
@@ -342,10 +349,79 @@ def test_zero_variance_still_collapses_to_a_point():
     from scripts.site_export.payload import _xpts_entry
 
     out = _xpts_entry(7, {}, fallback_mean=3.0, fallback_var=0.0)
-    assert out == {"p10": 3.0, "median": 3.0, "mean": 3.0, "p90": 3.0}
+    assert out == {
+        "p10": 3.0, "median": 3.0, "mean": 3.0, "p90": 3.0, "approx": True
+    }
 
 
 def test_no_projection_at_all_returns_none():
     from scripts.site_export.payload import _xpts_entry
 
     assert _xpts_entry(7, {}, fallback_mean=None, fallback_var=1.0) is None
+
+
+# --- the wiring, not just the unit (2026-08-18) -----------------------------
+#
+# `_xpts_entry` was tested thoroughly with `fallback_var`, and the squad path
+# passed it. The top-15 path did not, so every one of the fifteen rendered as
+# p10 == median == mean == p90 -- a zero-width bar -- while the unit tests all
+# passed. The gap was that `test_build_top15_entries_takes_first_15_and_maps_
+# team_short` only ever checked the team mapping.
+
+
+def _top15_frame():
+    return pd.DataFrame([
+        {"player_id": 1, "web_name": "A", "position": "MID", "team_id": 1,
+         "xpts_mean": 6.0, "xpts_var": 4.0},
+        {"player_id": 2, "web_name": "B", "position": "DEF", "team_id": 2,
+         "xpts_mean": 4.0, "xpts_var": 1.0},
+    ])
+
+
+def test_top15_entries_have_real_spread_from_variance():
+    entries = payload_module._build_top15_entries(
+        _top15_frame(), dist={}, team_names={1: "ARS", 2: "LIV"}
+    )
+    for entry in entries:
+        xpts = entry["xpts"]
+        assert xpts["p10"] < xpts["mean"] < xpts["p90"], (
+            "a top-15 bar of zero width claims a certainty that does not exist"
+        )
+
+
+def test_top15_spread_tracks_variance_rather_than_being_constant():
+    """Not merely non-zero: the wider-variance player must get the wider bar,
+    which is what proves the column is actually being read."""
+    entries = payload_module._build_top15_entries(
+        _top15_frame(), dist={}, team_names={1: "ARS", 2: "LIV"}
+    )
+    by_id = {e["player_id"]: e["xpts"] for e in entries}
+    wide = by_id[1]["p90"] - by_id[1]["p10"]
+    narrow = by_id[2]["p90"] - by_id[2]["p10"]
+    assert wide > narrow
+
+
+def test_top15_and_squad_agree_on_the_same_player():
+    """The two paths must summarise a player identically. They diverged once
+    because only one of them passed the variance through."""
+    frame = _top15_frame()
+    squad_df = pd.DataFrame([{
+        "player_id": 1, "web_name": "A", "position": "MID", "team_short": "ARS",
+        "now_cost": 7.0, "is_starting": True, "is_captain": False,
+        "is_vice_captain": False, "xpts": 6.0, "xpts_var": 4.0,
+    }])
+
+    top = payload_module._build_top15_entries(frame, {}, {1: "ARS"})[0]["xpts"]
+    squad = payload_module._build_squad_entries(squad_df, {})[0]["xpts"]
+    assert top == squad
+
+
+def test_approx_marks_the_normal_approximation():
+    """`median` equals `mean` under a symmetric normal by definition, not by
+    estimation, so the payload has to say which kind of summary it is."""
+    approx = payload_module._xpts_entry(1, {}, fallback_mean=5.0, fallback_var=4.0)
+    assert approx["approx"] is True
+    assert approx["median"] == approx["mean"]
+
+    real = {"p10": 1.0, "median": 4.0, "mean": 4.5, "p90": 9.0}
+    assert payload_module._xpts_entry(1, {1: real}, 99.0)["approx"] is False
