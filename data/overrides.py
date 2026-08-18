@@ -132,6 +132,76 @@ def load_p_leave_overrides() -> dict[int, float]:
     return {pid: entry["p_leave"] for pid, entry in load_rumoured_overrides().items()}
 
 
+def load_rotation_risk_overrides() -> dict[int, dict]:
+    """player_id -> {start_probability, reason, as_of}, from the `rotation_risk`
+    list.
+
+    A CEILING on a player's start probability, for the case the minutes model
+    provably cannot see: a place contested at the CURRENT club. The model
+    projects minutes from a player's own history, so a summer signing carries
+    his old club's status wholesale — Elliot Anderson arrived at Manchester
+    City on the back of 37 starts for Nottingham Forest and was handed
+    ``start_probability = 0.97`` on that basis, with no Manchester City minutes
+    in evidence anywhere.
+
+    Deliberately NOT a blanket new-signing discount, which the data does not
+    support. Measured across 1,149 player-seasons: prior-season regulars who
+    changed club retained 95.6-97.2% of the minutes share that stayers
+    retained, a difference indistinguishable from noise, and both groups
+    decline similarly (0.82 -> 0.65) through ordinary regression to the mean.
+    Competition for a place is specific, not general, so it is entered by hand
+    with a reason and a date rather than inferred.
+
+    Same failure handling as the rest of this module: a malformed entry or an
+    unmatched code is skipped and logged, never raised.
+    """
+    entries = _load_yaml().get("rotation_risk") or []
+    if not entries:
+        return {}
+    code_to_pid = _code_to_player_id()
+    result: dict[int, dict] = {}
+    for entry in entries:
+        try:
+            code = int(entry["code"])
+            start_probability = float(entry["start_probability"])
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning(
+                "transfer_overrides.yaml: malformed rotation_risk entry %r, skipping: %s",
+                entry, exc,
+            )
+            continue
+        if not 0.0 <= start_probability <= 1.0:
+            logger.warning(
+                "transfer_overrides.yaml: rotation_risk code %s has start_probability "
+                "%s outside [0, 1], skipping",
+                code, start_probability,
+            )
+            continue
+        pid = code_to_pid.get(code)
+        if pid is None:
+            logger.warning(
+                "transfer_overrides.yaml: rotation_risk code %s has no matching "
+                "current player, skipping",
+                code,
+            )
+            continue
+        result[pid] = {
+            "start_probability": start_probability,
+            "reason": entry.get("reason", ""),
+            "as_of": entry.get("as_of", ""),
+        }
+    return result
+
+
+def load_start_probability_caps() -> dict[int, float]:
+    """player_id -> capped start probability, the plain-float shape
+    ``optimiser.rotation_risk.apply_rotation_risk`` consumes."""
+    return {
+        pid: entry["start_probability"]
+        for pid, entry in load_rotation_risk_overrides().items()
+    }
+
+
 def log_rumoured_squad_members(squad_ids: list[int], players: pd.DataFrame) -> None:
     """Logs a warning naming the player + reason/as_of for every squad
     member present in the `rumoured` list. Deliberately log-only for this
