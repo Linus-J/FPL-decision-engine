@@ -145,11 +145,20 @@ def test_scoring_slot_rate_ignores_the_trivially_correct_zeros():
 
 # --- FBref pure mappers ------------------------------------------------------
 def test_map_summary_row_available_fields_and_derivations():
+    """Corrected 2026-08-18. This used to feed ``"Passes Att"``,
+    ``"Passes Cmp%"`` and ``"Performance Blocks"`` -- columns FBref's
+    match-summary table does not contain -- and assert they mapped. Inventing
+    the input is how the defect survived: in production those names matched
+    nothing, were silently omitted, and the ORM default of 0 stood in for data
+    the codebase believed it was collecting.
+
+    Every key below now comes from soccerdata's real parsed frame.
+    """
     raw = {
         "min": 90, "Performance Gls": 1, "Performance Ast": 0,
         "Performance CrdY": 1, "Performance TklW": 3, "Performance Int": 2,
-        "Performance Blocks": 1, "Take-Ons Succ": 2,
-        "Passes Att": 40, "Passes Cmp%": 88.5,
+        "Take-Ons Succ": 2,
+        "Performance Fls": 2, "Performance Off": 1, "Performance Crs": 4,
         "Performance Sh": 4, "Performance SoT": 1,          # → 3 off target
         "Performance PKatt": 1, "Performance PK": 0,        # → 1 missed
     }
@@ -158,12 +167,17 @@ def test_map_summary_row_available_fields_and_derivations():
     assert out["goals"] == 1
     assert out["tackles"] == 3
     assert out["dribbles"] == 2
-    assert out["passes"] == 40
-    assert out["pass_completion_pct"] == 88.5
+    assert out["fouls"] == 2
+    assert out["offsides"] == 1
+    assert out["open_play_crosses"] == 4
     assert out["shots_off_target"] == 3
     assert out["penalties_missed"] == 1
-    # unavailable metrics are omitted (ORM default 0 applies), not guessed
+    # Genuinely unavailable metrics are omitted (ORM default 0 applies), not
+    # guessed. `clearances` and `blocks` come from WhoScored's event stream;
+    # passing volume lives in FBref's separate "passing" stat type.
     assert "clearances" not in out
+    assert "blocks" not in out
+    assert "passes" not in out
     assert "big_chances_created" not in out
 
 

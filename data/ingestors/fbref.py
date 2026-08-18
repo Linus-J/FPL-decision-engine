@@ -19,12 +19,23 @@ touches the network. That live path is UNTESTED against a real browser here —
 Coverage reality (the sanity harness's tolerance; verified against real 25/26
 cached match pages 2026-07-25 — the "may need a one-line correction" above
 already applied once: the live column is "Performance TklW" i.e. tackles WON,
-not "Tkl"). Available → goals, assists, tackles(won), interceptions,
-take-ons, passing accuracy, cards, penalties, shots, saves. Not available →
-blocks, clearances, recoveries, crosses, key passes, big chances,
-errors-leading-to-goal/shot, own goals — the modern FBref summary table simply
-has no such columns (confirmed by inspecting the raw flattened headers, not
-assumed). Those default to 0.
+not "Tkl"). Corrected 2026-08-18 against soccerdata's own parsed frame, which is the only
+thing that matters here -- the previous list was wrong in both directions.
+
+Available → goals, assists, tackles(WON), interceptions, take-ons, cards,
+penalties (taken/won/missed), shots, saves, AND -- previously read as
+unavailable and simply discarded -- fouls, offsides, crosses, own goals.
+
+Not available → blocks, clearances, recoveries (WhoScored's event stream
+supplies these), key passes, big chances, errors-leading-to-goal/shot.
+
+**Passing accuracy is NOT available**, despite this docstring having claimed it
+was and FBREF_SUMMARY_MAP having mapped it. soccerdata's
+``read_player_match_stats`` accepts only ``['summary', 'keepers']``; there is
+no match-level passing table to fetch. That matters more than it looks: pass
+completion is worth up to +6 BPS, the largest positive component available to
+an outfielder, and its absence is why defenders are under-credited for bonus
+once the tackle count is counted correctly (see data/ingestors/whoscored.py).
 """
 
 from __future__ import annotations
@@ -62,11 +73,30 @@ FBREF_SUMMARY_MAP: dict[str, str] = {
     "red_cards": "Performance CrdR",
     "tackles": "Performance TklW",        # summary only carries tackles WON
     "interceptions": "Performance Int",
-    "blocks": "Performance Blocks",
     "dribbles": "Take-Ons Succ",          # successful take-ons
-    "passes": "Passes Att",
-    "pass_completion_pct": "Passes Cmp%",
+    # 2026-08-18: five BPS inputs that were in the downloaded page all along
+    # and simply never read -- the same shape as the npg90 finding in the
+    # 2026-08-16 audit. Verified against the real cached match pages, whose
+    # flattened summary header is exactly:
+    #   Player # Nation Pos Age Min | Performance Gls Ast PK PKatt Sh SoT
+    #   CrdY CrdR Fls Fld Off Crs TklW Int OG PKwon PKcon
+    "fouls": "Performance Fls",              # BPS -1 each
+    "offsides": "Performance Off",           # BPS -1 each
+    "open_play_crosses": "Performance Crs",  # BPS +1 each
+    "own_goals": "Performance OG",           # BPS -6
+    "penalties_conceded": "Performance PKcon",  # BPS -3
 }
+# REMOVED 2026-08-18, and this is why every one of them read 0 on all 11,182
+# rows: `map_summary_row` matches column names EXACTLY, and none of these
+# columns exists in FBref's match-summary table --
+#   "passes": "Passes Att", "pass_completion_pct": "Passes Cmp%",
+#   "blocks": "Performance Blocks"
+# A mapping that matches nothing is silently omitted and the ORM default (0)
+# applies, so a field the codebase believed it collected was indistinguishable
+# from a genuine zero. `blocks` does get populated -- by WhoScored's
+# BlockedPass events, not from here. Passing volume and completion are simply
+# not in this table; they live in FBref's separate "passing" stat type, which
+# this ingest does not fetch.
 # fields needing a small derivation from two summary columns
 _SUMMARY_SHOTS = "Performance Sh"
 _SUMMARY_SOT = "Performance SoT"
@@ -478,16 +508,37 @@ def _assemble_rows(  # pragma: no cover - exercised by the live path
     return rows, unmatched
 
 
+# Key columns -- never part of the update payload below.
+_EVENT_KEY_COLS = ("player_id", "season", "game_id")
+
+
 def _write_events(rows: list[dict]) -> int:  # pragma: no cover - live DB write
+    """Upsert match events, UPDATING rows that already exist.
+
+    This was ``on_conflict_do_nothing`` until 2026-08-18, which made the whole
+    ingest write-once: re-running it could never correct anything. That is not
+    a theoretical concern -- it is why fixing the summary-column mapping the
+    same day backfilled almost nothing. FBref's table carries fouls, offsides
+    and crosses for ~5,000 player-rows a season and the DB had 169, because
+    every existing row silently declined the update.
+
+    Only the fields FBref actually SUPPLIED are updated. ``map_summary_row``
+    omits what it cannot find, so columns FBref has no opinion on -- notably
+    clearances, blocks and recoveries, which come from WhoScored's event
+    stream -- are absent from ``values`` and therefore left alone. Without that
+    restriction a re-ingest would zero WhoScored's contribution.
+    """
     db = get_session()
     written = 0
     try:
         for values in rows:
+            updatable = {k: v for k, v in values.items() if k not in _EVENT_KEY_COLS}
             stmt = (
                 insert(PlayerMatchEvents)
                 .values(**values)
-                .on_conflict_do_nothing(
-                    index_elements=["player_id", "season", "game_id"]
+                .on_conflict_do_update(
+                    index_elements=list(_EVENT_KEY_COLS),
+                    set_=updatable,
                 )
             )
             written += db.execute(stmt).rowcount or 0
