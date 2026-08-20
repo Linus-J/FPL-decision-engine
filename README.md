@@ -5,16 +5,6 @@ player's points as a **distribution** rather than a number, and solves for the
 squad, transfers, captain and chip timing that maximise expected points over a
 rolling horizon. Then it explains itself and hands you a team sheet.
 
-**It cannot submit a team, and that is deliberate.** There is no login, no
-credentials, no `--live` flag and no submission module — the capability was
-removed in August 2026 rather than left switched off, because a flag that turns
-autonomous play back on is a flag that can be set by accident. The engine
-decides; you review the reasoning and enter the squad yourself.
-
-That trade is the point of the project. An engine that has to convince a human
-each week has to be able to *show its work*, and most of what is interesting
-here is the machinery for doing that.
-
 ---
 
 ## What it actually does
@@ -229,9 +219,7 @@ bash deploy/install.sh
 
 ---
 
-## Known limitations
-
-Stated plainly, because the engine's job is to be checkable.
+## Limitations
 
 - **Squad-level correlation is unmodelled.** The objective sums per-player
   variances as if independent, so it cannot see that a keeper and his own
