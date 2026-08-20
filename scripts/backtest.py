@@ -16,10 +16,16 @@ logging.basicConfig(
 import pandas as pd
 from sqlalchemy import text
 
-from config.strategy import OPTIMISER, SQUAD, TRANSFERS
+from config.strategy import OPTIMISER, SQUAD, TRANSFERS, OptimiserConfig
 from data.db import get_session
 from optimiser.chips import Chip, recommend_chip
-from optimiser.squad import STARTING_MAX, STARTING_MIN, optimise_squad, optimise_starting_xi
+from optimiser.squad import (
+    STARTING_MAX,
+    STARTING_MIN,
+    optimise_squad,
+    optimise_squad_joint,
+    optimise_starting_xi,
+)
 from optimiser.transfers import evaluate_transfers, roll_forward_free_transfers
 from projection import assemble, cold_start
 from projection.minutes_model import train as train_minutes
@@ -171,6 +177,8 @@ def _build_gw_projections(
     defcon_field_shares: dict,
     n_scenarios: int = assemble.DEFAULT_N_SCENARIOS,
     seed: int = 42,
+    season: str | None = None,
+    sample_sink: list | None = None,
 ) -> pd.DataFrame:
     """P10: MC-assembled per-fixture projections (real odds-implied λ per
     horizon GW — superseding P0's ``fixture_multiplier`` heuristic, D3's
@@ -189,6 +197,7 @@ def _build_gw_projections(
         history, all_stats, minutes_model, target_gw, horizon,
         match_odds, defcon_events, defcon_field_shares,
         n_scenarios=n_scenarios, seed=seed,
+        season=season, sample_sink=sample_sink,
     )
     if proj.empty:
         return proj
@@ -932,6 +941,142 @@ def run_naive_xi_backtest(
             "Naive-XI backtest complete: GW%d–%d | avg actual=%.1f | avg xPts=%.1f",
             df["gameweek"].min(), df["gameweek"].max(),
             df["actual_pts"].mean(), df["predicted_xpts"].mean(),
+        )
+    return df
+
+
+def run_rebuild_backtest(
+    season: str = "2025-26",
+    start_gw: int = 6,
+    end_gw: int = 38,
+    horizon: int | None = None,
+    budget: float = SQUAD.budget_total,
+    score_2627: bool = True,
+    config: OptimiserConfig | None = None,
+) -> pd.DataFrame:
+    """The calibration instrument for covariance-aware selection (Objective v2).
+
+    Every gameweek, a fresh 15 is built at ``budget`` from that gameweek's
+    projections and scored on actual points. No transfers, no chips, no hits,
+    no carry-over -- each gameweek is an INDEPENDENT squad-selection
+    observation, which is exactly what a squad-level re-ranker changes.
+
+    ``run_naive_xi_backtest`` cannot serve this purpose: it fixes the initial
+    15 and re-optimises only the XI, so the re-ranker's candidate pool has
+    exactly one member there and a mu sweep over it would measure nothing.
+
+    Scoring goes through the same ``_score_squad`` the other two harnesses use,
+    including FPL's real auto-substitution rule, so the numbers stay
+    comparable.
+
+    Also reports ``n_clubs_at_cap`` -- clubs filled to
+    ``SQUAD.max_players_per_club`` -- because pricing that concentration is
+    half of what the joint measure is meant to buy, and a mean-points column
+    alone would not show it moving.
+    """
+    cfg = config or _BACKTEST_CONFIG
+    horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
+    all_stats = _load_all_stats(season)
+    available_gws = sorted(all_stats["gameweek"].unique())
+    match_odds = assemble.load_match_odds(season)
+    defcon_events = assemble.load_defcon_events(season)
+    defcon_field_shares = assemble.compute_defcon_field_shares(season)
+
+    if score_2627:
+        db = get_session()
+        try:
+            bonus_map = load_bonus_2627_map(db, season)
+        finally:
+            db.close()
+        all_stats = rescore_actuals(all_stats, bonus_map)
+
+    results = []
+    for gw in available_gws:
+        if gw < start_gw or gw > end_gw:
+            continue
+
+        history = all_stats[all_stats["gameweek"] < gw].copy()
+        if history.empty or len(history) < 50 or history["minutes"].nunique() < 2:
+            logger.info("GW%d: insufficient history, skipping", gw)
+            continue
+
+        players = _load_players_snapshot(season, gw)
+        if players.empty:
+            logger.warning("GW%d: no player snapshot, skipping", gw)
+            continue
+
+        minutes_model = train_minutes(df_override=history, save=False, fast=True)
+        sample_rows: list = []
+        projections = _build_gw_projections(
+            history=history, players=players, minutes_model=minutes_model,
+            target_gw=gw, horizon=horizon, all_stats=all_stats,
+            match_odds=match_odds, defcon_events=defcon_events,
+            defcon_field_shares=defcon_field_shares,
+            season=season, sample_sink=sample_rows,
+        )
+        if projections.empty:
+            logger.warning("GW%d: no projections, skipping", gw)
+            continue
+
+        players = players.merge(
+            projections[projections["gameweek"] == gw][["player_id", "start_probability"]],
+            left_on="id", right_on="player_id", how="left",
+        ).drop(columns=["player_id"], errors="ignore")
+        players["start_probability"] = players["start_probability"].fillna(0.5)
+
+        try:
+            solution = optimise_squad_joint(
+                projections, players,
+                season=season, gameweek=gw, sample_rows=sample_rows,
+                budget=budget, horizon=horizon, config=cfg,
+            )
+        except (RuntimeError, ValueError) as e:
+            logger.error("GW%d: squad build failed — %s", gw, e)
+            continue
+
+        try:
+            xi_solution = optimise_starting_xi(
+                solution.squad, projections, gw, season=season, config=cfg
+            )
+        except RuntimeError as e:
+            logger.error("GW%d: starting XI infeasible — %s", gw, e)
+            continue
+
+        squad_ids = [int(i) for i in solution.squad["id"]]
+        starting_ids = xi_solution.starting_xi["id"].tolist()
+        actual = _actual_gw_points(all_stats, gw, score_2627=score_2627)
+        actual_minutes = _actual_gw_minutes(all_stats, gw)
+        positions = dict(
+            zip(xi_solution.squad["id"], xi_solution.squad["position"], strict=False)
+        )
+        bench_order_map = dict(
+            zip(xi_solution.squad["id"], xi_solution.squad["bench_order"], strict=False)
+        )
+        actual_pts = _score_squad(
+            squad_ids, starting_ids, xi_solution.captain_id, actual,
+            vice_captain_id=xi_solution.vice_captain_id,
+            minutes=actual_minutes, positions=positions, bench_order=bench_order_map,
+        )
+
+        club_counts = solution.squad["team_id"].value_counts()
+        results.append({
+            "gameweek": gw,
+            "actual_pts": actual_pts,
+            "predicted_xpts": round(xi_solution.total_xpts, 2),
+            "total_cost": solution.total_cost,
+            "n_clubs_at_cap": int((club_counts >= SQUAD.max_players_per_club).sum()),
+        })
+        logger.info(
+            "GW%d: rebuilt 15 (£%.1fm), scored %s actual pts, %d club(s) at cap",
+            gw, solution.total_cost, actual_pts, results[-1]["n_clubs_at_cap"],
+        )
+
+    df = pd.DataFrame(results)
+    if not df.empty:
+        logger.info(
+            "Rebuild backtest complete: GW%d–%d | avg actual=%.1f | avg clubs at cap=%.2f",
+            df["gameweek"].min(), df["gameweek"].max(),
+            df["actual_pts"].mean(), df["n_clubs_at_cap"].mean(),
         )
     return df
 
