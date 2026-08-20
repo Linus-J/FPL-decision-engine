@@ -20,7 +20,18 @@ _ENV_FILE = _REPO_ROOT / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8")
+    # extra="ignore" is load-bearing, not tidiness (2026-08-20). The comment
+    # below on DRY_RUN/FPL_PASSWORD asserts "extra keys in .env are ignored,
+    # so an old file keeps working" -- but pydantic-settings defaults to
+    # extra="forbid", so that was never true. A .env still carrying the two
+    # keys removed with the submission path raised at IMPORT time, and
+    # `settings = Settings()` runs at module scope, so every entry point in
+    # the project died before main() -- found one day before the 2026-27 GW1
+    # deadline. Removing a field must not be able to brick the bot on
+    # machines whose .env still has it.
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore"
+    )
 
     fpl_email: str = Field(default="", alias="FPL_EMAIL")
     fpl_team_id: int = Field(default=0, alias="FPL_TEAM_ID")
