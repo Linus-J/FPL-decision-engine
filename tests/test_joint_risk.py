@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
+import pandas as pd
 import pytest
 
+from config.strategy import OPTIMISER
 from optimiser import joint_risk
+from optimiser.squad import SquadSolution
 
 
 def test_matrix_from_rows_aligns_players_to_columns():
@@ -198,3 +203,81 @@ def test_missing_player_raises_rather_than_scoring_zero():
             m, xi_ids=[1, 999], captain_id=1, bench_ids=[],
             bench_weights=(), gk_bench_weight=0.0,
         )
+
+
+# --- orchestrator --------------------------------------------------------
+
+
+def _solution(squad_ids: list[int], xi_ids: list[int], captain_id: int) -> SquadSolution:
+    squad = pd.DataFrame({
+        "id": squad_ids,
+        "position": ["MID"] * len(squad_ids),
+        "now_cost": [5.0] * len(squad_ids),
+    })
+    return SquadSolution(
+        squad=squad,
+        starting_xi=squad[squad["id"].isin(xi_ids)].copy(),
+        captain_id=captain_id,
+        vice_captain_id=xi_ids[-1],
+        total_xpts=0.0,
+        total_cost=float(len(squad_ids) * 5),
+        hits_taken=0,
+    )
+
+
+def test_mu_zero_returns_pool_head_without_touching_the_db(monkeypatch):
+    def explode(*a, **k):
+        raise AssertionError("mu == 0 must not open a database session")
+
+    monkeypatch.setattr(joint_risk, "load_scenario_matrices", explode)
+    pool = [_solution([1, 2], [1, 2], 1), _solution([1, 3], [1, 3], 1)]
+
+    chosen = joint_risk.covariance_aware_squad(
+        pool, mu=0.0, cfg=OPTIMISER, season="2026-27", gameweek=1
+    )
+    assert chosen is pool[0]
+
+
+def test_empty_samples_fall_back_to_pool_head(caplog):
+    pool = [_solution([1, 2], [1, 2], 1), _solution([1, 3], [1, 3], 1)]
+    with caplog.at_level(logging.WARNING):
+        chosen = joint_risk.covariance_aware_squad(
+            pool, mu=-1.0, cfg=OPTIMISER, matrices={}
+        )
+    assert chosen is pool[0]
+    assert "no scenario samples" in caplog.text.lower()
+
+
+def test_rerank_prefers_the_diversified_squad():
+    together, against = [6.0, 0.0, 6.0, 0.0], [0.0, 6.0, 0.0, 6.0]
+    m = _matrix({1: together, 2: together, 3: against})
+    pool = [_solution([1, 2], [1, 2], 1), _solution([1, 3], [1, 3], 1)]
+
+    chosen = joint_risk.covariance_aware_squad(
+        pool, mu=-1.0, cfg=OPTIMISER, matrices={1: m}
+    )
+    assert chosen is pool[1], "the joint re-rank must overturn the mean-ordered pool"
+
+
+def test_a_candidate_with_missing_draws_is_skipped_not_crashed():
+    m = _matrix({1: [1.0, 2.0], 2: [1.0, 2.0]})
+    pool = [_solution([1, 999], [1, 999], 1), _solution([1, 2], [1, 2], 1)]
+
+    chosen = joint_risk.covariance_aware_squad(
+        pool, mu=-1.0, cfg=OPTIMISER, matrices={1: m}
+    )
+    assert chosen is pool[1]
+
+
+def test_all_candidates_unscoreable_falls_back_to_pool_head():
+    m = _matrix({4: [1.0, 2.0]})
+    pool = [_solution([1, 2], [1, 2], 1)]
+    chosen = joint_risk.covariance_aware_squad(
+        pool, mu=-1.0, cfg=OPTIMISER, matrices={1: m}
+    )
+    assert chosen is pool[0]
+
+
+def test_empty_pool_is_an_error_not_a_silent_none():
+    with pytest.raises(ValueError, match="non-empty"):
+        joint_risk.covariance_aware_squad([], mu=-1.0, cfg=OPTIMISER, matrices={})

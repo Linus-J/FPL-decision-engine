@@ -237,3 +237,105 @@ def joint_score(
     if totals.size == 0:
         return 0.0
     return float(totals.mean()) + mu * semideviation(totals, upper=mu >= 0)
+
+
+def _bench_ids_in_slot_order(solution) -> list[int]:
+    """Bench, best first.
+
+    ``SquadSolution`` carries no bench order, but the MILP's slot weights are
+    strictly decreasing, so its own assignment is always "best available
+    outfielder in slot 1" (see ``squad._bench_objective``). Reconstructing by
+    descending projected points therefore reproduces the solver's ordering,
+    with the reserve keeper last because he has no queue to inherit from.
+    """
+    xi_ids = {int(i) for i in solution.starting_xi["id"]}
+    bench = solution.squad[~solution.squad["id"].isin(xi_ids)].copy()
+    outfield = bench[bench["position"] != "GKP"]
+    keeper = bench[bench["position"] == "GKP"]
+    if "xpts" in outfield.columns:
+        outfield = outfield.sort_values("xpts", ascending=False)
+    return [int(i) for i in outfield["id"]] + [int(i) for i in keeper["id"]]
+
+
+def rerank_pool(
+    pool, matrices: Mapping[int, ScenarioMatrix], mu: float, cfg, decay: float = 1.0
+) -> tuple[int, list[float]]:
+    """Index of the best candidate under the joint measure, plus every score.
+
+    A candidate containing a player with no draws is skipped rather than
+    scored, because a partial squad total is not comparable with a complete
+    one. ``float("-inf")`` marks those in the returned scores.
+    """
+    bench_weights = tuple(w * cfg.bench_value_weight for w in cfg.bench_slot_weights)
+    gk_weight = cfg.bench_gk_weight * cfg.bench_value_weight
+
+    scores: list[float] = []
+    for solution in pool:
+        try:
+            scores.append(
+                joint_score(
+                    matrices,
+                    xi_ids=[int(i) for i in solution.starting_xi["id"]],
+                    captain_id=int(solution.captain_id),
+                    bench_ids=_bench_ids_in_slot_order(solution),
+                    mu=mu,
+                    bench_weights=bench_weights,
+                    gk_bench_weight=gk_weight,
+                    decay=decay,
+                )
+            )
+        except KeyError as missing:
+            logger.debug("joint re-rank: candidate skipped, no draws for %s", missing)
+            scores.append(float("-inf"))
+
+    if not scores or all(s == float("-inf") for s in scores):
+        return 0, scores
+    return int(max(range(len(scores)), key=lambda i: scores[i])), scores
+
+
+def covariance_aware_squad(
+    pool,
+    mu: float,
+    cfg,
+    season: str | None = None,
+    gameweek: int | None = None,
+    matrices: Mapping[int, ScenarioMatrix] | None = None,
+    horizon: int = 1,
+    decay: float = 1.0,
+):
+    """Pick from ``pool`` under the joint measure; ``pool[0]`` when it cannot.
+
+    Short-circuits at ``mu == 0`` without opening a session, mirroring
+    ``captaincy.scenario_based_captain``. That is the live default today, so
+    this is a no-op until ``mu`` is re-calibrated off zero.
+    """
+    if not pool:
+        raise ValueError("covariance_aware_squad: pool must be non-empty")
+    if mu == 0.0:
+        return pool[0]
+
+    if matrices is None:
+        if season is None or gameweek is None:
+            raise ValueError("covariance_aware_squad needs season+gameweek, or matrices")
+        player_ids = sorted({int(i) for s in pool for i in s.squad["id"]})
+        matrices = load_scenario_matrices(
+            season, range(gameweek, gameweek + horizon), player_ids
+        )
+
+    if not matrices:
+        logger.warning(
+            "joint re-rank: no scenario samples for GW%s — falling back to the "
+            "mean-optimal squad. Expected before the first gameweek is played, "
+            "since the cold start produces no draws.",
+            gameweek,
+        )
+        return pool[0]
+
+    best, scores = rerank_pool(pool, matrices, mu, cfg, decay=decay)
+    if best != 0:
+        logger.info(
+            "joint re-rank moved the pick from pool rank 1 to rank %d "
+            "(%.3f vs %.3f under mu=%.3f)",
+            best + 1, scores[best], scores[0], mu,
+        )
+    return pool[best]
