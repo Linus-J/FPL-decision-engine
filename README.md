@@ -221,11 +221,18 @@ bash deploy/install.sh
 
 ## Limitations
 
-- **Squad-level correlation is unmodelled.** The objective sums per-player
-  variances as if independent, so it cannot see that a keeper and his own
-  centre-back share one clean sheet, and it will fill a club to the three-player
-  cap without pricing the concentration. Fixing it properly needs a quadratic
-  objective; the cheap path is sample-based re-ranking of the top-N solutions.
+- **Squad-level correlation is priced in selection, not in the solver.** The
+  projections model it correctly — team goals are drawn once per
+  fixture-scenario, so a keeper and his own centre-back share one clean sheet.
+  The MILP objective cannot see it: teammate covariance is quadratic in a 0/1
+  selection vector and a linear solver has no way to express it, so the
+  per-player risk term sums semi-deviations, which assumes teammates move in
+  perfect lockstep. `optimiser/joint_risk.py` closes the gap by re-ranking the
+  best N squads on the raw scenarios, where the correlation is empirical rather
+  than assumed. Its limit is the pool: it can reorder squads the mean objective
+  already liked, but it cannot find one that only looks good under the joint
+  measure — splitting a keeper from his own defence, say. Local search over
+  single-player swaps is the next step if that bound starts to bind.
 - **The unpriced-gameweek model carries most of the weight.** Bookmakers price
   one round ahead. Everything beyond that is the fitted Dixon-Coles model, and
   it is the largest single source of uncertainty in any multi-gameweek claim.

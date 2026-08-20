@@ -350,3 +350,40 @@ def test_optimise_squad_joint_raises_when_no_squad_is_feasible(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="no feasible squad"):
         squad_module.optimise_squad_joint(pd.DataFrame(), pd.DataFrame(), matrices={})
+
+
+# --- live wiring ---------------------------------------------------------
+
+
+def test_live_free_hit_path_uses_the_joint_optimiser():
+    """A calibrated mu only reaches the real bot if the decision engine calls
+    the joint entry point. It called optimise_squad directly until 2026-08-20,
+    which would have left the whole feature dormant live even at mu != 0."""
+    import inspect
+
+    from agent import decision_engine
+
+    src = inspect.getsource(decision_engine)
+    assert "optimise_squad_joint(" in src
+    assert "optimise_squad(" not in src.replace("optimise_squad_joint(", "")
+
+
+def test_joint_optimiser_at_mu_zero_returns_the_plain_optimum(monkeypatch):
+    """The live safety property: with the shipped defaults, wiring the joint
+    optimiser in cannot change a single pick."""
+    from optimiser import squad as squad_module
+
+    head = _solution([1, 2], [1, 2], 1)
+    monkeypatch.setattr(
+        squad_module, "generate_squad_pool",
+        lambda projections, players, n=10, **k: [head, _solution([1, 3], [1, 3], 1)],
+    )
+    monkeypatch.setattr(
+        joint_risk, "load_scenario_matrices",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not hit the DB")),
+    )
+
+    chosen = squad_module.optimise_squad_joint(
+        pd.DataFrame(), pd.DataFrame(), config=OPTIMISER, season="2026-27", gameweek=1,
+    )
+    assert chosen is head
