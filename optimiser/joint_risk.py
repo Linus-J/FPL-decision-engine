@@ -132,3 +132,108 @@ def load_scenario_matrices(
         if not m.is_empty:
             out[int(gw)] = m
     return out
+
+
+def semideviation(totals: np.ndarray, upper: bool) -> float:
+    """One-sided spread in points: ``sqrt(E[max(0, ±(x - mean))^2])``.
+
+    The same definition ``scoring.risk_adjusted_score`` uses per player, applied
+    to the squad total instead. Chasing risk means wanting big good weeks and
+    avoiding it means wanting few bad ones, and those are different squads.
+    """
+    if totals.size == 0:
+        return 0.0
+    mean = float(totals.mean())
+    deviation = totals - mean if upper else mean - totals
+    return float(np.sqrt(np.mean(np.maximum(0.0, deviation) ** 2)))
+
+
+def squad_totals(
+    matrix: ScenarioMatrix,
+    xi_ids: Sequence[int],
+    captain_id: int,
+    bench_ids: Sequence[int],
+    bench_weights: Sequence[float],
+    gk_bench_weight: float,
+) -> np.ndarray:
+    """The squad's total for each scenario, for ONE gameweek.
+
+    The same functional form as ``squad._bench_objective``: the starting XI at
+    full weight, the captain counted a second time, and each bench slot at its
+    own decreasing weight. Because the form matches, the MEAN of this equals
+    the linear objective's value for the same squad — which is what makes
+    ``mu = 0`` a provable no-op.
+
+    Raises ``KeyError`` for a player with no draws. That is deliberate: scoring
+    a missing player as zero would quietly rate him the worst pick available.
+    """
+    idx = matrix.column_index
+    total = np.zeros(matrix.values.shape[0], dtype=float)
+    for pid in xi_ids:
+        total += matrix.values[:, idx[int(pid)]]
+    total += matrix.values[:, idx[int(captain_id)]]
+    for slot, pid in enumerate(bench_ids):
+        weight = bench_weights[slot] if slot < len(bench_weights) else gk_bench_weight
+        total += weight * matrix.values[:, idx[int(pid)]]
+    return total
+
+
+def horizon_totals(
+    matrices: Mapping[int, ScenarioMatrix],
+    xi_ids: Sequence[int],
+    captain_id: int,
+    bench_ids: Sequence[int],
+    bench_weights: Sequence[float],
+    gk_bench_weight: float,
+    decay: float = 1.0,
+) -> np.ndarray:
+    """Decayed squad total per scenario, summed across the horizon.
+
+    The pool this re-ranks is chosen on a DECAYED MULTI-GAMEWEEK objective, so
+    scoring only the target gameweek would reorder it even at ``mu = 0`` and
+    destroy the no-op guarantee. Weights come from ``squad._decay_weights``, so
+    the two agree by construction rather than by coincidence.
+
+    Cross-gameweek correlation is zero here because each gameweek's fixtures
+    are drawn independently upstream, so the per-gameweek totals are simply
+    added. Real team form persists week to week; this does not model that.
+    """
+    from optimiser.squad import _decay_weights
+
+    gws = sorted(matrices)
+    if not gws:
+        return np.empty(0)
+    weights = _decay_weights(gws, decay)
+
+    per_gw = [
+        weights[gw] * squad_totals(
+            matrices[gw], xi_ids, captain_id, bench_ids, bench_weights, gk_bench_weight
+        )
+        for gw in gws
+    ]
+    depth = min(len(a) for a in per_gw)
+    return np.sum([a[:depth] for a in per_gw], axis=0)
+
+
+def joint_score(
+    matrices: Mapping[int, ScenarioMatrix],
+    xi_ids: Sequence[int],
+    captain_id: int,
+    bench_ids: Sequence[int],
+    mu: float,
+    bench_weights: Sequence[float],
+    gk_bench_weight: float,
+    decay: float = 1.0,
+) -> float:
+    """``mean + mu * semideviation`` of the decayed squad total across scenarios.
+
+    The side follows ``mu``'s sign, matching ``scoring.risk_adjusted_score``'s
+    ``chosen = upside if mu >= 0 else downside`` exactly, so squad, XI and
+    captain all price risk on one definition.
+    """
+    totals = horizon_totals(
+        matrices, xi_ids, captain_id, bench_ids, bench_weights, gk_bench_weight, decay
+    )
+    if totals.size == 0:
+        return 0.0
+    return float(totals.mean()) + mu * semideviation(totals, upper=mu >= 0)
