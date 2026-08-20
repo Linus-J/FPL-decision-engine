@@ -75,31 +75,36 @@ def sweep_mu_baseline(
     one-off calibration script, not something a test or the real decision path
     should ever do."""
     if harness == "rebuild":
+        logger.info(
+            "Running rebuild backtest GW%d-%d over %d candidate mu values ...",
+            start_gw, end_gw, len(candidates),
+        )
+        # ONE pass, not one per candidate. The pool and the Monte-Carlo
+        # assembly behind it depend only on the pure-mean objective, so every
+        # candidate mu re-ranks the SAME pool -- measured at roughly six times
+        # less work than re-running the harness per candidate, and it removes
+        # sampling noise between candidates as a side effect, since they are
+        # compared on identical draws.
+        raw = bt.run_rebuild_backtest(
+            season=season, start_gw=start_gw, end_gw=end_gw,
+            mu_candidates=list(candidates),
+        )
         rows = []
         for mu_baseline in candidates:
-            cfg = dataclasses.replace(
-                OPTIMISER, risk_level=0.0, mu_baseline=mu_baseline, mu_range=0.0
-            )
-            logger.info(
-                "Running rebuild backtest GW%d-%d, mu_baseline=%.3f ...",
-                start_gw, end_gw, mu_baseline,
-            )
-            df = bt.run_rebuild_backtest(
-                season=season, start_gw=start_gw, end_gw=end_gw, config=cfg
-            )
+            sub = raw[raw["mu_baseline"] == mu_baseline] if not raw.empty else raw
             rows.append({
                 "mu_baseline": mu_baseline,
                 "avg_actual_pts_per_gw": round(
-                    float(df["actual_pts"].mean()), 3
-                ) if not df.empty else float("nan"),
+                    float(sub["actual_pts"].mean()), 3
+                ) if not sub.empty else float("nan"),
                 "avg_clubs_at_cap": round(
-                    float(df["n_clubs_at_cap"].mean()), 3
-                ) if not df.empty else float("nan"),
-                "n_gws": len(df),
+                    float(sub["n_clubs_at_cap"].mean()), 3
+                ) if not sub.empty else float("nan"),
+                "n_gws": len(sub),
             })
             logger.info(
                 "mu_baseline=%.3f -> avg %.2f actual pts/GW over %d GWs",
-                mu_baseline, rows[-1]["avg_actual_pts_per_gw"], len(df),
+                mu_baseline, rows[-1]["avg_actual_pts_per_gw"], len(sub),
             )
         return pd.DataFrame(rows)
 

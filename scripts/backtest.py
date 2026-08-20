@@ -22,6 +22,7 @@ from optimiser.chips import Chip, recommend_chip
 from optimiser.squad import (
     STARTING_MAX,
     STARTING_MIN,
+    generate_squad_pool,
     optimise_squad,
     optimise_squad_joint,
     optimise_starting_xi,
@@ -953,6 +954,7 @@ def run_rebuild_backtest(
     budget: float = SQUAD.budget_total,
     score_2627: bool = True,
     config: OptimiserConfig | None = None,
+    mu_candidates: list[float] | None = None,
 ) -> pd.DataFrame:
     """The calibration instrument for covariance-aware selection (Objective v2).
 
@@ -973,6 +975,13 @@ def run_rebuild_backtest(
     ``SQUAD.max_players_per_club`` -- because pricing that concentration is
     half of what the joint measure is meant to buy, and a mean-points column
     alone would not show it moving.
+
+    ``mu_candidates`` sweeps several risk appetites in ONE pass, adding a
+    ``mu_baseline`` column. This is not a convenience: the pool and the
+    projections behind it depend only on the pure-mean objective, so running
+    the harness once per candidate would repeat every MILP solve and every
+    Monte-Carlo assembly once per candidate -- measured at roughly six times
+    the work for an identical answer.
     """
     cfg = config or _BACKTEST_CONFIG
     horizon = horizon or OPTIMISER.transfer_planning_horizon_gws
@@ -1024,52 +1033,31 @@ def run_rebuild_backtest(
         ).drop(columns=["player_id"], errors="ignore")
         players["start_probability"] = players["start_probability"].fillna(0.5)
 
+        mus = mu_candidates if mu_candidates is not None else [None]
+        mean_cfg = dataclasses.replace(
+            cfg, risk_level=0.0, mu_baseline=0.0, mu_range=0.0
+        )
         try:
-            solution = optimise_squad_joint(
-                projections, players,
-                season=season, gameweek=gw, sample_rows=sample_rows,
-                budget=budget, horizon=horizon, config=cfg,
+            shared_pool = generate_squad_pool(
+                projections, players, n=cfg.joint_rerank_pool_size,
+                budget=budget, horizon=horizon, config=mean_cfg,
             )
         except (RuntimeError, ValueError) as e:
-            logger.error("GW%d: squad build failed — %s", gw, e)
+            logger.error("GW%d: pool generation failed — %s", gw, e)
+            continue
+        if not shared_pool:
+            logger.error("GW%d: no feasible squad", gw)
             continue
 
-        try:
-            xi_solution = optimise_starting_xi(
-                solution.squad, projections, gw, season=season, config=cfg
+        for mu_baseline in mus:
+            gw_cfg = cfg if mu_baseline is None else dataclasses.replace(
+                cfg, risk_level=0.0, mu_baseline=mu_baseline, mu_range=0.0
             )
-        except RuntimeError as e:
-            logger.error("GW%d: starting XI infeasible — %s", gw, e)
-            continue
-
-        squad_ids = [int(i) for i in solution.squad["id"]]
-        starting_ids = xi_solution.starting_xi["id"].tolist()
-        actual = _actual_gw_points(all_stats, gw, score_2627=score_2627)
-        actual_minutes = _actual_gw_minutes(all_stats, gw)
-        positions = dict(
-            zip(xi_solution.squad["id"], xi_solution.squad["position"], strict=False)
-        )
-        bench_order_map = dict(
-            zip(xi_solution.squad["id"], xi_solution.squad["bench_order"], strict=False)
-        )
-        actual_pts = _score_squad(
-            squad_ids, starting_ids, xi_solution.captain_id, actual,
-            vice_captain_id=xi_solution.vice_captain_id,
-            minutes=actual_minutes, positions=positions, bench_order=bench_order_map,
-        )
-
-        club_counts = solution.squad["team_id"].value_counts()
-        results.append({
-            "gameweek": gw,
-            "actual_pts": actual_pts,
-            "predicted_xpts": round(xi_solution.total_xpts, 2),
-            "total_cost": solution.total_cost,
-            "n_clubs_at_cap": int((club_counts >= SQUAD.max_players_per_club).sum()),
-        })
-        logger.info(
-            "GW%d: rebuilt 15 (£%.1fm), scored %s actual pts, %d club(s) at cap",
-            gw, solution.total_cost, actual_pts, results[-1]["n_clubs_at_cap"],
-        )
+            _score_one_rebuild(
+                results, gw, mu_baseline, gw_cfg, shared_pool, projections,
+                players, sample_rows, season, horizon, all_stats, score_2627,
+            )
+        continue
 
     df = pd.DataFrame(results)
     if not df.empty:
@@ -1079,6 +1067,66 @@ def run_rebuild_backtest(
             df["actual_pts"].mean(), df["n_clubs_at_cap"].mean(),
         )
     return df
+
+
+def _score_one_rebuild(
+    results, gw, mu_baseline, cfg, shared_pool, projections, players,
+    sample_rows, season, horizon, all_stats, score_2627,
+) -> None:
+    """Score one (gameweek, mu) pair against the shared pool.
+
+    Split out so the sweep reuses one pool and one Monte-Carlo assembly across
+    every candidate mu, rather than repeating both per candidate.
+    """
+    try:
+        solution = optimise_squad_joint(
+            projections, players, pool=shared_pool,
+            season=season, gameweek=gw, sample_rows=sample_rows,
+            horizon=horizon, config=cfg,
+        )
+    except (RuntimeError, ValueError) as e:
+        logger.error("GW%d: squad build failed — %s", gw, e)
+        return
+
+    try:
+        xi_solution = optimise_starting_xi(
+            solution.squad, projections, gw, season=season, config=cfg
+        )
+    except RuntimeError as e:
+        logger.error("GW%d: starting XI infeasible — %s", gw, e)
+        return
+
+    squad_ids = [int(i) for i in solution.squad["id"]]
+    starting_ids = xi_solution.starting_xi["id"].tolist()
+    actual = _actual_gw_points(all_stats, gw, score_2627=score_2627)
+    actual_minutes = _actual_gw_minutes(all_stats, gw)
+    positions = dict(
+        zip(xi_solution.squad["id"], xi_solution.squad["position"], strict=False)
+    )
+    bench_order_map = dict(
+        zip(xi_solution.squad["id"], xi_solution.squad["bench_order"], strict=False)
+    )
+    actual_pts = _score_squad(
+        squad_ids, starting_ids, xi_solution.captain_id, actual,
+        vice_captain_id=xi_solution.vice_captain_id,
+        minutes=actual_minutes, positions=positions, bench_order=bench_order_map,
+    )
+
+    club_counts = solution.squad["team_id"].value_counts()
+    row = {
+        "gameweek": gw,
+        "actual_pts": actual_pts,
+        "predicted_xpts": round(xi_solution.total_xpts, 2),
+        "total_cost": solution.total_cost,
+        "n_clubs_at_cap": int((club_counts >= SQUAD.max_players_per_club).sum()),
+    }
+    if mu_baseline is not None:
+        row["mu_baseline"] = mu_baseline
+    results.append(row)
+    logger.info(
+        "GW%d (mu=%s): rebuilt 15 (£%.1fm), scored %s actual pts, %d club(s) at cap",
+        gw, mu_baseline, solution.total_cost, actual_pts, row["n_clubs_at_cap"],
+    )
 
 
 def _parse_args() -> argparse.Namespace:

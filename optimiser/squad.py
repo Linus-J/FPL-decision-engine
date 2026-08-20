@@ -246,6 +246,7 @@ def optimise_squad_joint(
     matrices=None,
     config: OptimiserConfig | None = None,
     pool_size: int | None = None,
+    pool: list[SquadSolution] | None = None,
     **kwargs,
 ) -> SquadSolution:
     """``optimise_squad``, then a covariance-aware re-rank of the pool.
@@ -258,6 +259,11 @@ def optimise_squad_joint(
     ``sample_rows`` is the backtest's route in: the ``sample_sink`` list from
     ``assemble.assemble_gw_projections``. Live callers pass ``season`` and
     ``gameweek`` instead, and the samples are read from ``projection_samples``.
+
+    ``pool`` lets a caller supply an already-generated pool. A calibration
+    sweep needs this: the pool depends only on the pure-mean objective, so
+    regenerating it for every candidate ``mu`` would repeat identical MILP
+    solves once per candidate -- 6x the work for the same answer.
     """
     from optimiser import joint_risk
 
@@ -269,7 +275,8 @@ def optimise_squad_joint(
     n = pool_size if pool_size is not None else cfg.joint_rerank_pool_size
     horizon = kwargs.get("horizon") or cfg.transfer_planning_horizon_gws
 
-    pool = generate_squad_pool(projections, players, n=n, config=mean_cfg, **kwargs)
+    if pool is None:
+        pool = generate_squad_pool(projections, players, n=n, config=mean_cfg, **kwargs)
     if not pool:
         raise RuntimeError("optimise_squad_joint: no feasible squad")
 

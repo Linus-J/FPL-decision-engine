@@ -71,6 +71,12 @@ def _stub_backtest_io(monkeypatch, gws):
     monkeypatch.setattr(bt, "_actual_gw_points", lambda *a, **k: {1: 5.0, 2: 4.0, 3: 3.0})
     monkeypatch.setattr(bt, "_actual_gw_minutes", lambda *a, **k: {1: 90, 2: 90, 3: 90})
     monkeypatch.setattr(bt, "_score_squad", lambda *a, **k: 42)
+    # The harness generates the pool itself now, so the sweep can reuse one
+    # pool across every candidate mu instead of rebuilding it per candidate.
+    monkeypatch.setattr(
+        bt, "generate_squad_pool",
+        lambda projections, players, n=10, **k: [_stub_solution()],
+    )
 
 
 def test_rebuild_harness_rebuilds_every_gameweek(monkeypatch):
@@ -189,3 +195,50 @@ def test_rebuild_harness_returns_empty_frame_when_no_gameweeks_qualify(
         season="2025-26", start_gw=20, end_gw=25, score_2627=False
     )
     assert df.empty
+
+
+def test_mu_candidates_reuse_one_pool_per_gameweek(monkeypatch):
+    """The whole reason mu_candidates exists. The pool depends only on the
+    pure-mean objective, so regenerating it per candidate would repeat every
+    MILP solve and every Monte-Carlo assembly once per candidate."""
+    pools_built = []
+    projections_built = []
+
+    monkeypatch.setattr(bt, "optimise_squad_joint", lambda p, pl, **k: _stub_solution())
+    _stub_backtest_io(monkeypatch, gws=[6, 7])
+
+    def counting_pool(projections, players, n=10, **k):
+        pools_built.append(n)
+        return [_stub_solution()]
+
+    def counting_projections(**k):
+        projections_built.append(k["target_gw"])
+        return pd.DataFrame({
+            "player_id": [1, 2, 3], "gameweek": [k["target_gw"]] * 3,
+            "xpts": [5.0, 4.0, 3.0], "start_probability": [1.0] * 3,
+        })
+
+    monkeypatch.setattr(bt, "generate_squad_pool", counting_pool)
+    monkeypatch.setattr(bt, "_build_gw_projections", counting_projections)
+
+    df = bt.run_rebuild_backtest(
+        season="2025-26", start_gw=6, end_gw=7, score_2627=False,
+        mu_candidates=[-1.0, -0.5, 0.0],
+    )
+
+    assert len(pools_built) == 2, "one pool per gameweek, not one per (gw, mu)"
+    assert len(projections_built) == 2, "one MC assembly per gameweek"
+    assert len(df) == 6, "3 mus x 2 gameweeks of results"
+    assert sorted(df["mu_baseline"].unique()) == [-1.0, -0.5, 0.0]
+
+
+def test_single_mu_run_has_no_mu_column(monkeypatch):
+    """Without mu_candidates the harness behaves as before, one row per GW."""
+    monkeypatch.setattr(bt, "optimise_squad_joint", lambda p, pl, **k: _stub_solution())
+    _stub_backtest_io(monkeypatch, gws=[6])
+
+    df = bt.run_rebuild_backtest(
+        season="2025-26", start_gw=6, end_gw=6, score_2627=False
+    )
+    assert "mu_baseline" not in df.columns
+    assert len(df) == 1

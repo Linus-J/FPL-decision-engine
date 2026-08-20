@@ -8,12 +8,14 @@ import scripts.calibrate_risk_constants as calib
 
 
 def test_rebuild_harness_is_selectable(monkeypatch):
-    seen = []
+    seen = {}
 
-    def fake_rebuild(season, start_gw, end_gw, config=None, **kwargs):
-        seen.append(config.mu_baseline)
+    def fake_rebuild(season, start_gw, end_gw, mu_candidates=None, **kwargs):
+        seen["mu_candidates"] = mu_candidates
+        seen["calls"] = seen.get("calls", 0) + 1
         return pd.DataFrame([
-            {"gameweek": 6, "actual_pts": 50.0, "n_clubs_at_cap": 1},
+            {"gameweek": 6, "actual_pts": 50.0, "n_clubs_at_cap": 1, "mu_baseline": 0.0},
+            {"gameweek": 6, "actual_pts": 44.0, "n_clubs_at_cap": 0, "mu_baseline": -0.5},
         ])
 
     monkeypatch.setattr(calib.bt, "run_rebuild_backtest", fake_rebuild)
@@ -22,41 +24,47 @@ def test_rebuild_harness_is_selectable(monkeypatch):
         "2025-26", 6, 6, candidates=[0.0, -0.5], harness="rebuild"
     )
 
-    assert seen == [0.0, -0.5], "each candidate mu must reach the harness"
+    assert seen["mu_candidates"] == [0.0, -0.5], "every candidate reaches the harness"
+    assert seen["calls"] == 1, "ONE pass, so all candidates share one pool"
     assert list(df["mu_baseline"]) == [0.0, -0.5]
-    assert "avg_clubs_at_cap" in df.columns
+    assert list(df["avg_actual_pts_per_gw"]) == [50.0, 44.0]
+    assert list(df["avg_clubs_at_cap"]) == [1.0, 0.0]
 
 
-def test_sweep_passes_config_rather_than_mutating_module_state(monkeypatch):
-    """The naive-XI sweep mutates bt._BACKTEST_CONFIG; the rebuild harness
-    takes config as an argument so repeated runs cannot interfere."""
+def test_rebuild_sweep_compares_candidates_on_identical_draws(monkeypatch):
+    """Running the harness once per candidate would give each its own Monte
+    Carlo draws, so a difference could be sampling noise rather than mu."""
+    calls = []
+    monkeypatch.setattr(
+        calib.bt, "run_rebuild_backtest",
+        lambda season, start_gw, end_gw, mu_candidates=None, **k: (
+            calls.append(mu_candidates),
+            pd.DataFrame([
+                {"gameweek": 6, "actual_pts": 1.0, "n_clubs_at_cap": 0, "mu_baseline": m}
+                for m in mu_candidates
+            ]),
+        )[1],
+    )
+    calib.sweep_mu_baseline(
+        "2025-26", 6, 6, candidates=[-1.0, 0.0, 0.5], harness="rebuild"
+    )
+    assert calls == [[-1.0, 0.0, 0.5]]
+
+
+def test_sweep_does_not_mutate_module_state_on_the_rebuild_path(monkeypatch):
+    """The naive-XI sweep mutates bt._BACKTEST_CONFIG; the rebuild path must
+    not, so repeated or nested runs cannot interfere."""
     original = calib.bt._BACKTEST_CONFIG
 
     monkeypatch.setattr(
         calib.bt, "run_rebuild_backtest",
-        lambda season, start_gw, end_gw, config=None, **k: pd.DataFrame(
-            [{"gameweek": 6, "actual_pts": 1.0, "n_clubs_at_cap": 0}]
+        lambda season, start_gw, end_gw, mu_candidates=None, **k: pd.DataFrame(
+            [{"gameweek": 6, "actual_pts": 1.0, "n_clubs_at_cap": 0, "mu_baseline": 0.3}]
         ),
     )
     calib.sweep_mu_baseline("2025-26", 6, 6, candidates=[0.3], harness="rebuild")
 
     assert calib.bt._BACKTEST_CONFIG is original
-
-
-def test_rebuild_sweep_holds_risk_level_and_mu_range_at_zero(monkeypatch):
-    """mu = mu_baseline + risk_level * mu_range, so the sweep only isolates
-    mu_baseline if the other two are pinned."""
-    seen = []
-    monkeypatch.setattr(
-        calib.bt, "run_rebuild_backtest",
-        lambda season, start_gw, end_gw, config=None, **k: (
-            seen.append((config.risk_level, config.mu_range)),
-            pd.DataFrame([{"gameweek": 6, "actual_pts": 1.0, "n_clubs_at_cap": 0}]),
-        )[1],
-    )
-    calib.sweep_mu_baseline("2025-26", 6, 6, candidates=[-0.5], harness="rebuild")
-
-    assert seen == [(0.0, 0.0)]
 
 
 def test_naive_xi_harness_is_still_the_default(monkeypatch):
@@ -74,7 +82,7 @@ def test_naive_xi_harness_is_still_the_default(monkeypatch):
 def test_empty_result_frame_does_not_crash_the_sweep(monkeypatch):
     monkeypatch.setattr(
         calib.bt, "run_rebuild_backtest",
-        lambda season, start_gw, end_gw, config=None, **k: pd.DataFrame(),
+        lambda season, start_gw, end_gw, mu_candidates=None, **k: pd.DataFrame(),
     )
     df = calib.sweep_mu_baseline(
         "2025-26", 6, 6, candidates=[0.0], harness="rebuild"
