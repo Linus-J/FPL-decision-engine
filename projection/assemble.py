@@ -757,6 +757,7 @@ def assemble_gw_projections(
     n_scenarios: int = DEFAULT_N_SCENARIOS,
     seed: int = 42,
     persist_samples: bool = False,
+    sample_sink: list | None = None,
     season: str | None = None,
     strength_rel: Mapping[int, Mapping[str, float]] | None = None,
     prior_rates: pd.DataFrame | None = None,
@@ -789,6 +790,13 @@ def assemble_gw_projections(
     Storage/retention policy is not addressed here (flagged, not solved —
     same open item P0 originally noted).
 
+    ``sample_sink`` (Objective v2, 2026-08-20): the same rows
+    ``persist_samples`` would write, appended to a caller-supplied list instead
+    of the database. This is how the backtest reaches the joint draws — it
+    calls this function hundreds of times per run and must not write to the DB,
+    but ``optimiser/joint_risk.py`` needs the raw per-scenario values to price
+    teammate covariance. Passing both is legal and does both.
+
     ``strength_rel`` (§2, optional): league-relative team strengths from
     ``load_team_strength_rel``, used to derive λ for fixtures the bookmakers
     have not priced. Odds always win where they exist. Omitting it (or passing
@@ -797,8 +805,11 @@ def assemble_gw_projections(
     means rather than values 0.25 goals a game below them."""
     if history.empty:
         return pd.DataFrame()
-    if persist_samples and not season:
-        raise ValueError("persist_samples=True needs season (for the ProjectionSample rows)")
+    if (persist_samples or sample_sink is not None) and not season:
+        raise ValueError(
+            "persist_samples/sample_sink need season (for the ProjectionSample rows)"
+        )
+    collect_samples = persist_samples or sample_sink is not None
     strength_rel = strength_rel or {}
 
     feat = _build_rolling_features(
@@ -934,7 +945,7 @@ def assemble_gw_projections(
                         "xpts": mean, "xpts_mean": mean, "xpts_var": var,
                         "start_probability": p2, "cs_probability": cs_p,
                     }
-                if persist_samples:
+                if collect_samples:
                     sample_rows.extend(
                         {
                             "player_id": pid, "gameweek": gw, "season": season,
@@ -942,13 +953,16 @@ def assemble_gw_projections(
                         }
                         for i, x in enumerate(arr)
                     )
-            if persist_samples:
+            if collect_samples:
                 scenario_offset += n_scenarios
 
         rows.extend(gw_row_by_pid.values())
 
-    if persist_samples and sample_rows:
-        _write_projection_samples(sample_rows)
+    if collect_samples and sample_rows:
+        if sample_sink is not None:
+            sample_sink.extend(sample_rows)
+        if persist_samples:
+            _write_projection_samples(sample_rows)
 
     return pd.DataFrame(rows)
 
