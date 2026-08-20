@@ -454,6 +454,13 @@ class OptimiserConfig:
     # docstrings as active. Reviving any of them starts with re-running this
     # calibration over the full GW6-38 window.
     mu_baseline: float = 0.0
+    # How many distinct squads the joint re-ranker considers
+    # (optimiser/joint_risk.py). Measured at 0.24s per MILP solve on the live
+    # GW1 frame, so 200 costs ~48s per gameweek -- affordable for a calibration
+    # sweep, since the pool is built once at mu=0 and reused for every
+    # candidate mu. Inert at mu=0, which is today's default: optimise_squad_joint
+    # short-circuits before generating anything.
+    joint_rerank_pool_size: int = 200
     # Widened 2026-08-18, together with the switch from variance to upside
     # semi-deviation as the risk term (optimiser/scoring.risk_adjusted_score).
     #

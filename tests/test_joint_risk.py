@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 import numpy as np
@@ -281,3 +282,71 @@ def test_all_candidates_unscoreable_falls_back_to_pool_head():
 def test_empty_pool_is_an_error_not_a_silent_none():
     with pytest.raises(ValueError, match="non-empty"):
         joint_risk.covariance_aware_squad([], mu=-1.0, cfg=OPTIMISER, matrices={})
+
+
+# --- squad.py entry point ------------------------------------------------
+
+
+def test_optimise_squad_joint_generates_the_pool_at_mu_zero(monkeypatch):
+    """The pool must always come from the pure-mean objective, so one pool per
+    gameweek can be reused across every mu in a sweep."""
+    from optimiser import squad as squad_module
+
+    seen = {}
+
+    def fake_pool(projections, players, n=10, **kwargs):
+        seen["config"] = kwargs.get("config")
+        seen["n"] = n
+        return [_solution([1, 2], [1, 2], 1)]
+
+    monkeypatch.setattr(squad_module, "generate_squad_pool", fake_pool)
+
+    cfg = dataclasses.replace(OPTIMISER, risk_level=-1.0, mu_baseline=0.0, mu_range=1.0)
+    squad_module.optimise_squad_joint(
+        pd.DataFrame(), pd.DataFrame(), config=cfg, pool_size=7, matrices={},
+    )
+
+    assert seen["n"] == 7
+    assert seen["config"].mu_baseline == 0.0
+    assert seen["config"].risk_level == 0.0, "pool must be built at mu=0"
+    assert seen["config"].mu_range == 0.0
+
+
+def test_optimise_squad_joint_builds_matrices_from_sample_rows(monkeypatch):
+    """The backtest route: samples arrive in memory, never via the DB."""
+    from optimiser import squad as squad_module
+
+    monkeypatch.setattr(
+        squad_module, "generate_squad_pool",
+        lambda projections, players, n=10, **k: [
+            _solution([1, 2], [1, 2], 1), _solution([1, 3], [1, 3], 1)
+        ],
+    )
+    monkeypatch.setattr(
+        joint_risk, "load_scenario_matrices",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not hit the DB")),
+    )
+
+    rows = (
+        [{"player_id": p, "gameweek": 1, "season": "s", "scenario_id": i,
+          "xpts": v[i]} for p, v in
+         {1: [6.0, 0.0], 2: [6.0, 0.0], 3: [0.0, 6.0]}.items() for i in range(2)]
+    )
+    cfg = dataclasses.replace(OPTIMISER, risk_level=-1.0, mu_baseline=0.0, mu_range=1.0)
+
+    chosen = squad_module.optimise_squad_joint(
+        pd.DataFrame(), pd.DataFrame(), gameweek=1, sample_rows=rows,
+        config=cfg, horizon=1,
+    )
+    assert chosen.captain_id == 1
+    assert set(chosen.squad["id"]) == {1, 3}, "diversified squad wins at mu<0"
+
+
+def test_optimise_squad_joint_raises_when_no_squad_is_feasible(monkeypatch):
+    from optimiser import squad as squad_module
+
+    monkeypatch.setattr(
+        squad_module, "generate_squad_pool", lambda *a, **k: []
+    )
+    with pytest.raises(RuntimeError, match="no feasible squad"):
+        squad_module.optimise_squad_joint(pd.DataFrame(), pd.DataFrame(), matrices={})

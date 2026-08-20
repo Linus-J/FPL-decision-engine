@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 from dataclasses import dataclass
 
@@ -233,6 +234,54 @@ def generate_squad_pool(
         pool.append(solution)
         forbidden.append(sorted(int(pid) for pid in solution.squad["id"]))
     return pool
+
+
+def optimise_squad_joint(
+    projections: pd.DataFrame,
+    players: pd.DataFrame,
+    *,
+    season: str | None = None,
+    gameweek: int | None = None,
+    sample_rows: list | None = None,
+    matrices=None,
+    config: OptimiserConfig | None = None,
+    pool_size: int | None = None,
+    **kwargs,
+) -> SquadSolution:
+    """``optimise_squad``, then a covariance-aware re-rank of the pool.
+
+    The pool is always generated at ``mu = 0`` -- the pure-mean objective --
+    and the risk appetite is applied afterwards by ``joint_risk``. That keeps
+    one pool valid for every ``mu`` in a calibration sweep, and makes ``mu = 0``
+    an exact no-op against the linear objective's own pick.
+
+    ``sample_rows`` is the backtest's route in: the ``sample_sink`` list from
+    ``assemble.assemble_gw_projections``. Live callers pass ``season`` and
+    ``gameweek`` instead, and the samples are read from ``projection_samples``.
+    """
+    from optimiser import joint_risk
+
+    cfg = config or OPTIMISER
+    _, mu = lambda_mu_for_risk_level(
+        cfg.risk_level, cfg.max_ownership_differential, cfg.mu_baseline, cfg.mu_range
+    )
+    mean_cfg = dataclasses.replace(cfg, risk_level=0.0, mu_baseline=0.0, mu_range=0.0)
+    n = pool_size if pool_size is not None else cfg.joint_rerank_pool_size
+    horizon = kwargs.get("horizon") or cfg.transfer_planning_horizon_gws
+
+    pool = generate_squad_pool(projections, players, n=n, config=mean_cfg, **kwargs)
+    if not pool:
+        raise RuntimeError("optimise_squad_joint: no feasible squad")
+
+    if matrices is None and sample_rows is not None and gameweek is not None:
+        matrices = joint_risk.matrices_from_rows(
+            sample_rows, range(gameweek, gameweek + horizon)
+        )
+
+    return joint_risk.covariance_aware_squad(
+        pool, mu=mu, cfg=cfg, season=season, gameweek=gameweek,
+        matrices=matrices, horizon=horizon, decay=cfg.gameweek_decay,
+    )
 
 
 def optimise_squad(
