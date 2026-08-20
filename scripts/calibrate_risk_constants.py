@@ -60,6 +60,7 @@ def sweep_mu_baseline(
     end_gw: int,
     candidates: list[float],
     harness: str = "naive-xi",
+    raw_out: Path | None = None,
 ) -> pd.DataFrame:
     """Runs one backtest per candidate mu, holding risk_level=0.0 (the real
     squad's setting) and mu_range=0.0 (irrelevant at risk_level=0 --
@@ -70,6 +71,11 @@ def sweep_mu_baseline(
     re-ranker has a candidate pool of one there and every mu would score
     identically. It also takes ``config`` as an argument instead of mutating
     ``bt._BACKTEST_CONFIG``, so nothing leaks between runs.
+
+    ``raw_out`` writes the per-(gameweek, mu) rows. Keep them: the aggregate
+    means alone cannot tell a real effect from a lucky gameweek, and the
+    comparison that matters is PAIRED -- same gameweek, same pool, same draws
+    -- which needs the individual rows to compute.
 
     The naive-XI path below still mutates that module global -- fine for a
     one-off calibration script, not something a test or the real decision path
@@ -89,6 +95,10 @@ def sweep_mu_baseline(
             season=season, start_gw=start_gw, end_gw=end_gw,
             mu_candidates=list(candidates),
         )
+        if raw_out is not None:
+            raw_out.parent.mkdir(parents=True, exist_ok=True)
+            raw.to_csv(raw_out, index=False)
+            logger.info("Per-gameweek rows written to %s", raw_out)
         rows = []
         for mu_baseline in candidates:
             sub = raw[raw["mu_baseline"] == mu_baseline] if not raw.empty else raw
@@ -153,12 +163,16 @@ def main() -> None:
         "--harness", choices=["naive-xi", "rebuild"], default="naive-xi",
         help="rebuild: rebuild the 15 every GW (required for Objective v2)",
     )
+    parser.add_argument(
+        "--raw-out", type=Path, default=None,
+        help="write the per-(gameweek, mu) rows here; needed for a paired test",
+    )
     parser.add_argument("--out", type=Path, default=Path("results/mu_baseline_calibration.csv"))
     args = parser.parse_args()
 
     results = sweep_mu_baseline(
         args.season, args.start_gw, args.end_gw, args.candidates,
-        harness=args.harness,
+        harness=args.harness, raw_out=args.raw_out,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     results.to_csv(args.out, index=False)

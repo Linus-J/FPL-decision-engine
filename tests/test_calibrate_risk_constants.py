@@ -89,3 +89,24 @@ def test_empty_result_frame_does_not_crash_the_sweep(monkeypatch):
     )
     assert df["n_gws"].iloc[0] == 0
     assert pd.isna(df["avg_actual_pts_per_gw"].iloc[0])
+
+
+def test_raw_out_writes_the_per_gameweek_rows(monkeypatch, tmp_path):
+    """The aggregate means cannot distinguish a real effect from one lucky
+    gameweek. The paired test that can needs the individual rows kept."""
+    monkeypatch.setattr(
+        calib.bt, "run_rebuild_backtest",
+        lambda season, start_gw, end_gw, mu_candidates=None, **k: pd.DataFrame([
+            {"gameweek": 6, "actual_pts": 50.0, "n_clubs_at_cap": 1, "mu_baseline": 0.0},
+            {"gameweek": 7, "actual_pts": 60.0, "n_clubs_at_cap": 2, "mu_baseline": 0.0},
+        ]),
+    )
+    out = tmp_path / "nested" / "raw.csv"
+    calib.sweep_mu_baseline(
+        "2025-26", 6, 7, candidates=[0.0], harness="rebuild", raw_out=out
+    )
+
+    assert out.exists()
+    written = pd.read_csv(out)
+    assert list(written["gameweek"]) == [6, 7]
+    assert "mu_baseline" in written.columns
