@@ -1,11 +1,11 @@
 {
   "bench_order": [
     "Dubravka",
-    "Targett",
-    "Mheuka",
-    "Furo"
+    "Van Hecke",
+    "Obi",
+    "Neave"
   ],
-  "captain": "Gabriel",
+  "captain": "B.Fernandes",
   "chips_left_this_half": 4,
   "cost": 100.0,
   "degenerate": [
@@ -20,36 +20,36 @@
   "gws_left_this_half": 19,
   "n_features": 37,
   "squad": [
-    "Anderson",
     "B.Fernandes",
     "Dubravka",
-    "Furo",
     "Gabriel",
     "Gibbs-White",
-    "Gu\u00e9hi",
-    "Mheuka",
+    "Gravenberch",
+    "Lacroix",
+    "Neave",
+    "Obi",
     "Raya",
-    "Rice",
     "Semenyo",
-    "Targett",
+    "Szoboszlai",
     "Tarkowski",
     "Thiago",
+    "Van Hecke",
     "Virgil"
   ],
   "starting_xi": [
-    "Anderson",
     "B.Fernandes",
     "Gabriel",
     "Gibbs-White",
-    "Gu\u00e9hi",
+    "Gravenberch",
+    "Lacroix",
     "Raya",
-    "Rice",
     "Semenyo",
+    "Szoboszlai",
     "Tarkowski",
     "Thiago",
     "Virgil"
   ],
   "teams_on_prior_strength": 17,
   "teams_with_live_strength": 0,
-  "vice_captain": "Raya"
+  "vice_captain": "Gabriel"
 }
