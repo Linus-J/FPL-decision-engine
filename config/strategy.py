@@ -448,12 +448,34 @@ class OptimiserConfig:
     #   * optimiser/scoring.py's variance term (score reduces to plain xpts),
     #   * its ownership/differential weighting (multiplier is 1 for everyone),
     #   * optimiser/captaincy.py's scenario-based covariance-aware captaincy,
-    #     which short-circuits to mean argmax without touching the DB.
+    #     which short-circuits to mean argmax without touching the DB,
+    #   * optimiser/joint_risk.py's covariance-aware SQUAD selection (added
+    #     2026-08-20), which short-circuits to the mean-optimal squad without
+    #     generating a pool at all.
+    #
+    # The joint objective was calibrated on 2026-08-20 and mu was left at 0.0
+    # on the evidence (scripts/calibrate_risk_constants.py --harness rebuild,
+    # results/mu_joint_calibration*.csv). On 2025-26 GW6-38, mu=-0.25 looked
+    # strong: +3.91 actual pts/GW over mu=0, paired on identical pools and
+    # draws, t=+2.16, 20 wins to 11. It did NOT survive out of sample. On
+    # 2024-25 the same mu is worth +0.06 pts/GW (t=+0.03), mu=-0.5 and -1.0
+    # are NEGATIVE, and avg_clubs_at_cap moves the WRONG WAY -- negative mu
+    # increased concentration there while it decreased it in 2025-26, so even
+    # the mechanism failed to replicate. Pooled over both seasons: +1.98
+    # pts/GW, t=+1.39. An effect whose sign flips between seasons is not an
+    # effect. Re-testing this needs a THIRD season, not a re-run of these two.
     # That is a defensible position -- mean argmax is optimal for a linear mean
     # objective, and 0.0 won its sweep -- but it was being described in two
     # docstrings as active. Reviving any of them starts with re-running this
     # calibration over the full GW6-38 window.
     mu_baseline: float = 0.0
+    # How many distinct squads the joint re-ranker considers
+    # (optimiser/joint_risk.py). Measured at 0.24s per MILP solve on the live
+    # GW1 frame, so 200 costs ~48s per gameweek -- affordable for a calibration
+    # sweep, since the pool is built once at mu=0 and reused for every
+    # candidate mu. Inert at mu=0, which is today's default: optimise_squad_joint
+    # short-circuits before generating anything.
+    joint_rerank_pool_size: int = 200
     # Widened 2026-08-18, together with the switch from variance to upside
     # semi-deviation as the risk term (optimiser/scoring.risk_adjusted_score).
     #

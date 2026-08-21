@@ -22,7 +22,7 @@ from data.models import DecisionLog, SimDecisionLog, SimManager
 from data.overrides import apply_team_overrides, load_p_leave_overrides, log_rumoured_squad_members
 from optimiser.chips import Chip, ChipRecommendation, chips_used_this_season, recommend_chip
 from optimiser.departure_risk import apply_departure_discount
-from optimiser.squad import optimise_squad, optimise_starting_xi
+from optimiser.squad import optimise_squad_joint, optimise_starting_xi
 from optimiser.transfers import (
     TransferPlan,
     evaluate_transfers,
@@ -534,12 +534,18 @@ def _run_decision_cycle(
         transfer_plan = TransferPlan(
             transfers_in=[], transfers_out=[], hits_taken=0, xpts_gain=0.0, net_xpts_gain=0.0
         )
-        squad_solution = optimise_squad(
-            projections=projections,
-            players=players,
+        # optimise_squad_joint, not optimise_squad: at the shipped mu of 0 it
+        # short-circuits to exactly the same answer without touching the DB,
+        # and when mu is non-zero it re-ranks the pool on the real joint
+        # scenarios (optimiser/joint_risk.py). Wiring it here is what makes a
+        # calibrated mu reach the live decision rather than only the backtest.
+        squad_solution = optimise_squad_joint(
+            projections,
+            players,
             budget=available_budget,
             horizon=1,
             season=season,
+            gameweek=next_gw,
             ownership=ownership,
             config=config,
         )

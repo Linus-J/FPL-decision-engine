@@ -221,11 +221,33 @@ bash deploy/install.sh
 
 ## Limitations
 
-- **Squad-level correlation is unmodelled.** The objective sums per-player
-  variances as if independent, so it cannot see that a keeper and his own
-  centre-back share one clean sheet, and it will fill a club to the three-player
-  cap without pricing the concentration. Fixing it properly needs a quadratic
-  objective; the cheap path is sample-based re-ranking of the top-N solutions.
+- **Squad-level correlation is priced in selection, not in the solver.** The
+  projections model it correctly — team goals are drawn once per
+  fixture-scenario, so a keeper and his own centre-back share one clean sheet.
+  The MILP objective cannot see it: teammate covariance is quadratic in a 0/1
+  selection vector and a linear solver has no way to express it, so the
+  per-player risk term sums semi-deviations, which assumes teammates move in
+  perfect lockstep. `optimiser/joint_risk.py` closes the gap by re-ranking the
+  best N squads on the raw scenarios, where the correlation is empirical rather
+  than assumed. Its limit is the pool: it can reorder squads the mean objective
+  already liked, but it cannot find one that only looks good under the joint
+  measure — splitting a keeper from his own defence, say. Local search over
+  single-player swaps is the next step if that bound starts to bind.
+- **The risk term is inert at the shipped defaults.** `mu = mu_baseline +
+  risk_level * mu_range`, and with `mu_baseline = 0.0` and `risk_level = 0` the
+  live objective is plain expected points. The variance term, the ownership
+  weighting, and covariance-aware captaincy and squad selection are all gated
+  behind a non-zero `mu`; the simulation cohort exercises them along its
+  `risk_level` axis, the live bot does not. That is a measured position rather
+  than an oversight — see below.
+- **Covariance-aware selection did not replicate out of sample.** Calibrating
+  `mu` on 2025-26 favoured −0.25 by +3.91 actual points per gameweek, paired on
+  identical pools and Monte Carlo draws. On 2024-25 the same value is worth
+  +0.06, the more negative values are worse than zero, and the concentration it
+  is supposed to reduce moves the wrong way. Pooled across both seasons the
+  effect is +1.98 pts/GW at t=1.39. An effect whose sign flips between seasons
+  is not an effect, so `mu` stays at zero and the machinery stays dormant
+  behind it. Deciding this needs a third season, not a re-run of these two.
 - **The unpriced-gameweek model carries most of the weight.** Bookmakers price
   one round ahead. Everything beyond that is the fitted Dixon-Coles model, and
   it is the largest single source of uncertainty in any multi-gameweek claim.

@@ -46,16 +46,78 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CANDIDATES = [-0.05, 0.0, 0.05, 0.1, 0.15, 0.2]
 
+# The joint measure's risk term is a semi-deviation in POINTS, like the
+# per-player one has been since 2026-08-18 -- so mu sits on the same scale as
+# mu_range (1.25), not the old points-squared variance scale that produced the
+# list above. Negative values mean "avoid bad weeks", which is the direction a
+# concentration penalty lives in.
+JOINT_CANDIDATES = [-1.0, -0.5, -0.25, 0.0, 0.25, 0.5]
+
 
 def sweep_mu_baseline(
-    season: str, start_gw: int, end_gw: int, candidates: list[float]
+    season: str,
+    start_gw: int,
+    end_gw: int,
+    candidates: list[float],
+    harness: str = "naive-xi",
+    raw_out: Path | None = None,
 ) -> pd.DataFrame:
-    """Runs the naive-XI exit-gate harness once per candidate, holding
-    risk_level=0.0 (the real squad's setting) and mu_range=0.0 (irrelevant
-    at risk_level=0 -- mu = mu_baseline + 0*mu_range = mu_baseline exactly).
-    Mutates scripts.backtest._BACKTEST_CONFIG directly between runs --
-    fine for a one-off calibration script, not something a test or the
-    real decision path should ever do."""
+    """Runs one backtest per candidate mu, holding risk_level=0.0 (the real
+    squad's setting) and mu_range=0.0 (irrelevant at risk_level=0 --
+    mu = mu_baseline + 0*mu_range = mu_baseline exactly).
+
+    ``harness="rebuild"`` uses ``run_rebuild_backtest``, which is REQUIRED for
+    Objective v2: the naive-XI harness fixes the initial 15, so a squad-level
+    re-ranker has a candidate pool of one there and every mu would score
+    identically. It also takes ``config`` as an argument instead of mutating
+    ``bt._BACKTEST_CONFIG``, so nothing leaks between runs.
+
+    ``raw_out`` writes the per-(gameweek, mu) rows. Keep them: the aggregate
+    means alone cannot tell a real effect from a lucky gameweek, and the
+    comparison that matters is PAIRED -- same gameweek, same pool, same draws
+    -- which needs the individual rows to compute.
+
+    The naive-XI path below still mutates that module global -- fine for a
+    one-off calibration script, not something a test or the real decision path
+    should ever do."""
+    if harness == "rebuild":
+        logger.info(
+            "Running rebuild backtest GW%d-%d over %d candidate mu values ...",
+            start_gw, end_gw, len(candidates),
+        )
+        # ONE pass, not one per candidate. The pool and the Monte-Carlo
+        # assembly behind it depend only on the pure-mean objective, so every
+        # candidate mu re-ranks the SAME pool -- measured at roughly six times
+        # less work than re-running the harness per candidate, and it removes
+        # sampling noise between candidates as a side effect, since they are
+        # compared on identical draws.
+        raw = bt.run_rebuild_backtest(
+            season=season, start_gw=start_gw, end_gw=end_gw,
+            mu_candidates=list(candidates),
+        )
+        if raw_out is not None:
+            raw_out.parent.mkdir(parents=True, exist_ok=True)
+            raw.to_csv(raw_out, index=False)
+            logger.info("Per-gameweek rows written to %s", raw_out)
+        rows = []
+        for mu_baseline in candidates:
+            sub = raw[raw["mu_baseline"] == mu_baseline] if not raw.empty else raw
+            rows.append({
+                "mu_baseline": mu_baseline,
+                "avg_actual_pts_per_gw": round(
+                    float(sub["actual_pts"].mean()), 3
+                ) if not sub.empty else float("nan"),
+                "avg_clubs_at_cap": round(
+                    float(sub["n_clubs_at_cap"].mean()), 3
+                ) if not sub.empty else float("nan"),
+                "n_gws": len(sub),
+            })
+            logger.info(
+                "mu_baseline=%.3f -> avg %.2f actual pts/GW over %d GWs",
+                mu_baseline, rows[-1]["avg_actual_pts_per_gw"], len(sub),
+            )
+        return pd.DataFrame(rows)
+
     original_config = bt._BACKTEST_CONFIG
     rows = []
     try:
@@ -97,10 +159,21 @@ def main() -> None:
     parser.add_argument(
         "--candidates", type=float, nargs="+", default=DEFAULT_CANDIDATES,
     )
+    parser.add_argument(
+        "--harness", choices=["naive-xi", "rebuild"], default="naive-xi",
+        help="rebuild: rebuild the 15 every GW (required for Objective v2)",
+    )
+    parser.add_argument(
+        "--raw-out", type=Path, default=None,
+        help="write the per-(gameweek, mu) rows here; needed for a paired test",
+    )
     parser.add_argument("--out", type=Path, default=Path("results/mu_baseline_calibration.csv"))
     args = parser.parse_args()
 
-    results = sweep_mu_baseline(args.season, args.start_gw, args.end_gw, args.candidates)
+    results = sweep_mu_baseline(
+        args.season, args.start_gw, args.end_gw, args.candidates,
+        harness=args.harness, raw_out=args.raw_out,
+    )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     results.to_csv(args.out, index=False)
 
