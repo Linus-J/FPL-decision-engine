@@ -128,6 +128,24 @@ def _load_deadlines(season: str) -> dict[int, datetime]:
         db.close()
 
 
+def _season_is_published(us) -> bool:
+    """Has Understat published this season yet?
+
+    A published season returns a schedule indexed by (league, season, game).
+    An unpublished one returns a degenerate frame -- no columns, a single
+    unnamed index level -- which every downstream reader then crashes on. The
+    check is on the index SHAPE rather than on row count, because the
+    degenerate frame is not empty: it has three rows holding the level names
+    themselves.
+    """
+    try:
+        schedule = us.read_schedule()
+    except Exception as exc:  # noqa: BLE001 -- any read failure means "not usable"
+        logger.warning("Understat schedule unreadable: %s", exc)
+        return False
+    return schedule.index.nlevels >= 3 and not schedule.empty
+
+
 def ingest_understat_xg_season(  # pragma: no cover - live network (no browser)
     season: str,
     *,
@@ -148,6 +166,28 @@ def ingest_understat_xg_season(  # pragma: no cover - live network (no browser)
         raise ValueError(f"No Understat season mapping for {season!r}")
 
     us = sd.Understat(leagues=UNDERSTAT_LEAGUE, seasons=yr, no_cache=no_cache)
+
+    # Understat publishes a season only once it has data to publish, and it
+    # lags the Premier League's own start by some weeks. Until then the
+    # schedule comes back DEGENERATE rather than empty -- a frame whose single
+    # unnamed index level holds the literal strings 'league', 'season', 'game'
+    # -- and soccerdata's read_player_match_stats raises
+    # "too many values to unpack (expected 3)" trying to destructure it
+    # (confirmed for 2026-27 on 2026-08-25, one gameweek into the season).
+    #
+    # That is not a failure worth propagating: this ingest is wired into
+    # run_weekly.py, which runs every week from GW1 onward, and a traceback
+    # there reads as a broken pipeline rather than "the source is not live
+    # yet". Return an explicit no-op instead, and say why.
+    if not _season_is_published(us):
+        logger.warning(
+            "Understat has no data for %s yet -- skipping the xG refresh. "
+            "This resolves itself once Understat publishes the season; it is "
+            "a source lag, not a failure. Prior seasons are unaffected.",
+            season,
+        )
+        return 0, 0
+
     pm = us.read_player_match_stats().reset_index()
     # Shot events are what make npxg real -- the player-match feed has only
     # total xg. Degrading to npxg == xg is visible (logged here, and flagged

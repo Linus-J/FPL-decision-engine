@@ -6,6 +6,7 @@ from datetime import datetime
 
 import pytest
 
+from data.ingestors import understat_xg
 from data.ingestors.fbref import aggregate_xg_rows
 from data.ingestors.understat_xg import parse_game_date, understat_row_to_xg
 
@@ -130,3 +131,48 @@ def test_a_player_who_took_no_shots_gets_zero_not_total_xg():
 
     row = understat_row_to_xg({"xg": 0.0, "xa": 0.3, "shots": 0, "key_passes": 4}, npxg=0.0)
     assert row["npxg"] == pytest.approx(0.0)
+
+
+def test_unpublished_season_is_a_no_op_not_a_crash(monkeypatch, caplog):
+    """Understat lags the season start. Until it publishes, read_schedule
+    returns a DEGENERATE frame -- no columns, one unnamed index level holding
+    the literal strings 'league', 'season', 'game' -- and soccerdata's own
+    reader raises "too many values to unpack (expected 3)" on it (confirmed
+    for 2026-27 on 2026-08-25). run_weekly.py calls this every week from GW1,
+    so it must read as "source not live yet", not as a broken pipeline.
+    """
+    import pandas as pd
+
+    degenerate = pd.DataFrame(index=pd.Index(["league", "season", "game"]))
+
+    class _Us:
+        def read_schedule(self):
+            return degenerate
+
+        def read_player_match_stats(self):  # pragma: no cover - must not run
+            raise AssertionError("must not read stats for an unpublished season")
+
+    assert understat_xg._season_is_published(_Us()) is False
+
+
+def test_published_season_passes_the_check():
+    import pandas as pd
+
+    idx = pd.MultiIndex.from_tuples(
+        [("ENG-Premier League", "2425", "game one")],
+        names=["league", "season", "game"],
+    )
+
+    class _Us:
+        def read_schedule(self):
+            return pd.DataFrame({"date": ["2024-08-16"]}, index=idx)
+
+    assert understat_xg._season_is_published(_Us()) is True
+
+
+def test_unreadable_schedule_is_treated_as_unpublished():
+    class _Us:
+        def read_schedule(self):
+            raise RuntimeError("network is down")
+
+    assert understat_xg._season_is_published(_Us()) is False

@@ -151,6 +151,28 @@ def main() -> None:
             env=fbref_env,
         )
 
+    # 2026-08-25: xG/xA/npxg/key-passes. NOT behind --skip-match-events, and
+    # deliberately not grouped with the three scrapes above: Understat is
+    # browserless (soccerdata's TLS client, no Chrome, no API key), so the
+    # reason those are optional does not apply to it.
+    #
+    # This step did not exist, and the omission was silent and expensive.
+    # player_xg_stats had 11,495 rows for 2025-26 and only 87 of them carried a
+    # non-zero xg -- the "shots-only interim" that data/ingestors/understat_xg.py
+    # was written to replace, left in place because nothing ever ran it after
+    # the initial backfill. 2026-27 had no rows at all. projection/assemble.py
+    # LEFT JOINs the table and COALESCEs to 0, so a missing row is
+    # indistinguishable from a genuine zero: every projection was being built
+    # with the attacking signal switched off, and nothing reported it.
+    #
+    # Warn-only like its neighbours: a failed xG refresh degrades the
+    # projection, it does not invalidate the week's decision.
+    if _season_has_started(args.season):
+        _run_or_warn(
+            "scripts/scrape_understat_xg.py",
+            [sys.executable, "scripts/scrape_understat_xg.py", args.season],
+        )
+
     gw = _current_gameweek()
     if gw:
         _run_or_warn(
