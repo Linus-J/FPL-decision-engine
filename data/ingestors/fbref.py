@@ -43,6 +43,7 @@ from __future__ import annotations
 import logging
 import unicodedata
 from collections.abc import Mapping
+from pathlib import Path
 
 from sqlalchemy.dialects.sqlite import insert
 
@@ -54,6 +55,13 @@ logger = logging.getLogger(__name__)
 FBREF_LEAGUE = "ENG-Premier League"
 
 # season string (our format) -> soccerdata season string
+# soccerdata's cache root, honouring SOCCERDATA_DIR when the user has set it.
+# Imported lazily-ish at module scope because it is only a path constant.
+try:
+    from soccerdata._config import DATA_DIR as SD_DATA_DIR
+except Exception:  # noqa: BLE001 -- soccerdata is optional at import time
+    SD_DATA_DIR = Path.home() / "soccerdata" / "data"
+
 SEASON_MAP = {
     "2021-22": "2021-2022",
     "2022-23": "2022-2023",
@@ -407,6 +415,8 @@ def ingest_fbref_season(  # pragma: no cover - live network + browser only
     if not sd_season:
         raise ValueError(f"No FBref season mapping for {season!r}")
 
+    refresh_stale_seasons_cache(sd_season)
+
     fbref_kwargs: dict = {"leagues": FBREF_LEAGUE, "seasons": sd_season,
                           "no_cache": no_cache, "headless": headless}
     if path_to_browser:
@@ -427,6 +437,65 @@ def ingest_fbref_season(  # pragma: no cover - live network + browser only
     written = _write_events(rows)
     logger.info("FBref %s: %d event rows written, %d unmatched", season, written, unmatched)
     return written, unmatched
+
+
+def cached_seasons(seasons_html: Path) -> list[str]:
+    """Season labels (e.g. '2026-2027') listed in a cached FBref seasons page.
+
+    Empty when the file is missing or unparseable -- callers treat that as "no
+    information", never as "the season is absent".
+    """
+    if not seasons_html.exists():
+        return []
+    try:
+        from lxml import html as lxml_html
+
+        tree = lxml_html.parse(str(seasons_html))
+        return [
+            str(y).strip()
+            for y in tree.xpath(
+                "//table[@id='seasons']"
+                "//th[@data-stat='year_id' or @data-stat='year']/a/text()"
+            )
+        ]
+    except Exception as exc:  # noqa: BLE001 -- unreadable cache == no information
+        logger.debug("Could not read cached FBref seasons page: %s", exc)
+        return []
+
+
+def refresh_stale_seasons_cache(sd_season: str) -> bool:
+    """Drop the cached FBref seasons index if it predates ``sd_season``.
+
+    soccerdata resolves a season by parsing every label FBref lists into a
+    two-digit code and de-duplicating, keeping the first
+    (``soccerdata/fbref.py``: ``drop_duplicates(..., keep="first")``). Both
+    '2026-2027' and '1926-1927' parse to '2627'. While the newer season is
+    listed it wins, because FBref lists newest first -- but if the cached copy
+    of that index PREDATES the new season being added, the only '2627' in it is
+    1926-1927, and the lookup silently resolves to a season a century old.
+
+    That is what happened on 2026-08-25: a seasons page cached 2026-07-24, one
+    gameweek into 26/27, had 1926-1927 at row 92 and no 2026-2027 at all.
+    ``_validate_schedule_season`` caught the result and refused, which was
+    right, but its message blamed FBref for not listing the season. FBref lists
+    it; our cache was a month old.
+
+    Only this one small index file is removed -- the match-report caches, which
+    are the expensive ones, are untouched. Returns True if a refresh was
+    triggered.
+    """
+    seasons_html = Path(SD_DATA_DIR) / "FBref" / f"seasons_{FBREF_LEAGUE}.html"
+    listed = cached_seasons(seasons_html)
+    if not listed or sd_season in listed:
+        return False
+    logger.warning(
+        "Cached FBref seasons index does not list %s (it has %d seasons, newest "
+        "%s) -- removing %s so it is re-fetched. Stale here resolves the season "
+        "code to a century-old season rather than failing.",
+        sd_season, len(listed), listed[0] if listed else "?", seasons_html.name,
+    )
+    seasons_html.unlink(missing_ok=True)
+    return True
 
 
 def _validate_schedule_season(schedule, season: str) -> None:  # pragma: no cover - live path
@@ -450,10 +519,19 @@ def _validate_schedule_season(schedule, season: str) -> None:  # pragma: no cove
     if actual_years and not actual_years & valid_years:
         raise ValueError(
             f"FBref schedule for season {season!r} has match dates in "
-            f"{sorted(actual_years)}, expected {sorted(valid_years)}. This "
-            "looks like soccerdata's season-code collision (the site likely "
-            "doesn't have this season listed yet) -- refusing to ingest data "
-            "from the wrong season."
+            f"{sorted(actual_years)}, expected {sorted(valid_years)}. "
+            "soccerdata's season-code collision has resolved the wrong season: "
+            f"'{season[:4]}-{int(season[:4]) + 1}' and "
+            f"'{season[:2]}26-{season[:2]}27'-style pairs a century apart share "
+            "one two-digit code, and it kept the older one. Refusing to ingest "
+            "it.\n"
+            "Most likely cause is a STALE cached seasons index -- FBref does "
+            "list the current season, but a cached copy taken before it was "
+            "added contains only the century-old match. "
+            "refresh_stale_seasons_cache() clears that file automatically "
+            "before each ingest; if you are seeing this anyway, delete "
+            f"{Path(SD_DATA_DIR) / 'FBref' / f'seasons_{FBREF_LEAGUE}.html'} "
+            "and re-run."
         )
 
 
