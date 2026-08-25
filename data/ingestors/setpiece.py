@@ -78,6 +78,14 @@ def _num(raw: Mapping, *keys: str, default: float = 0.0) -> float:
     return default
 
 
+# The player-season tables this ingest reads. soccerdata 1.9.1 serves only
+# standard, keeper, shooting, playing_time and misc; 'passing' (KP) and
+# 'passing_types' (CK) are NOT among them and raise TypeError. Pinned by
+# tests/test_setpiece.py against soccerdata's own list, so an upgrade that
+# changes it fails in CI rather than at the end of a headed scrape.
+REQUIRED_SEASON_STAT_TYPES: tuple[str, ...] = ("shooting", "standard")
+
+
 def derive_setpiece_roles(rows: Iterable[Mapping]) -> list[dict]:
     """Per-player set-piece roles from season-level FBref rows.
 
@@ -284,8 +292,12 @@ def ingest_setpiece_roles(  # pragma: no cover - live network + browser only
     # ingest_fbref_season does -- neither is inherited.
     refresh_stale_seasons_cache(sd_season)
     purge_wrong_season_caches(sd_season)
-    stat_types = ("shooting", "passing", "passing_types")
-    purge_unusable_stats_cache(sd_season, stat_types)
+    # soccerdata 1.9.1 serves only these five player-season tables:
+    # standard, keeper, shooting, playing_time, misc. 'passing' and
+    # 'passing_types' -- which carried KP (key passes) and CK (corners) -- are
+    # NOT among them and raise TypeError. See the note in _merge_season_tables
+    # for what that costs.
+    purge_unusable_stats_cache(sd_season, REQUIRED_SEASON_STAT_TYPES)
 
     fbref_kwargs: dict = {
         "leagues": FBREF_LEAGUE, "seasons": sd_season,
@@ -296,10 +308,9 @@ def ingest_setpiece_roles(  # pragma: no cover - live network + browser only
     fbref = sd.FBref(**fbref_kwargs)
 
     shooting = _flatten_columns(fbref.read_player_season_stats(stat_type="shooting"))
-    passing = _flatten_columns(fbref.read_player_season_stats(stat_type="passing"))
-    pass_types = _flatten_columns(fbref.read_player_season_stats(stat_type="passing_types"))
+    standard = _flatten_columns(fbref.read_player_season_stats(stat_type="standard"))
 
-    merged = _merge_season_tables(shooting, passing, pass_types)
+    merged = _merge_season_tables(shooting, standard)
     roles = derive_setpiece_roles(merged)
 
     name_map = _build_name_map()
@@ -329,10 +340,26 @@ def ingest_setpiece_roles(  # pragma: no cover - live network + browser only
     return written, unmatched
 
 
-def _merge_season_tables(shooting, passing, pass_types) -> list[dict]:  # pragma: no cover
-    """Flatten soccerdata's three season tables into the plain mappings
+def _merge_season_tables(shooting, standard) -> list[dict]:  # pragma: no cover
+    """Flatten soccerdata's season tables into the plain mappings
     ``derive_setpiece_roles`` consumes. Indexed by (league, season, team,
-    player) in soccerdata, so the index carries the identity."""
+    player) in soccerdata, so the index carries the identity.
+
+    Only PENALTY duty is derivable from this source. soccerdata 1.9.1 offers
+    five player-season tables -- standard, keeper, shooting, playing_time,
+    misc -- and neither 'passing' (KP, key passes) nor 'passing_types' (CK,
+    corners) is among them; asking for either raises TypeError. This module
+    used to request both, which is what broke the 2026-08-25 scrape. 'misc'
+    is not a substitute: it carries Crs (crosses from open play), not corners.
+
+    The consequence is bounded rather than silent. ``derive_setpiece_roles``
+    already treats a missing corner count as "not a set-piece taker" rather
+    than guessing, so no false duty is invented -- corner and free-kick duty
+    simply has to come from the published depth chart loaded by
+    ``scripts/load_setpiece_depth_chart.py``, which this ingest defers to for
+    any player with a published duty anyway. Penalty duty, the part that
+    carries real expected-points weight, is unaffected.
+    """
     records: dict[tuple[str, str], dict] = {}
 
     def _absorb(df, mapping: dict[str, tuple[str, ...]]) -> None:
@@ -354,11 +381,11 @@ def _merge_season_tables(shooting, passing, pass_types) -> list[dict]:  # pragma
         "penalty_attempts": ("Standard PKatt", "PKatt"),
         "matches": ("Playing Time MP", "MP", "matches"),
     })
-    _absorb(passing, {
-        "key_passes": ("KP", "Pass Types KP"),
+    # 'standard' is the authoritative MP, and repeats PKatt under Performance.
+    _absorb(standard, {
+        "penalty_attempts": ("Performance PKatt", "PKatt"),
         "matches": ("Playing Time MP", "MP", "matches"),
     })
-    _absorb(pass_types, {"corners": ("Pass Types CK", "CK")})
     return list(records.values())
 
 

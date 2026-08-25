@@ -378,3 +378,44 @@ def test_an_ambiguous_short_name_is_skipped_not_guessed(caplog, monkeypatch):
         "2026-27", "Chelsea | Palmer, Pedro | Neto", "test"
     )
     assert unresolved, "an unmatchable team must be reported, never guessed"
+
+
+def test_requested_stat_types_are_ones_soccerdata_actually_serves():
+    """The 2026-08-25 break: this module asked for 'passing' and
+    'passing_types', which soccerdata 1.9.1 does not serve for PLAYER SEASON
+    stats, so the scrape died on TypeError after doing all the browser work.
+
+    Pinned against soccerdata's own list rather than a hardcoded copy, so a
+    library upgrade that adds or removes a table fails here -- cheaply, in
+    CI -- instead of at the end of a headed scrape.
+    """
+    import inspect
+    import re
+
+    import soccerdata as sd
+
+    src = inspect.getsource(sd.FBref.read_player_season_stats)
+    block = re.search(r"player_stats\s*=\s*\[(.*?)\]", src, re.S)
+    assert block, "could not locate soccerdata's player_stats list"
+    served = set(re.findall(r"[\"']([a-z_]+)[\"']", block.group(1)))
+
+    from data.ingestors.setpiece import REQUIRED_SEASON_STAT_TYPES
+
+    missing = set(REQUIRED_SEASON_STAT_TYPES) - served
+    assert not missing, f"soccerdata no longer serves {sorted(missing)}; served: {sorted(served)}"
+
+
+def test_missing_corner_data_yields_no_false_setpiece_taker():
+    """Corners are unavailable from soccerdata's player-season tables, so every
+    row now arrives with corners=0. That must read as "no opinion", never as
+    "is the taker" -- corner duty comes from the published depth chart."""
+    rows = [
+        {"player": "A", "team": "T", "penalty_attempts": 6, "matches": 30},
+        {"player": "B", "team": "T", "penalty_attempts": 0, "matches": 30},
+    ]
+
+    roles = {r["player"]: r for r in derive_setpiece_roles(rows)}
+
+    assert roles["A"]["is_penalty_taker"] is True
+    assert roles["A"]["is_set_piece_taker"] is False
+    assert "B" not in roles, "a player with no duty at all should not get a row"
