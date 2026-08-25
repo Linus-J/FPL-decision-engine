@@ -7,6 +7,7 @@ real temp SQLite DB, matching this repo's existing test convention."""
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 import pandas as pd
 import pytest
@@ -139,3 +140,40 @@ def test_returns_empty_when_nothing_available(session, monkeypatch):
     squad = squad_module.get_current_squad(session, team_id=12345)
 
     assert squad.empty
+
+
+def test_reused_fpl_id_does_not_duplicate_the_squad(session, monkeypatch):
+    """A stale prior-season row sharing an fpl_id must not join into the squad.
+
+    FPL renumbers its elements every summer, so an fpl_id identifies a player
+    only WITHIN a season -- on the live DB 975 player rows carry 756 distinct
+    fpl_ids. Merging picks on fpl_id alone therefore matched the departed
+    player as well as the current one, and the published site showed 19 players
+    in a 15-man squad (2026-08-25). The current row is the one the latest
+    ingest touched.
+    """
+    session.add(Team(id=1, name="Team A", short_name="TMA"))
+    session.add_all([
+        # Same fpl_id, different players, different seasons. The departed one
+        # is listed FIRST and has the lower id, so a naive query returns it.
+        Player(id=1, fpl_id=101, code=900, first_name="Gone", second_name="Away",
+               web_name="Departed", team_id=1, position="GKP", now_cost=4.5,
+               status="u", updated_at=datetime(2026, 7, 23, 7, 19)),
+        Player(id=2, fpl_id=101, code=901, first_name="Here", second_name="Now",
+               web_name="Current", team_id=1, position="GKP", now_cost=5.0,
+               status="a", updated_at=datetime(2026, 8, 20, 8, 28)),
+    ])
+    session.commit()
+
+    monkeypatch.setattr(squad_module, "_get_current_and_next_gw", lambda: (5, 6))
+    monkeypatch.setattr(squad_module, "get_picks", lambda team_id, gw: {"picks": [
+        {"element": 101, "position": 1, "multiplier": 1,
+         "is_captain": False, "is_vice_captain": False},
+    ]} if gw == 6 else {})
+    monkeypatch.setattr(squad_module, "get_latest_projections", lambda gw: pd.DataFrame())
+
+    squad = squad_module.get_current_squad(session, team_id=1)
+
+    assert len(squad) == 1, f"one pick must yield one row, got {len(squad)}"
+    assert squad.iloc[0]["web_name"] == "Current"
+    assert squad.iloc[0]["player_id"] == 2

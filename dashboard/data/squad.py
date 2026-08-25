@@ -19,11 +19,39 @@ logger = logging.getLogger(__name__)
 
 
 def _players_by_fpl_id(db: Session) -> pd.DataFrame:
+    """One row per fpl_id -- the CURRENT season's row.
+
+    ``fpl_id`` is reused across seasons: 975 player rows carry only 756
+    distinct fpl_ids on the live DB, because FPL renumbers its elements every
+    summer and rows for departed players keep the id they had. Without the
+    dedupe below, the caller's merge on ``fpl_id`` matched BOTH rows and
+    returned a 19-player "15-man squad" -- Setford alongside Gabriel (both
+    fpl_id 4), Roerslev alongside Van Hecke (112), Darwin alongside Semenyo
+    (397), Lascelles alongside Gibbs-White (480). That reached the published
+    site and the dashboard's Squad page; preflight's "site squad matches
+    decision_log" check is what caught it (2026-08-25).
+
+    ``updated_at`` is the discriminator rather than ``status``: run_full_ingest
+    refreshes every player FPL currently serves on each run, so the live row is
+    always the freshly-touched one, while a departed player's row keeps the
+    timestamp of the last ingest that still saw him. ``status`` looks tempting
+    -- the four collisions above were all status 'u' against 'a' -- but a
+    current player can legitimately be 'u' after a mid-season transfer out,
+    which would then drop the RIGHT row.
+    """
     query = text("""
-        SELECT p.id AS player_id, p.fpl_id, p.web_name, p.position, p.now_cost,
-               t.short_name AS team_short
-        FROM players p
-        JOIN teams t ON t.id = p.team_id
+        SELECT player_id, fpl_id, web_name, position, now_cost, team_short
+        FROM (
+            SELECT p.id AS player_id, p.fpl_id, p.web_name, p.position,
+                   p.now_cost, t.short_name AS team_short,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY p.fpl_id
+                       ORDER BY p.updated_at DESC, p.id DESC
+                   ) AS rn
+            FROM players p
+            JOIN teams t ON t.id = p.team_id
+        )
+        WHERE rn = 1
     """)
     return pd.read_sql(query, db.bind)
 
