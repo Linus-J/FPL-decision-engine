@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 1,
   "label": "GW1 \u2014 21 Aug 2026",
-  "generated_at": "2026-08-25T10:56:39.960614+00:00",
+  "generated_at": "2026-08-25T11:21:30.199383+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -64,10 +64,10 @@
       "position": "DEF",
       "team_short": "TOT",
       "now_cost": 5.0,
-      "is_starting": true,
+      "is_starting": false,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": null,
+      "bench_order": 2,
       "xpts": {
         "p10": 0.0,
         "median": 3.5675,
@@ -262,10 +262,10 @@
       "position": "DEF",
       "team_short": "TOT",
       "now_cost": 5.5,
-      "is_starting": false,
+      "is_starting": true,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": 2,
+      "bench_order": null,
       "xpts": {
         "p10": 0.0,
         "median": 2.9741,
