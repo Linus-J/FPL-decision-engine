@@ -269,6 +269,8 @@ def ingest_setpiece_roles(  # pragma: no cover - live network + browser only
         _build_name_map,
         _flatten_columns,
         _match_player,
+        purge_unusable_stats_cache,
+        refresh_stale_seasons_cache,
     )
     from projection.cold_start import prior_season_of
 
@@ -276,6 +278,12 @@ def ingest_setpiece_roles(  # pragma: no cover - live network + browser only
     sd_season = SEASON_MAP.get(evidence_season)
     if not sd_season:
         raise ValueError(f"No FBref season mapping for {evidence_season!r}")
+
+    # This builds its own FBref reader, so it needs the same two cache repairs
+    # ingest_fbref_season does -- neither is inherited.
+    refresh_stale_seasons_cache(sd_season)
+    stat_types = ("shooting", "passing", "passing_types")
+    purge_unusable_stats_cache(sd_season, stat_types)
 
     fbref_kwargs: dict = {
         "leagues": FBREF_LEAGUE, "seasons": sd_season,

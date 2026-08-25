@@ -498,6 +498,77 @@ def refresh_stale_seasons_cache(sd_season: str) -> bool:
     return True
 
 
+# Signals that a cached page is an interstitial rather than content. Used only
+# to explain the removal in the log -- the decision itself is made on whether
+# the expected table marker is present, which is definitive.
+_BLOCK_PAGE_SIGNALS = (
+    "just a moment",
+    "consent banner",
+    "checking your browser",
+    "cf-browser-verification",
+    "enable javascript and cookies",
+)
+
+
+def season_code(sd_season: str) -> str:
+    """'2025-2026' -> '2526', the code soccerdata uses in cache filenames."""
+    try:
+        from soccerdata._common import SeasonCode
+
+        return SeasonCode.MULTI_YEAR.parse(sd_season)
+    except Exception:  # noqa: BLE001 -- fall back to the same truncation rule
+        digits = sd_season.replace("-", "")
+        return digits[2:4] + digits[6:8] if len(digits) == 8 else sd_season
+
+
+def purge_unusable_stats_cache(
+    sd_season: str, stat_types: tuple[str, ...], league: str = FBREF_LEAGUE
+) -> list[str]:
+    """Delete cached FBref season-stat pages that do not contain their table.
+
+    soccerdata caches whatever HTML came back, including Cloudflare
+    interstitials, and reads that cache forever after. A poisoned entry then
+    fails deep inside the library with ``ValueError: not enough values to
+    unpack (expected 1, got 0)`` -- soccerdata's xpath for
+    ``div_stats_<stat_type>`` matching nothing -- which says nothing about the
+    real cause and cannot be fixed by re-running.
+
+    Found 2026-08-25: ``players_ENG-Premier League_2526_shooting.html``, cached
+    2026-08-16, was 132KB of consent banner titled "Close this consent banner"
+    with no stats table at all. Every set-piece scrape since had been reading
+    it.
+
+    The marker is the same string soccerdata itself looks for, so a page that
+    passes here is one it can parse. Returns the stat types purged.
+    """
+    removed: list[str] = []
+    code = season_code(sd_season)
+    for stat_type in stat_types:
+        path = Path(SD_DATA_DIR) / "FBref" / f"players_{league}_{code}_{stat_type}.html"
+        if not path.exists():
+            continue
+        try:
+            text_ = path.read_text(errors="replace")
+        except OSError as exc:
+            logger.debug("Could not read %s: %s", path.name, exc)
+            continue
+        if f"div_stats_{stat_type}" in text_:
+            continue
+        lowered = text_[:200_000].lower()
+        blocked = next((m for m in _BLOCK_PAGE_SIGNALS if m in lowered), None)
+        logger.warning(
+            "Cached FBref %s page for %s has no div_stats_%s table (%d bytes%s) "
+            "-- removing it so it is re-fetched. A cached block page fails deep "
+            "inside soccerdata with an unpack error that no amount of re-running "
+            "will clear.",
+            stat_type, sd_season, stat_type, len(text_),
+            f", looks like a block page: {blocked!r}" if blocked else "",
+        )
+        path.unlink(missing_ok=True)
+        removed.append(stat_type)
+    return removed
+
+
 def _validate_schedule_season(schedule, season: str) -> None:  # pragma: no cover - live path
     """Guard against soccerdata's season-code collision: '2026-2027' and
     '1926-1927' both truncate to the same internal code '2627', since the
