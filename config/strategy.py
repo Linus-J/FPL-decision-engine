@@ -442,9 +442,10 @@ class OptimiserConfig:
     # 0.05 default's 57.27). Reduced window for speed, not a final gate
     # validation; re-run GW6-38 to firm this up.
     #
-    # CONSEQUENCE, spelled out 2026-08-18 (engine review §16): at 0.0, with the
-    # default risk_level of 0, mu is 0 and lambda is 0 -- so THREE documented
-    # capabilities are dormant, not live:
+    # CONSEQUENCE of a ZERO baseline, spelled out 2026-08-18 (engine review
+    # §16) and kept here because it is the argument that eventually moved the
+    # value off 0.0: at mu=0, with the default risk_level of 0, mu is 0 and
+    # lambda is 0 -- so four documented capabilities were dormant, not live:
     #   * optimiser/scoring.py's variance term (score reduces to plain xpts),
     #   * its ownership/differential weighting (multiplier is 1 for everyone),
     #   * optimiser/captaincy.py's scenario-based covariance-aware captaincy,
@@ -453,28 +454,57 @@ class OptimiserConfig:
     #     2026-08-20), which short-circuits to the mean-optimal squad without
     #     generating a pool at all.
     #
-    # The joint objective was calibrated on 2026-08-20 and mu was left at 0.0
-    # on the evidence (scripts/calibrate_risk_constants.py --harness rebuild,
-    # results/mu_joint_calibration*.csv). On 2025-26 GW6-38, mu=-0.25 looked
+    # As of 2026-08-25 mu is -0.25, so the variance term and the joint squad
+    # selection are LIVE. Lambda is still zero for the real bot (it scales off
+    # risk_level, which remains 0), so the ownership weighting stays dormant
+    # and covariance-aware captaincy still short-circuits -- those two are
+    # exercised only by the persona cohort.
+    #
+    # The joint objective was calibrated on 2026-08-20 and mu was HELD at 0.0
+    # through GW1, then set to -0.25 on 2026-08-25 (see the decision at the
+    # foot of this comment). The evidence, recorded honestly because it is
+    # weak: scripts/calibrate_risk_constants.py --harness rebuild,
+    # results/mu_joint_calibration*.csv. On 2025-26 GW6-38, mu=-0.25 looked
     # strong: +3.91 actual pts/GW over mu=0, paired on identical pools and
     # draws, t=+2.16, 20 wins to 11. It did NOT survive out of sample. On
     # 2024-25 the same mu is worth +0.06 pts/GW (t=+0.03), mu=-0.5 and -1.0
     # are NEGATIVE, and avg_clubs_at_cap moves the WRONG WAY -- negative mu
     # increased concentration there while it decreased it in 2025-26, so even
     # the mechanism failed to replicate. Pooled over both seasons: +1.98
-    # pts/GW, t=+1.39. An effect whose sign flips between seasons is not an
-    # effect. Re-testing this needs a THIRD season, not a re-run of these two.
-    # That is a defensible position -- mean argmax is optimal for a linear mean
-    # objective, and 0.0 won its sweep -- but it was being described in two
-    # docstrings as active. Reviving any of them starts with re-running this
-    # calibration over the full GW6-38 window.
-    mu_baseline: float = 0.0
+    # pts/GW, t=+1.39. Settling this properly needs a THIRD season, which
+    # 2026-27 is now generating.
+    #
+    # WHY -0.25 ANYWAY (user decision, 2026-08-21, applied 2026-08-25 once the
+    # GW1 deadline had passed). Two separate arguments, neither of which is
+    # "the t-statistic is convincing":
+    #
+    #   1. Timing. At GW1 `projection_samples` is empty, so the joint
+    #      re-ranker cannot fire at all, while projection/cold_start.py:1063
+    #      DOES emit upside/downside -- so a non-zero mu at GW1 would have
+    #      driven the per-player term, which the sweep never measured, on a
+    #      different scale. From GW2 that inverts: samples exist, the
+    #      re-ranker engages, and mu drives exactly what WAS measured. This
+    #      is the gameweek the value becomes meaningful, not merely allowed.
+    #   2. The alternative is not neutral. At 0.0 the variance term, the
+    #      ownership weighting, the covariance-aware captaincy and the joint
+    #      squad selection are ALL dormant (see the consequence note above) --
+    #      so "wait for more evidence" means running the season on the one
+    #      configuration that generates no evidence about any of them.
+    #
+    # The point estimate is positive in both seasons tested and the pooled
+    # effect is +1.98 pts/GW; the honest reading is "probably small and
+    # positive, possibly zero", not "probably harmful". Treat this as a live
+    # experiment with a cost ceiling, and revisit it against 2026-27's own
+    # outcomes once enough gameweeks have been scored -- the persona cohort
+    # sweeps risk_level around this baseline, so the season measures it.
+    mu_baseline: float = -0.25
     # How many distinct squads the joint re-ranker considers
     # (optimiser/joint_risk.py). Measured at 0.24s per MILP solve on the live
     # GW1 frame, so 200 costs ~48s per gameweek -- affordable for a calibration
     # sweep, since the pool is built once at mu=0 and reused for every
-    # candidate mu. Inert at mu=0, which is today's default: optimise_squad_joint
-    # short-circuits before generating anything.
+    # candidate mu. This is LIVE cost as of 2026-08-25 (mu=-0.25): the
+    # short-circuit in optimise_squad_joint no longer fires, so every real
+    # decision pays for the pool. It stays inert only if mu returns to 0.
     joint_rerank_pool_size: int = 200
     # Widened 2026-08-18, together with the switch from variance to upside
     # semi-deviation as the risk term (optimiser/scoring.risk_adjusted_score).
@@ -492,8 +522,10 @@ class OptimiserConfig:
     # buys the explosive player over the steady one. That is meant to be an
     # EXTREME of the sweep, not a recommendation.
     #
-    # The live engine is untouched: mu = mu_baseline + risk_level * mu_range,
-    # and risk_level defaults to 0, so mu stays exactly 0 whatever this is.
+    # This value does not touch the real bot: mu = mu_baseline + risk_level *
+    # mu_range, and risk_level defaults to 0, so the live engine sees exactly
+    # mu_baseline (-0.25 since 2026-08-25) whatever mu_range is. It sets the
+    # width of the cohort's risk axis, nothing else.
     mu_range: float = 1.25
 
     # Optimiser's-curse shrinkage (2026-07-28 data-completeness audit,

@@ -11,6 +11,7 @@ import pytest
 
 from config.strategy import OPTIMISER
 from optimiser import joint_risk
+from optimiser.scoring import lambda_mu_for_risk_level
 from optimiser.squad import SquadSolution
 
 
@@ -369,10 +370,19 @@ def test_live_free_hit_path_uses_the_joint_optimiser():
 
 
 def test_joint_optimiser_at_mu_zero_returns_the_plain_optimum(monkeypatch):
-    """The live safety property: with the shipped defaults, wiring the joint
-    optimiser in cannot change a single pick."""
+    """The mu=0 short-circuit: at exactly zero the joint optimiser cannot
+    change a pick, and must not even reach the DB to establish that.
+
+    This was the SHIPPED-DEFAULT safety property until 2026-08-25, when
+    mu_baseline moved 0.0 -> -0.25 and the short-circuit stopped firing on the
+    live path (see config/strategy.py and the sibling test below). The
+    mechanism still has to work, because mu returning to 0 is the documented
+    way to switch the re-ranker back off -- so the test now pins mu=0
+    explicitly instead of relying on the default being zero.
+    """
     from optimiser import squad as squad_module
 
+    mu_zero = dataclasses.replace(OPTIMISER, mu_baseline=0.0, risk_level=0.0)
     head = _solution([1, 2], [1, 2], 1)
     monkeypatch.setattr(
         squad_module, "generate_squad_pool",
@@ -384,6 +394,26 @@ def test_joint_optimiser_at_mu_zero_returns_the_plain_optimum(monkeypatch):
     )
 
     chosen = squad_module.optimise_squad_joint(
-        pd.DataFrame(), pd.DataFrame(), config=OPTIMISER, season="2026-27", gameweek=1,
+        pd.DataFrame(), pd.DataFrame(), config=mu_zero, season="2026-27", gameweek=1,
     )
     assert chosen is head
+
+
+def test_joint_reranker_is_live_on_the_shipped_defaults():
+    """The inverse of the test above, and the reason it had to change.
+
+    mu_baseline is -0.25 as of 2026-08-25, so the re-ranker is NOT dormant on
+    the live path: every real squad decision now generates a pool and scores
+    it against the scenario matrices. If someone sets mu back to 0 without
+    meaning to, this fails and says so -- which is the failure that would
+    otherwise be silent, since a dormant re-ranker still returns a legal
+    squad, just the mean-optimal one.
+    """
+    lam, mu = lambda_mu_for_risk_level(
+        OPTIMISER.risk_level,
+        OPTIMISER.max_ownership_differential,
+        OPTIMISER.mu_baseline,
+        OPTIMISER.mu_range,
+    )
+    assert mu != 0.0, "mu_baseline is 0 -- the joint re-ranker is dormant"
+    assert lam == 0.0, "lambda should still be 0 at the default risk_level of 0"
