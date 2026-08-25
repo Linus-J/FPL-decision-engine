@@ -26,7 +26,7 @@ defers precise per-team DGW handling elsewhere in this codebase).
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 from sqlalchemy import text
@@ -77,6 +77,41 @@ def _to_naive(dt: datetime) -> datetime:
     offset-naive and offset-aware datetimes, discovered on the first live
     run)."""
     return dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) is not None else dt
+
+
+# A match is scraped only once it is comfortably over. WhoScored's schedule
+# carries every fixture of the season, so an unfiltered read_events opens a
+# browser page for all 380 -- including fixtures that have not been played and
+# have no events to return.
+MATCH_SETTLE_HOURS = 3.0
+
+
+def played_match_ids(
+    kickoff_of: dict[int, datetime], now: datetime | None = None
+) -> list[int]:
+    """Game ids whose kickoff is far enough in the past to have finished.
+
+    ``read_events(match_id=None)`` fetches the WHOLE schedule. On 2026-08-25,
+    one gameweek into 26/27, that meant driving a real browser through all 380
+    fixtures to collect events from the 10 that had been played -- slow, highly
+    visible (it opens each page), and the sort of traffic that gets a scraper
+    blocked. Reported by the user watching it happen.
+
+    Kickoff time is the filter rather than a score column because ``kickoff_of``
+    is already built here from the schedule and needs no extra request. The
+    settle margin covers stoppage, half-time and the gap before WhoScored
+    finishes publishing the event stream; a match kicked off three hours ago is
+    over, and one kicked off in the future certainly is not.
+
+    Undated rows are excluded: an unknown kickoff cannot be shown to be in the
+    past, and ``assign_gameweek`` could not place its events anyway.
+    """
+    now = now or datetime.now()
+    cutoff = now - timedelta(hours=MATCH_SETTLE_HOURS)
+    return sorted(
+        gid for gid, ko in kickoff_of.items()
+        if ko is not None and not pd.isna(ko) and ko <= cutoff
+    )
 
 
 def aggregate_match_events(events: pd.DataFrame) -> pd.DataFrame:
@@ -215,6 +250,18 @@ def _write_defensive_counts(season: str, totals: dict[tuple[int, int], dict[str,
     return written
 
 
+def _existing_event_rows(season: str) -> int:
+    """How many player_match_events rows this season already has to patch."""
+    db = get_session()
+    try:
+        return int(db.execute(
+            text("SELECT COUNT(*) FROM player_match_events WHERE season = :s"),
+            {"s": season},
+        ).scalar() or 0)
+    finally:
+        db.close()
+
+
 def ingest_whoscored_season(  # pragma: no cover - live network + browser only
     season: str,
     *,
@@ -242,6 +289,22 @@ def ingest_whoscored_season(  # pragma: no cover - live network + browser only
     if not sd_season:
         raise ValueError(f"No WhoScored season mapping for {season!r}")
 
+    # This module only ever UPDATEs rows fbref.ingest_fbref_season wrote; it
+    # never inserts. With no rows for the season there is nothing to patch, and
+    # driving a browser through the schedule to compute counts that will be
+    # discarded is pure waste. Reachable in practice: on 2026-08-25 the FBref
+    # ingest refused 2026-27 outright (soccerdata's season-code collision --
+    # its schedule came back with 1926-27 dates), and run_weekly.py calls this
+    # immediately afterwards regardless, because each step is warn-and-continue.
+    existing = _existing_event_rows(season)
+    if existing == 0:
+        logger.warning(
+            "WhoScored %s: player_match_events has no rows for this season, and "
+            "this ingest only patches existing ones. Run scripts/scrape_fbref.py "
+            "successfully first; skipping rather than opening a browser.", season,
+        )
+        return 0, 0
+
     ws_kwargs: dict = {
         "leagues": WHOSCORED_LEAGUE, "seasons": sd_season,
         "no_cache": no_cache, "headless": headless,
@@ -256,7 +319,19 @@ def ingest_whoscored_season(  # pragma: no cover - live network + browser only
         for gid, dt in zip(schedule["game_id"], schedule["date"], strict=False)
     }
 
-    events = ws.read_events(output_fmt="events")
+    played = played_match_ids(kickoff_of)
+    if not played:
+        logger.warning(
+            "WhoScored %s: no finished fixtures in the schedule yet -- nothing "
+            "to scrape. Skipping rather than walking the whole season.", season,
+        )
+        return 0, 0
+    logger.info(
+        "WhoScored %s: %d of %d fixtures played; scraping those only",
+        season, len(played), len(kickoff_of),
+    )
+
+    events = ws.read_events(match_id=played, output_fmt="events")
     agg = aggregate_match_events(events)
 
     deadlines = _load_deadlines(season)

@@ -12,7 +12,12 @@ from datetime import datetime
 
 import pandas as pd
 
-from data.ingestors.whoscored import _to_naive, aggregate_match_events, sum_by_gameweek
+from data.ingestors.whoscored import (
+    _to_naive,
+    aggregate_match_events,
+    played_match_ids,
+    sum_by_gameweek,
+)
 
 
 def _events(rows):
@@ -156,3 +161,71 @@ def test_sum_by_gameweek_unmatched_player_or_missing_kickoff():
     totals, unmatched = sum_by_gameweek(agg, kickoff_of, deadlines, name_map)
     assert unmatched == 2
     assert totals == {}
+
+
+def test_played_match_ids_excludes_future_fixtures():
+    """read_events(match_id=None) walks the WHOLE schedule. One gameweek into
+    26/27 that meant driving a browser through all 380 fixtures to collect
+    events from the 10 played -- slow, visible, and the kind of traffic that
+    gets a scraper blocked.
+    """
+    now = datetime(2026, 8, 25, 12, 0)
+    kickoff_of = {
+        101: datetime(2026, 8, 21, 19, 0),   # played, days ago
+        102: datetime(2026, 8, 24, 19, 0),   # played, yesterday
+        103: datetime(2026, 8, 28, 19, 0),   # future -- GW2
+        104: datetime(2026, 9, 4, 19, 0),    # future -- GW3
+    }
+
+    assert played_match_ids(kickoff_of, now=now) == [101, 102]
+
+
+def test_played_match_ids_excludes_a_match_still_in_progress():
+    """A match that kicked off 30 minutes ago is not over, and its event
+    stream is incomplete. MATCH_SETTLE_HOURS covers stoppage, half-time and
+    WhoScored's own publishing lag."""
+    now = datetime(2026, 8, 25, 20, 0)
+    kickoff_of = {
+        201: datetime(2026, 8, 25, 19, 30),  # 30 min ago -- in progress
+        202: datetime(2026, 8, 25, 15, 0),   # 5h ago -- done
+    }
+
+    assert played_match_ids(kickoff_of, now=now) == [202]
+
+
+def test_played_match_ids_excludes_undated_rows():
+    """An unknown kickoff cannot be shown to be in the past, and
+    assign_gameweek could not place its events anyway."""
+    now = datetime(2026, 8, 25, 12, 0)
+    kickoff_of = {301: None, 302: datetime(2026, 8, 21, 19, 0)}
+
+    assert played_match_ids(kickoff_of, now=now) == [302]
+
+
+def test_played_match_ids_empty_when_season_has_not_started():
+    now = datetime(2026, 8, 1, 12, 0)
+    kickoff_of = {401: datetime(2026, 8, 21, 19, 0)}
+
+    assert played_match_ids(kickoff_of, now=now) == []
+
+
+def test_ingest_skips_the_browser_when_there_are_no_rows_to_patch(monkeypatch):
+    """This ingest only UPDATEs rows FBref wrote. With none for the season,
+    opening a browser computes counts that are then discarded.
+
+    Reachable in practice: on 2026-08-25 the FBref ingest refused 2026-27
+    outright (soccerdata season-code collision) and run_weekly.py called this
+    straight afterwards anyway, since every step is warn-and-continue.
+    """
+    import data.ingestors.whoscored as ws_module
+
+    monkeypatch.setattr(ws_module, "_existing_event_rows", lambda season: 0)
+
+    def _boom(*a, **k):  # pragma: no cover - must not run
+        raise AssertionError("must not construct a browser session")
+
+    monkeypatch.setitem(__import__("sys").modules, "soccerdata", type(
+        "sd", (), {"WhoScored": staticmethod(_boom)},
+    ))
+
+    assert ws_module.ingest_whoscored_season("2026-27") == (0, 0)
