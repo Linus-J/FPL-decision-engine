@@ -1,12 +1,12 @@
 {
   "bench_order": [
     "Dubravka",
-    "Van Hecke",
+    "Pedro Porro",
     "Obi",
     "Neave"
   ],
   "captain": "B.Fernandes",
-  "chips_left_this_half": 4,
+  "chips_left_this_half": 3,
   "cost": 100.0,
   "degenerate": [
     "injury_severity",
@@ -41,12 +41,12 @@
     "B.Fernandes",
     "Gabriel",
     "Gibbs-White",
-    "Pedro Porro",
     "Raya",
     "Semenyo",
     "Szoboszlai",
     "Tarkowski",
     "Thiago",
+    "Van Hecke",
     "Virgil"
   ],
   "teams_on_prior_strength": 17,

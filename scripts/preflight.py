@@ -189,10 +189,48 @@ def check_no_duplicate_live_decisions(db, result: Result) -> None:
         if superseded:
             result.note(f"{table}: superseded rows from re-runs (harmless)", superseded)
 
-    chips = db.execute(
+    # Scoped to GW1 (2026-08-25). This counted EVERY chip row in the table, so
+    # the first legitimate in-season chip failed it -- and it would then have
+    # failed every week for the rest of the season, which is how a preflight
+    # teaches you to stop reading it.
+    #
+    # The defect it was built for was specific: before the cold start was
+    # correctly detected, the pre-season path fell through to the in-season
+    # branch, ran recommend_chip and recorded a Triple Captain as PLAYED in
+    # GW1 before a ball had been kicked (see agent/decision_engine.py's
+    # season_has_played_history comment). The cold start deliberately never
+    # considers chips, so a chip row at GW1 still means that bug is back --
+    # and a chip at GW2 or later means the engine is doing its job.
+    gw1_chips = db.execute(
+        text("SELECT COUNT(*) FROM decision_log WHERE decision_type = 'chip' AND gameweek <= 1")
+    ).scalar() or 0
+    result.check(gw1_chips == 0, "no chip played at GW1", f"{gw1_chips} chip rows at GW1")
+
+    all_chips = db.execute(
         text("SELECT COUNT(*) FROM decision_log WHERE decision_type = 'chip'")
     ).scalar() or 0
-    result.check(chips == 0, "no chip played before GW1", f"{chips} chip rows")
+    if all_chips:
+        result.note("chip decisions recorded this season", all_chips)
+
+
+def decision_gameweek(db) -> int:
+    """The gameweek whose decision is being checked -- FPL's next, else current.
+
+    Several checks below are point-in-time and need to know WHICH deadline they
+    are asserting against. They used to hardcode gameweek 1, which was correct
+    for the only gameweek that existed when they were written and silently
+    wrong from GW2 onward.
+    """
+    from sqlalchemy import text
+
+    gw = db.execute(
+        text(
+            "SELECT id FROM gameweeks WHERE season = :s AND (is_next = 1 OR is_current = 1) "
+            "ORDER BY is_next DESC, id LIMIT 1"
+        ),
+        {"s": SEASON},
+    ).scalar()
+    return int(gw or 1)
 
 
 def check_no_leakage(db, result: Result) -> None:
@@ -200,25 +238,38 @@ def check_no_leakage(db, result: Result) -> None:
     from sqlalchemy import text
 
     print("\n[point-in-time integrity]")
+    # Against the gameweek being DECIDED, not gameweek 1 (2026-08-25). Pinned
+    # to `g.id = 1`, this asked "is any snapshot newer than the GW1 deadline",
+    # which is the right question only while GW1 is the next gameweek. Once it
+    # had passed, every routine ingest tripped it -- 4,280 rows on the first
+    # GW2 run -- while the leakage that actually matters, data stamped after
+    # THIS week's deadline, went unchecked.
+    gw = decision_gameweek(db)
     late_snapshots = db.execute(
         text(
             "SELECT COUNT(*) FROM player_state_snapshots ps "
-            "JOIN gameweeks g ON g.id = 1 AND g.season = :s "
+            "JOIN gameweeks g ON g.id = :gw AND g.season = :s "
             "WHERE ps.season = :s AND ps.snapshot_ts > g.deadline_time"
         ),
-        {"s": SEASON},
+        {"s": SEASON, "gw": gw},
     ).scalar() or 0
-    result.check(late_snapshots == 0, "no post-deadline player snapshots", str(late_snapshots))
+    result.check(
+        late_snapshots == 0,
+        f"no player snapshots after the GW{gw} deadline",
+        str(late_snapshots),
+    )
 
     late_odds = db.execute(
         text(
             "SELECT COUNT(*) FROM fixture_odds fo JOIN fixtures f ON f.id = fo.fixture_id "
             "JOIN gameweeks g ON g.id = f.gameweek AND g.season = f.season "
-            "WHERE f.season = :s AND f.gameweek = 1 AND fo.fetched_at > g.deadline_time"
+            "WHERE f.season = :s AND f.gameweek = :gw AND fo.fetched_at > g.deadline_time"
         ),
-        {"s": SEASON},
+        {"s": SEASON, "gw": gw},
     ).scalar() or 0
-    result.note("GW1 odds snapshots taken after the deadline (excluded on read)", late_odds)
+    result.note(
+        f"GW{gw} odds snapshots taken after the deadline (excluded on read)", late_odds
+    )
 
 
 def check_fallbacks_engage(result: Result) -> dict:
