@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 1,
   "label": "GW1 \u2014 21 Aug 2026",
-  "generated_at": "2026-08-25T14:12:08.197492+00:00",
+  "generated_at": "2026-08-25T14:40:30.301186+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -475,23 +475,31 @@
   "history": [
     {
       "gameweek": 2,
+      "type": "transfers",
+      "transfers_in": [
+        "Rice",
+        "Gu\u00e9hi"
+      ],
+      "transfers_out": [
+        "Gibbs-White",
+        "Pedro Porro"
+      ],
+      "hits_taken": 0,
+      "net_xpts_gain": 8.05803085189649
+    },
+    {
+      "gameweek": 2,
       "type": "chip",
       "chip": "3xc",
-      "reason": "TC captain xPts 7.6"
+      "reason": "TC captain xPts 7.7"
     },
     {
       "gameweek": 2,
       "type": "transfers",
-      "transfers_in": [
-        "Evanilson",
-        "Rayan"
-      ],
-      "transfers_out": [
-        "Semenyo",
-        "Obi"
-      ],
-      "hits_taken": 1,
-      "net_xpts_gain": -11.443632653918172
+      "transfers_in": [],
+      "transfers_out": [],
+      "hits_taken": 0,
+      "net_xpts_gain": 0.0
     }
   ]
 }
