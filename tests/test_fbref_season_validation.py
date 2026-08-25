@@ -187,3 +187,83 @@ def test_purge_checks_each_stat_type_independently(tmp_path, monkeypatch):
 
     assert purged == ["shooting"]
     assert good.exists() and not bad.exists()
+
+
+def test_modal_year_ignores_incidental_recent_dates():
+    """A 1926-27 schedule page still carries recent dates in its chrome, so
+    the presence of a 2026 date proves nothing. The year most fixtures fall
+    in is what identifies the season."""
+    from data.ingestors.fbref import modal_year
+
+    page = " ".join(["1926-09-04"] * 20 + ["1927-03-12"] * 18 + ["2026-08-25"])
+
+    assert modal_year(page) == 1926
+
+
+def test_modal_year_none_when_no_dates():
+    from data.ingestors.fbref import modal_year
+
+    assert modal_year("<html>no dates here</html>") is None
+
+
+def _season_cache(tmp_path, league, kind, body):
+    d = tmp_path / "FBref"
+    d.mkdir(exist_ok=True)
+    f = d / f"{kind}_{league}_2627.html"
+    f.write_text(body)
+    return f
+
+
+def test_wrong_season_schedule_cache_is_purged(tmp_path, monkeypatch):
+    """Repairing the seasons index only fixes which URL is RESOLVED. A schedule
+    already downloaded under the ambiguous 2627 code is still served from cache,
+    so the ingest keeps reading 1926-27 without touching the network -- which is
+    why re-running changed nothing on 2026-08-25.
+    """
+    import data.ingestors.fbref as fbref_module
+
+    monkeypatch.setattr(fbref_module, "SD_DATA_DIR", tmp_path)
+    old = _season_cache(
+        tmp_path, fbref_module.FBREF_LEAGUE, "schedule",
+        " ".join(["1926-09-04"] * 20 + ["1927-03-12"] * 18),
+    )
+
+    assert fbref_module.purge_wrong_season_caches("2026-2027") == ["schedule"]
+    assert not old.exists()
+
+
+def test_right_season_schedule_cache_is_kept(tmp_path, monkeypatch):
+    import data.ingestors.fbref as fbref_module
+
+    monkeypatch.setattr(fbref_module, "SD_DATA_DIR", tmp_path)
+    good = _season_cache(
+        tmp_path, fbref_module.FBREF_LEAGUE, "schedule",
+        " ".join(["2026-08-21"] * 20 + ["2027-05-10"] * 18),
+    )
+
+    assert fbref_module.purge_wrong_season_caches("2026-2027") == []
+    assert good.exists()
+
+
+def test_block_page_cache_is_purged_even_without_dates(tmp_path, monkeypatch):
+    """teams_ENG-Premier League_2627.html was a consent wall with no dates at
+    all, so the year check cannot judge it. The interstitial signature can."""
+    import data.ingestors.fbref as fbref_module
+
+    monkeypatch.setattr(fbref_module, "SD_DATA_DIR", tmp_path)
+    bad = _season_cache(
+        tmp_path, fbref_module.FBREF_LEAGUE, "teams",
+        "<title>Close this consent banner</title>",
+    )
+
+    assert fbref_module.purge_wrong_season_caches("2026-2027") == ["teams"]
+    assert not bad.exists()
+
+
+def test_purge_wrong_season_caches_tolerates_absent_files(tmp_path, monkeypatch):
+    import data.ingestors.fbref as fbref_module
+
+    monkeypatch.setattr(fbref_module, "SD_DATA_DIR", tmp_path)
+    (tmp_path / "FBref").mkdir()
+
+    assert fbref_module.purge_wrong_season_caches("2026-2027") == []

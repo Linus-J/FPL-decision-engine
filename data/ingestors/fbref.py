@@ -41,7 +41,9 @@ once the tackle count is counted correctly (see data/ingestors/whoscored.py).
 from __future__ import annotations
 
 import logging
+import re
 import unicodedata
+from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -416,6 +418,7 @@ def ingest_fbref_season(  # pragma: no cover - live network + browser only
         raise ValueError(f"No FBref season mapping for {season!r}")
 
     refresh_stale_seasons_cache(sd_season)
+    purge_wrong_season_caches(sd_season)
 
     fbref_kwargs: dict = {"leagues": FBREF_LEAGUE, "seasons": sd_season,
                           "no_cache": no_cache, "headless": headless}
@@ -567,6 +570,77 @@ def purge_unusable_stats_cache(
         path.unlink(missing_ok=True)
         removed.append(stat_type)
     return removed
+
+
+def _block_page_signal(text_: str) -> str | None:
+    """Which interstitial signature this page matches, if any."""
+    lowered = text_[:200_000].lower()
+    return next((m for m in _BLOCK_PAGE_SIGNALS if m in lowered), None)
+
+
+def modal_year(text_: str) -> int | None:
+    """The most frequent YYYY among ISO dates in the page, or None."""
+    years = [int(m[:4]) for m in re.findall(r"\b(?:19|20)\d{2}-\d{2}-\d{2}\b", text_)]
+    if not years:
+        return None
+    return Counter(years).most_common(1)[0][0]
+
+
+def purge_wrong_season_caches(sd_season: str, league: str = FBREF_LEAGUE) -> list[str]:
+    """Delete season-keyed FBref caches holding the WRONG season, or a block page.
+
+    Fixing the seasons index (``refresh_stale_seasons_cache``) only fixes which
+    URL soccerdata resolves. Anything already downloaded under the ambiguous
+    two-digit code stays on disk and is served from cache regardless -- so the
+    ingest keeps reading the old season with no further network request, and no
+    amount of re-running changes it.
+
+    That is exactly what happened on 2026-08-25: after the seasons index was
+    repaired and correctly listed 2026-2027, ``schedule_ENG-Premier
+    League_2627.html`` -- written 13:35 that day by the run that resolved to
+    1926-27 -- still held 1926/1927 fixtures, and ``teams_ENG-Premier
+    League_2627.html`` was a consent wall.
+
+    A schedule is judged by its MODAL date year: the page carries incidental
+    recent dates in its chrome, so presence of a 2026 date proves nothing,
+    while the year most of its fixtures fall in is decisive. Pages with no
+    dates at all are judged only on the block-page signatures.
+    """
+    purged: list[str] = []
+    code = season_code(sd_season)
+    start_year = int(sd_season[:4])
+    valid_years = {start_year, start_year + 1}
+    base = Path(SD_DATA_DIR) / "FBref"
+
+    for kind in ("schedule", "teams"):
+        path = base / f"{kind}_{league}_{code}.html"
+        if not path.exists():
+            continue
+        try:
+            text_ = path.read_text(errors="replace")
+        except OSError as exc:
+            logger.debug("Could not read %s: %s", path.name, exc)
+            continue
+
+        blocked = _block_page_signal(text_)
+        year = modal_year(text_)
+        wrong_season = year is not None and year not in valid_years
+        if not blocked and not wrong_season:
+            continue
+
+        reason = (
+            f"its fixtures are mostly from {year}, not {sorted(valid_years)}"
+            if wrong_season else f"it looks like a block page: {blocked!r}"
+        )
+        logger.warning(
+            "Cached FBref %s for %s is unusable -- %s. Removing %s so it is "
+            "re-fetched; until it is, soccerdata serves it from cache and the "
+            "ingest never reaches the network.",
+            kind, sd_season, reason, path.name,
+        )
+        path.unlink(missing_ok=True)
+        purged.append(kind)
+    return purged
 
 
 def _validate_schedule_season(schedule, season: str) -> None:  # pragma: no cover - live path

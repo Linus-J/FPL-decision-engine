@@ -270,6 +270,7 @@ def ingest_setpiece_roles(  # pragma: no cover - live network + browser only
         _flatten_columns,
         _match_player,
         purge_unusable_stats_cache,
+        purge_wrong_season_caches,
         refresh_stale_seasons_cache,
     )
     from projection.cold_start import prior_season_of
@@ -282,6 +283,7 @@ def ingest_setpiece_roles(  # pragma: no cover - live network + browser only
     # This builds its own FBref reader, so it needs the same two cache repairs
     # ingest_fbref_season does -- neither is inherited.
     refresh_stale_seasons_cache(sd_season)
+    purge_wrong_season_caches(sd_season)
     stat_types = ("shooting", "passing", "passing_types")
     purge_unusable_stats_cache(sd_season, stat_types)
 
