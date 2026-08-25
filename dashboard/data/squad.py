@@ -56,6 +56,47 @@ def _players_by_fpl_id(db: Session) -> pd.DataFrame:
     return pd.read_sql(query, db.bind)
 
 
+def _undo_automatic_subs(squad: pd.DataFrame, automatic_subs: list[dict]) -> pd.DataFrame:
+    """Restore ``is_starting`` to the XI as SUBMITTED, before FPL's autosubs.
+
+    Once a gameweek is played, /entry/{id}/event/{gw}/picks/ reports the
+    POST-autosub state -- it rewrites both ``multiplier`` and the 1-15
+    ``position`` slots, so a benched player who came on looks like he was
+    picked to start. On GW1 2026-27 that made Van Hecke (element 112) appear
+    in the XI at slot 4 and Pedro Porro (499) on the bench at slot 13, when
+    the submitted XI started Porro and Van Hecke was first substitute.
+    ``automatic_subs`` is the record of what FPL changed.
+
+    Left uncorrected this desynchronises the site from decision_log every week
+    an autosub fires -- which is most weeks -- and preflight's "site XI matches
+    decision_log" check fails on it. That check is right and the data was
+    wrong: the squad the bot is accountable for is the one it picked, not the
+    one FPL rearranged afterwards.
+
+    Points are unaffected either way; this is about which XI is on record.
+    """
+    if not automatic_subs or "fpl_id" not in squad.columns:
+        return squad
+    squad = squad.copy()
+    for sub in automatic_subs:
+        came_on, went_off = sub.get("element_in"), sub.get("element_out")
+        # Guard the round trip: only swap when BOTH ends are in this squad,
+        # so a malformed or foreign entry cannot leave an illegal XI behind.
+        if came_on is None or went_off is None:
+            continue
+        on_row = squad["fpl_id"] == came_on
+        off_row = squad["fpl_id"] == went_off
+        if not on_row.any() or not off_row.any():
+            logger.warning(
+                "automatic_sub %s->%s not fully present in squad; leaving as served",
+                went_off, came_on,
+            )
+            continue
+        squad.loc[on_row, "is_starting"] = False
+        squad.loc[off_row, "is_starting"] = True
+    return squad
+
+
 def _fallback_lineup(
     db: Session,
 ) -> tuple[list[int], list[int], int | None, int | None, int, float]:
@@ -110,6 +151,7 @@ def get_current_squad(db: Session, team_id: int) -> pd.DataFrame:
         picks = pd.DataFrame(payload["picks"]).rename(columns={"position": "squad_slot"})
         squad = players.merge(picks, left_on="fpl_id", right_on="element", how="inner")
         squad["is_starting"] = squad["multiplier"] > 0
+        squad = _undo_automatic_subs(squad, payload.get("automatic_subs") or [])
     else:
         logger.info("No live FPL picks for team=%s; falling back to decision_log", team_id)
         squad_ids, starting_ids, captain_id, vice_captain_id, gw_used, projected_gain = (

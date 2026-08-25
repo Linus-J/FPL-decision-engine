@@ -177,3 +177,61 @@ def test_reused_fpl_id_does_not_duplicate_the_squad(session, monkeypatch):
     assert len(squad) == 1, f"one pick must yield one row, got {len(squad)}"
     assert squad.iloc[0]["web_name"] == "Current"
     assert squad.iloc[0]["player_id"] == 2
+
+
+def test_automatic_subs_are_reversed_to_the_submitted_xi(session, monkeypatch):
+    """After a gameweek is played, FPL's picks endpoint reports the POST-autosub
+    XI -- it rewrites multiplier AND the 1-15 position slots. The squad on
+    record must be the one that was SUBMITTED, or it desynchronises from
+    decision_log every week an autosub fires (GW1 2026-27: Van Hecke came on
+    for Pedro Porro, and the site showed Van Hecke as a starter).
+    """
+    session.add(Team(id=1, name="Team A", short_name="TMA"))
+    session.add_all([
+        Player(id=1, fpl_id=101, code=101, first_name="S", second_name="Tarter",
+               web_name="Starter", team_id=1, position="DEF", now_cost=5.5),
+        Player(id=2, fpl_id=102, code=102, first_name="S", second_name="Ub",
+               web_name="Subbed", team_id=1, position="DEF", now_cost=5.0),
+    ])
+    session.commit()
+
+    monkeypatch.setattr(squad_module, "_get_current_and_next_gw", lambda: (5, 6))
+    # As FPL serves it after the fact: the sub is in the XI (multiplier 1,
+    # slot 4) and the man he replaced is on the bench (multiplier 0, slot 13).
+    monkeypatch.setattr(squad_module, "get_picks", lambda team_id, gw: {
+        "picks": [
+            {"element": 102, "position": 4, "multiplier": 1,
+             "is_captain": False, "is_vice_captain": False},
+            {"element": 101, "position": 13, "multiplier": 0,
+             "is_captain": False, "is_vice_captain": False},
+        ],
+        "automatic_subs": [{"element_in": 102, "element_out": 101, "event": 6}],
+    } if gw == 6 else {})
+    monkeypatch.setattr(squad_module, "get_latest_projections", lambda gw: pd.DataFrame())
+
+    squad = squad_module.get_current_squad(session, team_id=1).set_index("web_name")
+
+    assert squad.loc["Starter", "is_starting"], "the submitted starter must be the starter"
+    assert not squad.loc["Subbed", "is_starting"], "the autosub must not read as picked"
+
+
+def test_automatic_sub_referencing_an_absent_player_is_left_alone(session, monkeypatch):
+    """A half-applied swap would leave an illegal XI, which is worse than
+    reporting FPL's own view. Both ends must be present or nothing moves."""
+    session.add(Team(id=1, name="Team A", short_name="TMA"))
+    session.add(Player(id=1, fpl_id=101, code=101, first_name="O", second_name="Nly",
+                       web_name="Only", team_id=1, position="DEF", now_cost=5.0))
+    session.commit()
+
+    monkeypatch.setattr(squad_module, "_get_current_and_next_gw", lambda: (5, 6))
+    monkeypatch.setattr(squad_module, "get_picks", lambda team_id, gw: {
+        "picks": [{"element": 101, "position": 4, "multiplier": 1,
+                   "is_captain": False, "is_vice_captain": False}],
+        # element_out 999 is not in the squad at all.
+        "automatic_subs": [{"element_in": 101, "element_out": 999, "event": 6}],
+    } if gw == 6 else {})
+    monkeypatch.setattr(squad_module, "get_latest_projections", lambda gw: pd.DataFrame())
+
+    squad = squad_module.get_current_squad(session, team_id=1)
+
+    assert bool(squad.iloc[0]["is_starting"]) is True
