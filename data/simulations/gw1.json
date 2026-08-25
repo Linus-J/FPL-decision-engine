@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 1,
   "label": "GW1 \u2014 21 Aug 2026",
-  "generated_at": "2026-08-20T08:37:39.518182+00:00",
+  "generated_at": "2026-08-25T10:53:51.664831+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -21,6 +21,18 @@
         "p90": 11.0336,
         "approx": true
       }
+    },
+    {
+      "player_id": 4,
+      "web_name": "Setford",
+      "position": "GKP",
+      "team_short": "ARS",
+      "now_cost": 3.9,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": true,
+      "bench_order": null,
+      "xpts": null
     },
     {
       "player_id": 5,
@@ -59,6 +71,18 @@
       }
     },
     {
+      "player_id": 188,
+      "web_name": "Roerslev",
+      "position": "DEF",
+      "team_short": "BHA",
+      "now_cost": 4.5,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "xpts": null
+    },
+    {
       "player_id": 210,
       "web_name": "Thiago",
       "position": "FWD",
@@ -82,33 +106,15 @@
       "position": "DEF",
       "team_short": "TOT",
       "now_cost": 5.0,
-      "is_starting": false,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": 2,
-      "xpts": {
-        "p10": 0.0,
-        "median": 3.5675,
-        "mean": 3.5675,
-        "p90": 7.5267,
-        "approx": true
-      }
-    },
-    {
-      "player_id": 310,
-      "web_name": "Lacroix",
-      "position": "DEF",
-      "team_short": "CHE",
-      "now_cost": 6.0,
       "is_starting": true,
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
       "xpts": {
         "p10": 0.0,
-        "median": 4.8595,
-        "mean": 4.8595,
-        "p90": 10.0659,
+        "median": 3.5675,
+        "mean": 3.5675,
+        "p90": 7.5267,
         "approx": true
       }
     },
@@ -167,22 +173,16 @@
       }
     },
     {
-      "player_id": 480,
-      "web_name": "Gravenberch",
-      "position": "MID",
-      "team_short": "LIV",
-      "now_cost": 6.0,
+      "player_id": 486,
+      "web_name": "Darwin",
+      "position": "FWD",
+      "team_short": "IPS",
+      "now_cost": 6.5,
       "is_starting": true,
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
-      "xpts": {
-        "p10": 0.0,
-        "median": 4.1805,
-        "mean": 4.1805,
-        "p90": 9.6697,
-        "approx": true
-      }
+      "xpts": null
     },
     {
       "player_id": 496,
@@ -239,6 +239,18 @@
       }
     },
     {
+      "player_id": 590,
+      "web_name": "Lascelles",
+      "position": "DEF",
+      "team_short": "MCI",
+      "now_cost": 4.3,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "xpts": null
+    },
+    {
       "player_id": 609,
       "web_name": "Neave",
       "position": "FWD",
@@ -271,6 +283,42 @@
         "median": 5.534,
         "mean": 5.534,
         "p90": 10.8598,
+        "approx": true
+      }
+    },
+    {
+      "player_id": 635,
+      "web_name": "Anderson",
+      "position": "MID",
+      "team_short": "MCI",
+      "now_cost": 6.5,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "xpts": {
+        "p10": 0.2318,
+        "median": 5.2628,
+        "mean": 5.2628,
+        "p90": 10.2939,
+        "approx": true
+      }
+    },
+    {
+      "player_id": 714,
+      "web_name": "Pedro Porro",
+      "position": "DEF",
+      "team_short": "TOT",
+      "now_cost": 5.5,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 2,
+      "xpts": {
+        "p10": 0.0,
+        "median": 2.9741,
+        "mean": 2.9741,
+        "p90": 7.3692,
         "approx": true
       }
     }
