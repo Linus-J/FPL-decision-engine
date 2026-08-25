@@ -20,7 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 import data.ingestors.setpiece as setpiece
 from data.ingestors.setpiece import derive_setpiece_roles, write_setpiece_roles
-from data.models import Base, PlayerSetPieceRole
+from data.models import Base, Player, PlayerSetPieceRole, Team
 
 
 def _row(player, team, **kw):
@@ -405,10 +405,17 @@ def test_requested_stat_types_are_ones_soccerdata_actually_serves():
     assert not missing, f"soccerdata no longer serves {sorted(missing)}; served: {sorted(served)}"
 
 
-def test_missing_corner_data_yields_no_false_setpiece_taker():
-    """Corners are unavailable from soccerdata's player-season tables, so every
-    row now arrives with corners=0. That must read as "no opinion", never as
-    "is the taker" -- corner duty comes from the published depth chart."""
+def test_absent_corner_data_states_no_opinion_rather_than_False():
+    """soccerdata 1.9.1 serves no player-season passing tables, so corners and
+    key passes arrive ABSENT. They must be omitted from the role, not written
+    as False/0.0.
+
+    Found live 2026-08-25: the scrape wrote is_set_piece_taker=0 over nine
+    players from the published depth chart, including B.Fernandes, who is on
+    both corners and free kicks there. write_setpiece_roles updates partially,
+    so an omitted key preserves the published value while a present one
+    destroys it.
+    """
     rows = [
         {"player": "A", "team": "T", "penalty_attempts": 6, "matches": 30},
         {"player": "B", "team": "T", "penalty_attempts": 0, "matches": 30},
@@ -417,5 +424,35 @@ def test_missing_corner_data_yields_no_false_setpiece_taker():
     roles = {r["player"]: r for r in derive_setpiece_roles(rows)}
 
     assert roles["A"]["is_penalty_taker"] is True
-    assert roles["A"]["is_set_piece_taker"] is False
+    assert "is_set_piece_taker" not in roles["A"], "must not claim an opinion it lacks"
+    assert "key_passes_per_game" not in roles["A"]
     assert "B" not in roles, "a player with no duty at all should not get a row"
+
+
+def test_measured_zero_corners_is_still_an_opinion():
+    """A source that DOES carry corners and reports zero is saying he does not
+    take them. That is real information and must be written, unlike absence."""
+    rows = [
+        {"player": "A", "team": "T", "penalty_attempts": 6, "corners": 0, "matches": 30},
+        {"player": "C", "team": "T", "penalty_attempts": 0, "corners": 40, "matches": 30},
+    ]
+
+    roles = {r["player"]: r for r in derive_setpiece_roles(rows)}
+
+    assert roles["A"]["is_set_piece_taker"] is False
+    assert roles["C"]["is_set_piece_taker"] is True
+
+
+def test_role_with_no_fields_is_not_written(session):
+    """A deferred player whose every derivable field was stripped has nothing
+    to say. Writing the row anyway only bumps updated_at and inflates the
+    reported count with writes that changed nothing."""
+    session.add(Team(id=1, name="T", short_name="T"))
+    session.add(Player(id=1, fpl_id=1, code=1, first_name="A", second_name="B",
+                       web_name="AB", team_id=1, position="MID", now_cost=5.0))
+    session.commit()
+
+    n = write_setpiece_roles("2026-27", [{"player_id": 1, "player": "AB", "team": "T"}])
+
+    assert n == 0
+    assert session.query(PlayerSetPieceRole).count() == 0

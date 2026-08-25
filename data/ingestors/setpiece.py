@@ -63,7 +63,7 @@ MIN_SETPIECE_EVENTS = 10
 PENALTY_CONVERSION = 0.79
 
 
-def _num(raw: Mapping, *keys: str, default: float = 0.0) -> float:
+def _num(raw: Mapping, *keys: str, default: float | None = 0.0) -> float | None:
     """First present, non-null key wins. FBref's column names vary between
     the flattened season and match tables ('Standard PKatt' vs 'PKatt'), and
     a missing column must degrade to 0 rather than raise."""
@@ -108,24 +108,32 @@ def derive_setpiece_roles(rows: Iterable[Mapping]) -> list[dict]:
             "player": player,
             "team": team,
             "penalty_attempts": _num(raw, "penalty_attempts", "PKatt", "Standard PKatt"),
-            "corners": _num(raw, "corners", "CK", "Pass Types CK"),
-            "key_passes": _num(raw, "key_passes", "KP"),
+            # None, NOT 0.0, when the source carries no such column. soccerdata
+            # 1.9.1 serves no player-season passing tables, so corners and key
+            # passes are absent entirely -- and "absent" has to stay
+            # distinguishable from "measured zero", or this writes a confident
+            # False over a published depth chart that knows better.
+            "corners": _num(raw, "corners", "CK", "Pass Types CK", default=None),
+            "key_passes": _num(raw, "key_passes", "KP", default=None),
             "matches": _num(raw, "matches", "MP", "Playing Time MP", default=0.0),
         })
 
     roles: list[dict] = []
     for team, players in by_team.items():
         team_pens = sum(p["penalty_attempts"] for p in players)
-        team_corners = sum(p["corners"] for p in players)
+        team_corners = sum(p["corners"] or 0.0 for p in players)
 
         for p in players:
             pen_share = p["penalty_attempts"] / team_pens if team_pens else 0.0
-            corner_share = p["corners"] / team_corners if team_corners else 0.0
             is_penalty_taker = (
                 p["penalty_attempts"] >= MIN_PENALTY_ATTEMPTS
                 and pen_share >= MIN_PENALTY_SHARE
             )
-            is_setpiece_taker = (
+            has_corners = p["corners"] is not None
+            corner_share = (
+                p["corners"] / team_corners if has_corners and team_corners else 0.0
+            )
+            is_setpiece_taker = has_corners and (
                 p["corners"] >= MIN_SETPIECE_EVENTS
                 and corner_share >= MIN_SETPIECE_SHARE
             )
@@ -139,18 +147,28 @@ def derive_setpiece_roles(rows: Iterable[Mapping]) -> list[dict]:
                 if is_penalty_taker and matches > 0
                 else 0.0
             )
-            key_passes_per_game = p["key_passes"] / matches if matches > 0 else 0.0
+            has_key_passes = p["key_passes"] is not None
+            key_passes_per_game = (
+                p["key_passes"] / matches if has_key_passes and matches > 0 else 0.0
+            )
 
             if not (is_penalty_taker or is_setpiece_taker or key_passes_per_game):
                 continue
-            roles.append({
+            role = {
                 "player": p["player"],
                 "team": team,
                 "is_penalty_taker": is_penalty_taker,
                 "penalty_xg_per_game": round(penalty_xg_per_game, 4),
-                "is_set_piece_taker": is_setpiece_taker,
-                "key_passes_per_game": round(key_passes_per_game, 4),
-            })
+            }
+            # Only claim a set-piece opinion when the source actually carried
+            # one. write_setpiece_roles updates PARTIALLY for exactly this
+            # reason: an omitted key leaves whatever another source wrote,
+            # while a present one overwrites it.
+            if has_corners:
+                role["is_set_piece_taker"] = is_setpiece_taker
+            if has_key_passes:
+                role["key_passes_per_game"] = round(key_passes_per_game, 4)
+            roles.append(role)
     return roles
 
 
@@ -185,10 +203,19 @@ def write_setpiece_roles(season: str, roles: Iterable[Mapping]) -> int:
     if not rows:
         return 0
 
+    written = 0
     db = get_session()
     try:
         for role in rows:
             fields = {k: role[k] for k in _ROLE_COLUMNS if k in role}
+            # Nothing to say about this player. Happens whenever every field a
+            # source could offer was either stripped (deferred to a published
+            # depth chart) or never derivable in the first place. Touching the
+            # row would only bump updated_at and inflate the written count with
+            # writes that changed nothing.
+            if not fields:
+                continue
+            written += 1
             stmt = (
                 insert(PlayerSetPieceRole)
                 .values(
@@ -204,7 +231,7 @@ def write_setpiece_roles(season: str, roles: Iterable[Mapping]) -> int:
             )
             db.execute(stmt)
         db.commit()
-        return len(rows)
+        return written
     finally:
         db.close()
 
