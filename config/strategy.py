@@ -272,12 +272,33 @@ class ChipTimingThresholds:
     # own ABSOLUTE projected points — TC doesn't change who you captain,
     # only the multiplier on whoever you'd already pick, so its real value
     # is one extra copy of THEIR points, not how far ahead they are of the
-    # alternative. Low floor: clears for almost any healthy, nailed-on
-    # captain pick; only declines on a genuinely weak/uncertain one
-    # (rotation risk, tough fixture). Untuned starting value pending
-    # backtesting, same convention as this session's other heuristic
-    # constants.
-    triple_captain_min_gain: float = 4.0
+    # Raised 4.0 -> 7.5 on 2026-08-25, on the first live evidence.
+    #
+    # At 4.0 this was a floor almost any nailed-on captain cleared, so the chip
+    # fired at the FIRST opportunity of each half -- GW2 -- which is close to
+    # the worst time to spend one of only two season uses. The old comment
+    # called it "untuned pending backtesting", and it was.
+    #
+    # The bar is now "clearly better than this squad's own typical best week"
+    # rather than "is a real captain". Measured over the GW2-6 projections: the
+    # squad's best captain each week ran 6.56, 6.77, 6.87, 6.87 and 7.71, so a
+    # typical peak is about 6.9 and 7.5 sits roughly 10% above it. GW2's 7.71
+    # clears; the other four do not.
+    #
+    # Two things this number is NOT. It is not derived from a backtest -- one
+    # gameweek of live projections is the whole sample. And it is an ABSOLUTE
+    # bar on a scale the engine is currently known to inflate: GW1 came in at
+    # bias +28.6 pts/GW across 90 personas, so if that holds, every projected
+    # captain figure here is high and this bar is effectively tighter than it
+    # looks. The principled version is relative -- "top decile of best-captain
+    # weeks across the half" -- which needs a distribution the season has not
+    # produced yet. Revisit once four or five gameweeks have been scored.
+    #
+    # Raising it cannot waste the chip: _panic_shrink drops every threshold to
+    # panic_threshold_shrink (30%) over the final panic_window_gws (3)
+    # gameweeks of a half, and recommend_chip force-plays an unused Triple
+    # Captain on the half's last gameweek regardless.
+    triple_captain_min_gain: float = 7.5
 
     # Multiplies (raises) the TC bar above when a DGW is visible within the
     # caller's dgw_gws lookahead but hasn't arrived yet — the real
@@ -497,7 +518,7 @@ class OptimiserConfig:
     # experiment with a cost ceiling, and revisit it against 2026-27's own
     # outcomes once enough gameweeks have been scored -- the persona cohort
     # sweeps risk_level around this baseline, so the season measures it.
-    mu_baseline: float = -0.25
+    mu_baseline: float = 0.0
     # How many distinct squads the joint re-ranker considers
     # (optimiser/joint_risk.py). Measured at 0.24s per MILP solve on the live
     # GW1 frame, so 200 costs ~48s per gameweek -- affordable for a calibration

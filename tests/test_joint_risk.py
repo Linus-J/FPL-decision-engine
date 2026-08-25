@@ -399,15 +399,20 @@ def test_joint_optimiser_at_mu_zero_returns_the_plain_optimum(monkeypatch):
     assert chosen is head
 
 
-def test_joint_reranker_is_live_on_the_shipped_defaults():
-    """The inverse of the test above, and the reason it had to change.
+def test_shipped_defaults_leave_the_risk_terms_dormant():
+    """mu_baseline went 0.0 -> -0.25 on the morning of 2026-08-25 and back to
+    0.0 the same afternoon, on live evidence.
 
-    mu_baseline is -0.25 as of 2026-08-25, so the re-ranker is NOT dormant on
-    the live path: every real squad decision now generates a pool and scores
-    it against the scenario matrices. If someone sets mu back to 0 without
-    meaning to, this fails and says so -- which is the failure that would
-    otherwise be silent, since a dormant re-ranker still returns a legal
-    squad, just the mean-optimal one.
+    The GW2 decision at -0.25 captained the GOALKEEPER, benched a 7.71-xPts
+    B.Fernandes, and paid a -4 hit for a transfer worth -11.44 xPts. Root
+    cause was a units bug in optimise_starting_xi (fixed separately, see
+    tests/test_squad_xi_risk_units.py), not mu itself -- but the calibration
+    behind -0.25 measured only the joint re-ranker, and the per-player term it
+    actually drives has never been evaluated on any season. Until it is, 0.0
+    is the honest default.
+
+    This pins that: at mu=0 the whole risk apparatus is inert. If someone
+    moves it without meaning to, this fails and says so.
     """
     lam, mu = lambda_mu_for_risk_level(
         OPTIMISER.risk_level,
@@ -415,5 +420,5 @@ def test_joint_reranker_is_live_on_the_shipped_defaults():
         OPTIMISER.mu_baseline,
         OPTIMISER.mu_range,
     )
-    assert mu != 0.0, "mu_baseline is 0 -- the joint re-ranker is dormant"
-    assert lam == 0.0, "lambda should still be 0 at the default risk_level of 0"
+    assert mu == 0.0, "mu_baseline moved off 0 -- re-read the 2026-08-25 GW2 evidence first"
+    assert lam == 0.0, "lambda should be 0 at the default risk_level of 0"

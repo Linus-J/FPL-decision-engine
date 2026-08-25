@@ -5,11 +5,13 @@ simulation batch -- in that order, so the decision is made against
 up-to-date DefCon/bonus/ownership data, not whatever was last scraped.
 
 FBref -> WhoScored -> set-pieces -> ownership ->
-backfill_decision_outcomes.py -> run_agent.py -> data_quality_gate.py ->
+run_agent.py -> backfill_decision_outcomes.py -> data_quality_gate.py ->
 export_site_data.py -> preflight.py -> run_simulations.py.
 
 The outcome backfill scores LAST gameweek's decisions (for the real bot and
-all 100 personas) before this gameweek's are made, so it always runs against
+all 90 personas). It runs AFTER run_agent.py because the ingest it depends on
+lives inside that script; nothing in the decision path reads actual_outcome,
+so the ordering costs nothing. It runs against
 complete match data.
 FBref must run before WhoScored (WhoScored only PATCHES rows FBref's
 ingest already created, never inserts new -- see scrape_whoscored.py).
@@ -180,24 +182,36 @@ def main() -> None:
             [sys.executable, "scripts/ingest_ownership.py", str(gw)],
         )
 
-    # P2.3 (2026-08-16): score the gameweek that just finished, for the real
-    # bot and every persona, BEFORE new decisions are made. This step existed
-    # but was never wired into any scheduled run, so `actual_outcome` was
-    # never populated at all -- the season would have produced a full record
-    # of decisions with no record of how any of them turned out, which is the
-    # one thing the live walk-through is for. Runs after the match-event and
-    # ownership refresh above so it scores against complete data.
-    _run_or_warn(
-        "scripts/backfill_decision_outcomes.py",
-        [sys.executable, "scripts/backfill_decision_outcomes.py", "--season", args.season],
-    )
-
     agent_args = [sys.executable, "scripts/run_agent.py", "--season", args.season]
     if args.chip:
         agent_args.extend(["--chip", args.chip])
 
     agent_code = _run(agent_args)
     logger.info("run_agent.py exited with code %d", agent_code)
+
+    # P2.3 (2026-08-16): score the gameweek that just finished, for the real
+    # bot and every persona. Without this the season produces a full record of
+    # decisions and no record of how any of them turned out, which is the one
+    # thing the live walk-through is for.
+    #
+    # Moved to AFTER run_agent on 2026-08-25. It ran before, and silently did
+    # nothing all season: the scorer gates on gameweeks.finished AND
+    # data_checked and needs player_gw_stats for the gameweek, and BOTH are
+    # written by run_full_ingest -- which happens inside run_agent.py, after
+    # this used to run. On the first live attempt the local DB still showed
+    # GW1 unfinished with zero stats rows, so the gate correctly refused, and
+    # the run reported success having scored nothing.
+    #
+    # Ordering it after the decision is safe: nothing in the decision path
+    # reads `actual_outcome` (agent/decision_engine.py mentions it only in a
+    # docstring and a comment). The scoring is a record of the PREVIOUS
+    # gameweek either way, and this is the earliest point at which the data it
+    # needs actually exists. Same argument the data-quality gate below already
+    # makes for running after run_agent rather than before.
+    _run_or_warn(
+        "scripts/backfill_decision_outcomes.py",
+        [sys.executable, "scripts/backfill_decision_outcomes.py", "--season", args.season],
+    )
     if agent_code != 0:
         logger.warning(
             "Real agent run reported an error (exit %d) -- check the log above "

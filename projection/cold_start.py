@@ -1181,6 +1181,95 @@ def _fill_tier_estimation_se(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def cold_start_projections(
+    season: str,
+    *,
+    target_gw: int = 1,
+    horizon: int | None = None,
+    players: pd.DataFrame | None = None,
+    config=None,
+):
+    """Prior-season-derived projections, with every adjustment the cold start
+    applies, for ``horizon`` gameweeks starting at ``target_gw``.
+
+    Extracted from ``build_initial_squad`` on 2026-08-25 so the same
+    projections can be used WITHOUT rebuilding a squad. The in-season pipeline
+    needs exactly that at the second gameweek of a season: one gameweek has
+    been played, so it is no longer a cold start by the decision engine's
+    definition and a squad already exists to make transfers from -- but
+    ``minutes_model._build_features`` derives its rolling features with
+    ``.shift(1)`` within a season and drops the rows where they are null, so a
+    player's first appearance never survives. With only GW1 played, EVERY row
+    is a first appearance and both training and serving frames come out empty.
+
+    So the fallback is projections only. The decision engine keeps its normal
+    in-season path -- existing squad, transfer optimiser, chip logic -- and
+    just gets its numbers from prior-season evidence for one week, instead of
+    from a model that cannot be fitted yet.
+
+    Returns ``(projections, players, rotation_caps)``: ``players`` has passed
+    the departure gate, and ``rotation_caps`` is returned so a caller that
+    selects a squad can log which capped players it picked anyway.
+    """
+    from config.strategy import OPTIMISER
+    from data.overrides import load_p_leave_overrides, load_rotation_risk_overrides
+    from optimiser.departure_risk import apply_departure_discount
+    from optimiser.rotation_risk import apply_rotation_risk
+
+    cfg = config or OPTIMISER
+    horizon = cfg.cold_start_lookahead_gws if horizon is None else horizon
+    if players is None:
+        players = load_current_players()
+    players = apply_departure_gate(players)
+
+    prior_season = prior_season_of(season)
+    projections = project_cold_start(
+        players,
+        load_prior_season_features(prior_season),
+        target_gw=target_gw,
+        raw_appearances=load_prior_season_appearances(prior_season),
+        prior_league_lookup=load_prior_league_lookup(season),
+        horizon=horizon,
+        season=season,
+        penalty_duty=load_new_penalty_duty(season, prior_season),
+    )
+
+    # Feature B (plan 2026-08-10): the rumour-discount tier of the
+    # already-existing departure-risk gate, fed with real data for the
+    # first time -- previously always an empty dict (Phase 4's news layer
+    # was never built), so this call was always a no-op before today.
+    projections = apply_departure_discount(projections, load_p_leave_overrides())
+
+    # Hand-entered ceilings on start probability (2026-08-18). The minutes
+    # model projects from a player's own history, so a summer signing carries
+    # his previous club's status wholesale -- Anderson arrived at Manchester
+    # City on 37 Forest starts and was handed start_probability 0.97 with no
+    # Manchester City minutes anywhere in evidence. Competition for a place is
+    # a fact about a squad, not about a player's record, and nothing in the
+    # pipeline can see it. Same position in the order as the departure
+    # discount: after availability, before anything selects on the numbers.
+    rotation_caps = load_rotation_risk_overrides()
+    projections = apply_rotation_risk(
+        projections, {pid: e["start_probability"] for pid, e in rotation_caps.items()}
+    )
+
+    # Optimiser's-curse shrinkage (2026-08-18, engine review §3). This ran in
+    # `projection/pipeline.py` for every in-season gameweek and never here,
+    # because the decision engine calls `build_initial_squad` directly and
+    # bypasses the pipeline entirely -- so the ONE decision made from the
+    # noisiest projections in the system (prior-season, translated
+    # prior-league, peer bucket, synthetic) was the one made without the
+    # correction for selecting on noise.
+    #
+    # Same flag, same function, same position in the order as the in-season
+    # path, so the two cannot drift.
+    if cfg.curse_shrinkage_enabled:
+        from projection.assemble import apply_curse_shrinkage
+        projections = apply_curse_shrinkage(projections, players)
+
+    return projections, players, rotation_caps
+
+
 def build_initial_squad(
     season: str,
     budget: float | None = None,
@@ -1208,63 +1297,16 @@ def build_initial_squad(
     """
     from config.strategy import OPTIMISER, SQUAD
     from data.overrides import (
-        load_p_leave_overrides,
-        load_rotation_risk_overrides,
         log_rumoured_squad_members,
     )
-    from optimiser.departure_risk import apply_departure_discount
-    from optimiser.rotation_risk import apply_rotation_risk, log_capped_squad_members
+    from optimiser.rotation_risk import log_capped_squad_members
     from optimiser.squad import optimise_squad
 
     cfg = config or OPTIMISER
     budget = SQUAD.budget_total if budget is None else budget
-    if players is None:
-        players = load_current_players()
-    players = apply_departure_gate(players)
-    prior_season = prior_season_of(season)
-    prior = load_prior_season_features(prior_season)
-    raw_appearances = load_prior_season_appearances(prior_season)
-    prior_league_lookup = load_prior_league_lookup(season)
-    projections = project_cold_start(
-        players, prior, raw_appearances=raw_appearances,
-        prior_league_lookup=prior_league_lookup,
-        horizon=cfg.cold_start_lookahead_gws, season=season,
-        penalty_duty=load_new_penalty_duty(season, prior_season),
+    projections, players, rotation_caps = cold_start_projections(
+        season, horizon=cfg.cold_start_lookahead_gws, players=players, config=cfg,
     )
-    # Feature B (plan 2026-08-10): the rumour-discount tier of the
-    # already-existing departure-risk gate, fed with real data for the
-    # first time -- previously always an empty dict (Phase 4's news layer
-    # was never built), so this call was always a no-op before today.
-    projections = apply_departure_discount(projections, load_p_leave_overrides())
-
-    # Hand-entered ceilings on start probability (2026-08-18). The minutes
-    # model projects from a player's own history, so a summer signing carries
-    # his previous club's status wholesale — Anderson arrived at Manchester
-    # City on 37 Forest starts and was handed start_probability 0.97 with no
-    # Manchester City minutes anywhere in evidence. Competition for a place is
-    # a fact about a squad, not about a player's record, and nothing in the
-    # pipeline can see it. Same position in the order as the departure
-    # discount: after availability, before anything selects on the numbers.
-    rotation_caps = load_rotation_risk_overrides()
-    projections = apply_rotation_risk(
-        projections, {pid: e["start_probability"] for pid, e in rotation_caps.items()}
-    )
-
-    # Optimiser's-curse shrinkage (2026-08-18, engine review §3). This ran in
-    # `projection/pipeline.py` for every in-season gameweek and never here,
-    # because the decision engine calls `build_initial_squad` directly and
-    # bypasses the pipeline entirely — so the ONE decision made from the
-    # noisiest projections in the system (prior-season, translated
-    # prior-league, peer bucket, synthetic) was the one made without the
-    # correction for selecting on noise.
-    #
-    # Same flag, same function, same position in the order as the in-season
-    # path (after availability and departure adjustments, before anything
-    # selects on the numbers), so the two cannot drift.
-    if cfg.curse_shrinkage_enabled:
-        from projection.assemble import apply_curse_shrinkage
-        projections = apply_curse_shrinkage(projections, players)
-
     players = players.merge(
         projections[["player_id", "start_probability"]].drop_duplicates("player_id"),
         left_on="id", right_on="player_id", how="left",

@@ -615,13 +615,32 @@ def optimise_starting_xi(
     the global ``OPTIMISER`` for this call only; ``None`` is byte-for-byte
     identical to today's behaviour."""
     cfg = config or OPTIMISER
-    gw_proj = projections[projections["gameweek"] == gw][["player_id", "xpts"]].copy()
-    if "xpts_var" in projections.columns:
-        gw_var = projections[projections["gameweek"] == gw][["player_id", "xpts_var"]]
-        gw_proj = gw_proj.merge(gw_var, on="player_id", how="left")
+    # Carry the one-sided risk columns through, not just xpts/xpts_var
+    # (2026-08-25). Without them `risk_adjusted_score` below received
+    # upside=downside=None and fell back to `xpts_var` -- and `mu` is
+    # calibrated against quantities in POINTS while a variance is in
+    # points-SQUARED. Since variance scales with the mean, a negative `mu`
+    # then penalised the best players hardest and inverted the XI outright.
+    #
+    # Measured on the live GW2 frame at mu=-0.25: B.Fernandes went from 7.71
+    # xPts to an effective -1.48 (13th of 15) and Gabriel from 7.07 to -5.13
+    # (last), while Gibbs-White's 4.35 came top on 1.42. The armband followed,
+    # landing on the goalkeeper. `optimise_squad` has passed these since
+    # 2026-08-18; this function was missed, and `captaincy.py` carries a
+    # comment describing the very same units bug being fixed there.
+    #
+    # Absent columns stay 0.0 rather than falling back to variance -- the same
+    # choice `optimise_squad` documents. That makes `mu` inert on projections
+    # which carry no semi-deviations (the in-season assemble path) instead of
+    # silently switching it to a quantity on a different scale.
+    risk_cols = [c for c in ("xpts_var", "upside", "downside") if c in projections.columns]
+    gw_proj = projections[projections["gameweek"] == gw][
+        ["player_id", "xpts", *risk_cols]
+    ].copy()
     df = squad.merge(gw_proj, left_on="id", right_on="player_id", how="left")
     df["xpts"] = df["xpts"].fillna(0.0)
-    df["xpts_var"] = df["xpts_var"].fillna(0.0) if "xpts_var" in df.columns else 0.0
+    for _col in ("xpts_var", "upside", "downside"):
+        df[_col] = df[_col].astype(float).fillna(0.0) if _col in df.columns else 0.0
 
     lam, mu = lambda_mu_for_risk_level(
         cfg.risk_level, cfg.max_ownership_differential, cfg.mu_baseline, cfg.mu_range
@@ -632,8 +651,11 @@ def optimise_starting_xi(
     else:
         df["eo_pct"] = 0.0
     df["effective_score"] = [
-        risk_adjusted_score(x, v, e, lam, mu)
-        for x, v, e in zip(df["xpts"], df["xpts_var"], df["eo_pct"], strict=True)
+        risk_adjusted_score(x, v, e, lam, mu, up, down)
+        for x, v, e, up, down in zip(
+            df["xpts"], df["xpts_var"], df["eo_pct"],
+            df["upside"], df["downside"], strict=True,
+        )
     ]
 
     player_ids = df["id"].tolist()

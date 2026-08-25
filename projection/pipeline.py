@@ -11,7 +11,8 @@ from data.models import Gameweek, PlayerProjection
 from data.overrides import load_start_probability_caps
 from optimiser.rotation_risk import apply_rotation_risk
 from projection import assemble
-from projection.cold_start import prior_season_of
+from projection.cold_start import cold_start_projections, prior_season_of
+from projection.minutes_model import _build_features as _minutes_features
 from projection.minutes_model import train as train_minutes
 
 logger = logging.getLogger(__name__)
@@ -212,6 +213,13 @@ def season_has_played_history(season: str) -> bool:
     return not assemble.load_all_stats(season).empty
 
 
+# Below this many usable rows, the current season alone cannot train the
+# minutes model and all available history is used instead. One PL gameweek
+# yields roughly 550 rows before feature-building and none after, so this
+# clears the degenerate early-season case without displacing a real season.
+MIN_CURRENT_SEASON_TRAINING_ROWS = 1000
+
+
 def run_projections(
     season: str = "2026-27",
     horizon: int | None = None,
@@ -254,7 +262,69 @@ def run_projections(
             persist_projections(pd.DataFrame(columns=empty_cols))
         return pd.DataFrame(columns=empty_cols)
 
-    min_model = train_minutes(df_override=history, save=False, fast=True)
+    # The minutes model trains on the CURRENT season's history when there is
+    # enough of it, and on all available history when there is not.
+    #
+    # Early in a season there is not. _build_features derives avg_minutes_5gw
+    # and season_avg_minutes with .shift(1) grouped by (player_id, season) and
+    # then drops rows where they are null, so a player's FIRST appearance of a
+    # season never survives. One gameweek in, every row is a first appearance:
+    # 571 rows go in and 0 come out, and train() then dies on an empty frame
+    # (IndexError: single positional indexer is out-of-bounds). Hit live at
+    # GW2 of 2026-27 on 2026-08-25 -- the pipeline guarded "no gameweeks
+    # played", which routes to the cold start, but not "one gameweek played",
+    # which falls between the two paths.
+    #
+    # Widening the training set is sound here rather than merely expedient:
+    # this model predicts MINUTES, and minutes are unaffected by the scoring
+    # changes that make older seasons a poor guide to points. It is the same
+    # reasoning cold_start.py already uses to carry prior-season evidence
+    # across the boundary.
+    # _build_features derives avg_minutes_5gw and season_avg_minutes with
+    # .shift(1) grouped by (player_id, season), then drops rows where they are
+    # null -- so a player's FIRST appearance of a season never survives. One
+    # gameweek in, EVERY row is a first appearance and the frame comes out
+    # empty, for serving as much as for training.
+    #
+    # That is not a gap the in-season path can paper over: with no usable rows
+    # there is nothing to fit and nothing to predict from. Hit live at GW2 of
+    # 2026-27 on 2026-08-25, where run_agent died on `IndexError: single
+    # positional indexer is out-of-bounds` inside train(), and then on
+    # `Found array with 0 sample(s)` at serve time once training was widened.
+    #
+    # The season is past its cold start by the decision engine's definition --
+    # a gameweek has been played and a squad exists to make transfers from --
+    # so rebuilding a squad from scratch would be wrong. Only the NUMBERS are
+    # unavailable. So take those from the cold start's prior-season evidence
+    # and leave the decision path alone: existing squad, transfer optimiser,
+    # chip logic, all unchanged. Resolves itself at GW3, when the second
+    # played gameweek gives every row a predecessor.
+    usable = len(_minutes_features(history))
+    if usable == 0:
+        logger.warning(
+            "%s has played gameweeks but none survive feature-building (%d rows "
+            "in, 0 out) -- too early for rolling features, which need a prior "
+            "gameweek within the season. Projecting GWs %s from prior-season "
+            "evidence instead; the decision path is unchanged.",
+            season, len(history), target_gws,
+        )
+        projections_df, _, _ = cold_start_projections(
+            season, target_gw=target_gws[0], horizon=horizon,
+        )
+        if persist:
+            persist_projections(projections_df)
+        return projections_df
+
+    if usable < MIN_CURRENT_SEASON_TRAINING_ROWS:
+        logger.warning(
+            "Only %d of %d current-season rows survive feature-building (need "
+            "%d) -- too early in %s to train the minutes model on it alone. "
+            "Training on all available history instead.",
+            usable, len(history), MIN_CURRENT_SEASON_TRAINING_ROWS, season,
+        )
+        min_model = train_minutes(save=False, fast=True)
+    else:
+        min_model = train_minutes(df_override=history, save=False, fast=True)
     fixture_context = _build_live_fixture_context(season, target_gws)
     match_odds = _load_live_match_odds(season, target_gws)
     defcon_events = assemble.load_defcon_events(season)
