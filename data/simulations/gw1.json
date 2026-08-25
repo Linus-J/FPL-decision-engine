@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 1,
   "label": "GW1 \u2014 21 Aug 2026",
-  "generated_at": "2026-08-25T10:53:51.664831+00:00",
+  "generated_at": "2026-08-25T10:56:39.960614+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -23,18 +23,6 @@
       }
     },
     {
-      "player_id": 4,
-      "web_name": "Setford",
-      "position": "GKP",
-      "team_short": "ARS",
-      "now_cost": 3.9,
-      "is_starting": true,
-      "is_captain": false,
-      "is_vice_captain": true,
-      "bench_order": null,
-      "xpts": null
-    },
-    {
       "player_id": 5,
       "web_name": "Gabriel",
       "position": "DEF",
@@ -51,36 +39,6 @@
         "p90": 16.7025,
         "approx": true
       }
-    },
-    {
-      "player_id": 122,
-      "web_name": "Dubravka",
-      "position": "GKP",
-      "team_short": "TOT",
-      "now_cost": 4.0,
-      "is_starting": false,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": 1,
-      "xpts": {
-        "p10": 0.0,
-        "median": 2.2973,
-        "mean": 2.2973,
-        "p90": 5.3094,
-        "approx": true
-      }
-    },
-    {
-      "player_id": 188,
-      "web_name": "Roerslev",
-      "position": "DEF",
-      "team_short": "BHA",
-      "now_cost": 4.5,
-      "is_starting": true,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": null,
-      "xpts": null
     },
     {
       "player_id": 210,
@@ -173,18 +131,6 @@
       }
     },
     {
-      "player_id": 486,
-      "web_name": "Darwin",
-      "position": "FWD",
-      "team_short": "IPS",
-      "now_cost": 6.5,
-      "is_starting": true,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": null,
-      "xpts": null
-    },
-    {
       "player_id": 496,
       "web_name": "Semenyo",
       "position": "MID",
@@ -239,18 +185,6 @@
       }
     },
     {
-      "player_id": 590,
-      "web_name": "Lascelles",
-      "position": "DEF",
-      "team_short": "MCI",
-      "now_cost": 4.3,
-      "is_starting": true,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": null,
-      "xpts": null
-    },
-    {
       "player_id": 609,
       "web_name": "Neave",
       "position": "FWD",
@@ -301,6 +235,24 @@
         "median": 5.2628,
         "mean": 5.2628,
         "p90": 10.2939,
+        "approx": true
+      }
+    },
+    {
+      "player_id": 122,
+      "web_name": "Dubravka",
+      "position": "GKP",
+      "team_short": "TOT",
+      "now_cost": 4.0,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 1,
+      "xpts": {
+        "p10": 0.0,
+        "median": 2.2973,
+        "mean": 2.2973,
+        "p90": 5.3094,
         "approx": true
       }
     },
