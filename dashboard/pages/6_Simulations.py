@@ -57,10 +57,32 @@ effects = get_axis_effects(SEASON)
 if effects.empty:
     st.info("No swept personas have been scored yet.")
 else:
+    # An axis whose settings all scored identically renders as a row of zero
+    # bars, which reads as a broken panel rather than as the real finding it
+    # usually is. Early in a season most axes CANNOT have had an effect yet:
+    # five of the seven act on transfers and chips, and a cold-start GW1 has
+    # neither. Say so instead of drawing an empty chart.
     for axis, group in effects.groupby("swept_axis"):
-        with st.expander(f"{axis}  ({len(group)} settings)"):
-            chart = group.set_index("value")[["delta_vs_baseline"]]
-            st.bar_chart(chart)
+        settings = len(group)
+        varies = group["mean_actual"].nunique() > 1
+        label = f"{axis}  ({settings} settings)" if varies else f"{axis}  (no effect yet)"
+        with st.expander(label, expanded=varies):
+            if not varies:
+                only = group["mean_actual"].iloc[0]
+                gws = int(group["gws_scored"].max())
+                st.info(
+                    f"All {settings} settings scored the same "
+                    f"({only:g} pts/GW over {gws} scored gameweek"
+                    f"{'s' if gws != 1 else ''}), so this parameter has not "
+                    "separated the cohort yet.\n\n"
+                    "That is usually the season being short rather than the "
+                    "parameter being inert: the transfer and chip axes cannot "
+                    "show anything until transfers and chips actually happen, "
+                    "and a cold-start opening gameweek has neither."
+                )
+            else:
+                chart = group.set_index("value")[["delta_vs_baseline"]]
+                st.bar_chart(chart)
             st.dataframe(
                 group.rename(columns={
                     "value": "Value", "mean_actual": "Mean pts/GW",

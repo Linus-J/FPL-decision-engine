@@ -416,17 +416,24 @@ def check_site_export_matches(db, result: Result) -> None:
     """The site is what the user actually reads. It has diverged from the
     decision log before."""
     print("\n[site export]")
-    path = Path(__file__).resolve().parents[1] / "data" / "simulations" / "gw1.json"
+    # The gameweek being decided, not gw1.json (2026-08-25) -- the third
+    # pre-season hardcode in this file, and the one that survived fixing the
+    # other two. export_site_data.py writes data/simulations/gw{N}.json for the
+    # CURRENT gameweek, so from GW2 this compared a freshly-made decision
+    # against last week's published file and reported a mismatch that was
+    # entirely its own doing.
+    gw = decision_gameweek(db)
+    path = Path(__file__).resolve().parents[1] / "data" / "simulations" / f"gw{gw}.json"
     if not path.exists():
-        result.check(False, "gw1.json exists")
+        result.check(False, f"gw{gw}.json exists")
         return
     site = json.loads(path.read_text())
     d = _latest_decision(db)
     site_ids = {e.get("player_id") or e.get("id") for e in site.get("squad", [])}
-    result.check(site_ids == set(d.get("squad_ids", [])), "site squad matches decision_log")
+    result.check(site_ids == set(d.get("squad_ids", [])), f"GW{gw} site squad matches decision_log")
     site_xi = {e.get("player_id") or e.get("id")
                for e in site.get("squad", []) if e.get("is_starting")}
-    result.check(site_xi == set(d.get("starting_ids", [])), "site XI matches decision_log")
+    result.check(site_xi == set(d.get("starting_ids", [])), f"GW{gw} site XI matches decision_log")
 
 
 def compare_to_baseline(snapshot: dict, result: Result, update: bool) -> None:

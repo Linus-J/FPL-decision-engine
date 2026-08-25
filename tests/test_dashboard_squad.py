@@ -235,3 +235,35 @@ def test_automatic_sub_referencing_an_absent_player_is_left_alone(session, monke
     squad = squad_module.get_current_squad(session, team_id=1)
 
     assert bool(squad.iloc[0]["is_starting"]) is True
+
+
+def test_stale_previous_gameweek_picks_are_not_used(session, monkeypatch):
+    """Between a decision being made and the team being entered on the FPL
+    site, the live entry still holds LAST gameweek's XI. Publishing that shows
+    neither current truth nor the current decision, and desynchronises the
+    site from decision_log -- which preflight's "site XI matches decision_log"
+    check caught on 2026-08-25.
+    """
+    _seed_players(session)
+    session.add(DecisionLog(
+        gameweek=6, decision_type="lineup", created_at=datetime(2026, 8, 25, 12, 0),
+        details=json.dumps({
+            "squad_ids": [1, 2, 3], "starting_ids": [1, 2],
+            "captain_id": 1, "vice_captain_id": 2,
+        }),
+        projected_gain=50.0, dry_run=True,
+    ))
+    session.commit()
+
+    monkeypatch.setattr(squad_module, "_get_current_and_next_gw", lambda: (5, 6))
+    # GW6 has not been entered; GW5 still holds the previous XI.
+    monkeypatch.setattr(squad_module, "get_picks", lambda team_id, gw: {
+        "picks": [{"element": 103, "position": 1, "multiplier": 1,
+                   "is_captain": True, "is_vice_captain": False}],
+    } if gw == 5 else {})
+    monkeypatch.setattr(squad_module, "get_latest_projections", lambda gw: pd.DataFrame())
+
+    squad = squad_module.get_current_squad(session, team_id=1)
+
+    assert set(squad["player_id"]) == {1, 2, 3}, "must publish the GW6 decision"
+    assert squad.loc[squad["player_id"] == 1, "is_captain"].iloc[0]

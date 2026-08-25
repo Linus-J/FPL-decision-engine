@@ -137,14 +137,22 @@ def get_current_squad(db: Session, team_id: int) -> pd.DataFrame:
     if players.empty:
         return pd.DataFrame()
 
-    current_gw, next_gw = _get_current_and_next_gw()
-    payload: dict = {}
+    # Live picks for the gameweek being DECIDED, else the decision log
+    # (2026-08-25). This used to fall back to the PREVIOUS gameweek's live
+    # picks when the next one had not been entered yet, which meant that
+    # between a decision being made and the team being entered on the site,
+    # both the published export and the dashboard showed last week's XI while
+    # decision_log held this week's. preflight's "site XI matches
+    # decision_log" caught it, correctly.
+    #
+    # An old gameweek's live picks are the one thing that is neither current
+    # truth nor the current decision, so it is never the right answer. Falling
+    # through to _fallback_lineup instead publishes what the bot actually
+    # decided, and the moment the team IS entered for this gameweek the live
+    # picks take over again.
+    _, next_gw = _get_current_and_next_gw()
     gw_used = next_gw
-    for gw in (next_gw, current_gw):
-        payload = get_picks(team_id, gw)
-        if payload.get("picks"):
-            gw_used = gw
-            break
+    payload: dict = get_picks(team_id, next_gw) or {}
 
     fallback_total: float | None = None
     if payload.get("picks"):
