@@ -27,6 +27,11 @@ build/
 
 # Environment / secrets
 .env
+# Backups of .env made before edits (e.g. .env.bak-20260824) -- these hold
+# the same secrets as .env itself and were untracked-but-not-ignored until
+# 2026-08-25, so a `git add -A` would have committed them.
+.env.bak*
+.env.*.bak
 *.env.local
 
 # Trained models
