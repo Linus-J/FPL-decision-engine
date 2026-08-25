@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 1,
   "label": "GW1 \u2014 21 Aug 2026",
-  "generated_at": "2026-08-25T13:57:15.249668+00:00",
+  "generated_at": "2026-08-25T14:12:08.197492+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -472,5 +472,26 @@
       }
     }
   ],
-  "history": []
+  "history": [
+    {
+      "gameweek": 2,
+      "type": "chip",
+      "chip": "3xc",
+      "reason": "TC captain xPts 7.6"
+    },
+    {
+      "gameweek": 2,
+      "type": "transfers",
+      "transfers_in": [
+        "Evanilson",
+        "Rayan"
+      ],
+      "transfers_out": [
+        "Semenyo",
+        "Obi"
+      ],
+      "hits_taken": 1,
+      "net_xpts_gain": -11.443632653918172
+    }
+  ]
 }
