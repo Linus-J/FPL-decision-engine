@@ -80,7 +80,11 @@ class SquadState:
 
 
 def _load_squad_state(
-    sim_manager_id: int | None, team_id: int, config: OptimiserConfig
+    sim_manager_id: int | None,
+    team_id: int,
+    config: OptimiserConfig,
+    *,
+    decided_gw: int | None = None,
 ) -> SquadState:
     """``sim_manager_id is None`` reads the real bot's own ``decision_log``
     (``team_id`` is informational only, not used in the query -- the real
@@ -92,25 +96,42 @@ def _load_squad_state(
     ``config.transfer_planning_horizon_gws`` (3.0) -- a units mismatch
     inherited from the pre-refactor ``_load_my_squad``, flagged at the time
     rather than changed. Fixed here (P1.6): a missing budget means "the
-    season's starting budget", not "three million pounds"."""
+    season's starting budget", not "three million pounds".
+
+    ``decided_gw`` scopes the lookup to a gameweek STRICTLY EARLIER than the
+    one being decided (2026-08-28). Without it this took the latest lineup row
+    outright, and the ``free_transfers`` field on that row is NEXT gameweek's
+    allowance -- ``roll_forward_free_transfers`` has already added the weekly
+    +1 (the current week's count is stored separately as
+    ``free_transfers_available``). So re-running a gameweek read the previous
+    run's roll-forward as its own allowance and banked a free transfer every
+    time. Live on the GW2 deadline: a second run saw 2 free transfers where
+    there was 1, made two transfers, and booked zero hits instead of -4.
+    ``None`` keeps the old unscoped behaviour for callers that have no
+    gameweek in hand (tests only -- the one production caller passes
+    ``next_gw``)."""
     db = get_session()
     try:
         if sim_manager_id is not None:
             query = text("""
                 SELECT details FROM sim_decision_log
                 WHERE sim_manager_id = :sim_manager_id AND decision_type = 'lineup'
+                  AND (:decided_gw IS NULL OR gameweek < :decided_gw)
                 ORDER BY created_at DESC LIMIT 1
             """)
-            row = db.execute(query, {"sim_manager_id": sim_manager_id}).fetchone()
+            row = db.execute(
+                query, {"sim_manager_id": sim_manager_id, "decided_gw": decided_gw}
+            ).fetchone()
         else:
             query = text("""
                 SELECT dl.details
                 FROM decision_log dl
                 WHERE dl.decision_type = 'lineup'
+                  AND (:decided_gw IS NULL OR dl.gameweek < :decided_gw)
                 ORDER BY dl.created_at DESC
                 LIMIT 1
             """)
-            row = db.execute(query).fetchone()
+            row = db.execute(query, {"decided_gw": decided_gw}).fetchone()
         if row:
             details = json.loads(row[0])
             squad_ids = details.get("squad_ids", [])
@@ -332,7 +353,7 @@ def _run_decision_cycle(
     # once real rows land.
     ownership = load_latest_ownership()
 
-    state = _load_squad_state(sim_manager_id, team_id, config)
+    state = _load_squad_state(sim_manager_id, team_id, config, decided_gw=next_gw)
     squad_ids = state.squad_ids
     available_budget = state.budget
     free_transfers = state.free_transfers

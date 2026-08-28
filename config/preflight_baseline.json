@@ -7,7 +7,7 @@
   ],
   "captain": "B.Fernandes",
   "chips_left_this_half": 3,
-  "cost": 100.0,
+  "cost": 99.9,
   "degenerate": [
     "injury_severity",
     "is_bgw",
