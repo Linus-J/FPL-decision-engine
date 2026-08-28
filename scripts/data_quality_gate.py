@@ -22,6 +22,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+# The season the gate audits. Two checks defaulted to the PRIOR season
+# (2026-08-28) while four defaulted to the live one, so every week the
+# Understat name-match and minutes-weighted source-coverage checks re-measured
+# a frozen historical season -- an answer that cannot change, and therefore
+# cannot alert. One constant so they cannot drift apart again.
+#
+# Note this was NOT what hid the dead 2026-27 xG feed: coverage asks whether a
+# row EXISTS for a player, and 309 rows existed carrying nothing but shots.
+# run_xg_liveness_check is the check that catches that.
+_LIVE_SEASON = "2026-27"
+
 FPL_BOOTSTRAP_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 
 
@@ -53,7 +64,7 @@ def run_team_id_freshness_check() -> list:
     return check_team_id_matches_live(player_team_ids, live_player_team)
 
 
-def run_understat_coverage_check(season: str = "2025-26") -> list:
+def run_understat_coverage_check(season: str = _LIVE_SEASON) -> list:
     """Name-match coverage against Understat's per-match feed for `season`.
     Would have caught the season-wide xG gap (only 14/524 players had any
     nonzero xg) immediately instead of it surfacing later as a captaincy
@@ -98,7 +109,7 @@ def run_understat_coverage_check(season: str = "2025-26") -> list:
 # every row ever written.
 
 
-def run_source_coverage_checks(season: str = "2025-26") -> list:
+def run_source_coverage_checks(season: str = _LIVE_SEASON) -> list:
     """How much of the football we model does each source actually see?
 
     Weighted by MINUTES, not player count: a source missing thirty fringe
@@ -142,7 +153,7 @@ def run_source_coverage_checks(season: str = "2025-26") -> list:
     return issues
 
 
-def run_dead_column_checks(season: str = "2026-27") -> list:
+def run_dead_column_checks(season: str = _LIVE_SEASON) -> list:
     """Columns that are supposed to carry real per-player data.
 
     Catches the FBref dead-mapping bug class: a column that exists, is
@@ -186,7 +197,7 @@ def run_dead_column_checks(season: str = "2026-27") -> list:
     return issues
 
 
-def run_xg_liveness_check(season: str = "2026-27") -> list:
+def run_xg_liveness_check(season: str = _LIVE_SEASON) -> list:
     """Is the LIVE season's xG feed actually carrying xG? (2026-08-28)
 
     ``player_xg_stats`` for 2026-27 held 309 rows, 147 with ``shots > 0``, and
@@ -325,7 +336,7 @@ def run_projection_sanity_checks() -> list:
     )
 
 
-def run_odds_feature_liveness_check(season: str = "2026-27") -> list:
+def run_odds_feature_liveness_check(season: str = _LIVE_SEASON) -> list:
     """Do the odds features carry real values in the season being PLAYED?
 
     They are the only model inputs whose two sources differ by season:
@@ -375,7 +386,7 @@ def run_odds_feature_liveness_check(season: str = "2026-27") -> list:
     return issues
 
 
-def run_team_strength_scale_check(season: str = "2026-27") -> list:
+def run_team_strength_scale_check(season: str = _LIVE_SEASON) -> list:
     """Are the season's team strengths on the SAME SCALE the model trained on?
 
     FPL serves pre-season placeholders -- attack/defence 0, overall on the 1-5

@@ -15,6 +15,12 @@ so the ordering costs nothing. It runs against
 complete match data.
 FBref must run before WhoScored (WhoScored only PATCHES rows FBref's
 ingest already created, never inserts new -- see scrape_whoscored.py).
+Each data step also declares a POST-CONDITION -- the data it must leave
+behind. The exit code cannot see an empty result (these steps exit 0 on one
+by design), and twice on 2026-08-28 a step reported success having written
+nothing. Failures are logged where they happen and re-reported together at
+the end of the run.
+
 Every step degrades gracefully (logs a warning, continues) except the
 final two, whose own exit codes are reported but never block each other
 -- the simulation batch must always run regardless of the agent's exit
@@ -50,7 +56,70 @@ def _run(args: list[str], env: dict[str, str] | None = None) -> int:
     return subprocess.run(args, cwd=REPO_ROOT, env=env).returncode
 
 
-def _run_or_warn(step_name: str, args: list[str], env: dict[str, str] | None = None) -> None:
+# Steps that report success having written nothing (2026-08-28). Twice in one
+# day a warn-and-continue step exited 0 with an empty result and the run read
+# as healthy: scrape_understat_xg.py treated an unreadable schedule as "season
+# not published" and skipped the refresh, leaving player_xg_stats at 2 non-zero
+# xg rows out of 309; and before that the Understat step was missing from this
+# pipeline altogether, which this module's own comments record as 11,495 rows
+# for 2025-26 with 87 non-zero xg, "left in place because nothing ever ran it".
+#
+# The exit code cannot see any of that -- these steps exit 0 on an empty
+# result by design. A post-condition asks the other question: is the data this
+# step is responsible for actually there?
+#
+# Post-conditions, not before/after deltas: these are idempotent upserts, so a
+# healthy re-run legitimately changes no counts, and warning on "nothing
+# changed" would fire every week. Collected and re-reported together at the
+# end, because a warning 200 lines up the log is a warning nobody reads.
+_POSTCONDITION_WARNINGS: list[str] = []
+
+
+def _postcondition_warning(step_name: str, label: str, count: int | None) -> str | None:
+    """The warning this step's post-condition earns, or None if it is fine.
+
+    ``count is None`` means the check itself could not run. That is warned
+    rather than passed: a check that silently fails open is the same failure
+    class it was written to catch.
+    """
+    if count is None:
+        return (
+            f"{step_name}: post-condition ({label}) could not be checked -- "
+            f"treat this run's output for that step as unverified"
+        )
+    if count == 0:
+        return (
+            f"{step_name}: exited cleanly but {label} is EMPTY -- the step "
+            f"reported success having written nothing"
+        )
+    return None
+
+
+def _count_rows(sql: str, params: dict) -> int | None:
+    """Row count for a post-condition, or None if the query cannot be run."""
+    try:
+        from sqlalchemy import text
+
+        from data.db import get_session
+        db = get_session()
+        try:
+            return int(db.execute(text(sql), params).scalar() or 0)
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001 -- an unrunnable check is reported, not raised
+        logger.warning("Post-condition query failed: %s", exc)
+        return None
+
+
+def _run_or_warn(
+    step_name: str,
+    args: list[str],
+    env: dict[str, str] | None = None,
+    *,
+    postcondition: tuple[str, str, dict] | None = None,
+) -> None:
+    """Run a best-effort step. ``postcondition`` is (label, sql, params) naming
+    the data the step must leave behind."""
     code = _run(args, env=env)
     if code != 0:
         logger.warning(
@@ -58,6 +127,13 @@ def _run_or_warn(step_name: str, args: list[str], env: dict[str, str] | None = N
             "in the DB (this step is best-effort, never blocks the rest of the run)",
             step_name, code,
         )
+    if postcondition is None:
+        return
+    label, sql, params = postcondition
+    warning = _postcondition_warning(step_name, label, _count_rows(sql, params))
+    if warning:
+        logger.warning(warning)
+        _POSTCONDITION_WARNINGS.append(warning)
 
 
 def _season_has_started(season: str) -> bool:
@@ -138,10 +214,26 @@ def main() -> None:
             "scripts/scrape_fbref.py",
             [sys.executable, "scripts/scrape_fbref.py", args.season],
             env=fbref_env,
+            postcondition=(
+                f"{args.season} match events",
+                "SELECT COUNT(*) FROM player_match_events WHERE season = :s",
+                {"s": args.season},
+            ),
         )
         _run_or_warn(
             "scripts/scrape_whoscored.py",
             [sys.executable, "scripts/scrape_whoscored.py", args.season],
+            # WhoScored only PATCHES rows FBref already created, so a row
+            # count would pass on FBref's work alone. The defensive columns
+            # are the ones only this step can fill -- the DefCon/bonus gap it
+            # exists to close.
+            postcondition=(
+                f"{args.season} match events carrying defensive actions",
+                "SELECT COUNT(*) FROM player_match_events "
+                "WHERE season = :s AND (clearances > 0 OR interceptions > 0 "
+                "OR recoveries > 0)",
+                {"s": args.season},
+            ),
         )
         # P3.7: penalty/set-piece duty. Shares the browser requirement above,
         # so it lives behind the same --skip-match-events guard. Duty moves
@@ -151,6 +243,11 @@ def main() -> None:
             "scripts/scrape_setpieces.py",
             [sys.executable, "scripts/scrape_setpieces.py", args.season],
             env=fbref_env,
+            postcondition=(
+                f"{args.season} set-piece roles",
+                "SELECT COUNT(*) FROM player_setpiece_roles WHERE season = :s",
+                {"s": args.season},
+            ),
         )
 
     # 2026-08-25: xG/xA/npxg/key-passes. NOT behind --skip-match-events, and
@@ -173,6 +270,13 @@ def main() -> None:
         _run_or_warn(
             "scripts/scrape_understat_xg.py",
             [sys.executable, "scripts/scrape_understat_xg.py", args.season],
+            # xg > 0, not a row count: the failure mode this exists to catch
+            # wrote 309 rows carrying shots and no xG at all.
+            postcondition=(
+                f"{args.season} xG rows carrying real xg",
+                "SELECT COUNT(*) FROM player_xg_stats WHERE season = :s AND xg > 0",
+                {"s": args.season},
+            ),
         )
 
     gw = _current_gameweek()
@@ -180,6 +284,11 @@ def main() -> None:
         _run_or_warn(
             "scripts/ingest_ownership.py",
             [sys.executable, "scripts/ingest_ownership.py", str(gw)],
+            postcondition=(
+                "ownership snapshots",
+                "SELECT COUNT(*) FROM ownership_snapshots",
+                {},
+            ),
         )
 
     agent_args = [sys.executable, "scripts/run_agent.py", "--season", args.season]
@@ -265,6 +374,19 @@ def main() -> None:
         logger.warning(
             "Simulation batch reported an error (exit %d) -- check the log above", sim_code
         )
+
+    # Re-reported together: a warning 200 lines up a scrape log is a warning
+    # nobody reads, and these are precisely the failures that look like
+    # success at the exit-code level.
+    if _POSTCONDITION_WARNINGS:
+        logger.warning(
+            "%d step(s) finished without producing their data:",
+            len(_POSTCONDITION_WARNINGS),
+        )
+        for warning in _POSTCONDITION_WARNINGS:
+            logger.warning("  - %s", warning)
+    else:
+        logger.info("All step post-conditions satisfied")
 
 
 if __name__ == "__main__":
