@@ -182,13 +182,49 @@ def chips_used_this_season(decision_log: pd.DataFrame) -> list[tuple[Chip, int]]
     if decision_log.empty or "decision_type" not in decision_log.columns:
         return []
     chip_rows = decision_log[decision_log["decision_type"] == "chip"]
+
+    # 2026-08-28: drop chip decisions a LATER run of the same gameweek
+    # superseded. This engine has no submission path, so a chip row is the
+    # record of "the run that decided this gameweek chose this chip". Re-run
+    # the gameweek and choose differently and the old row still stood, so the
+    # chip stayed spent for the rest of the half -- live on the GW2 deadline,
+    # where a 2026-08-25 Triple Captain recommendation left _try_tc returning
+    # None before it evaluated anything, reported as "No chip threshold met"
+    # while the gate itself passed at 7.808 against 7.500.
+    #
+    # The P1.8 de-duplication below cannot catch this: it collapses N rows for
+    # one (chip, gameweek), but a later run that chose NO chip writes no row
+    # at all, so there is nothing for it to compare against. Absence is the
+    # signal, and only a newer lineup row can carry it.
+    #
+    # Same rule every other consumer of decision_log already applies -- the
+    # latest run of a gameweek wins (_load_squad_state reads it,
+    # backfill_decision_outcomes scores it). Within a single run the chip row
+    # is written after its own lineup row, so a chip chosen by the newest run
+    # is kept. Gameweeks are compared independently: deciding GW3 must not
+    # un-spend a chip played in GW2. With no lineup rows at all (the backtest
+    # path), nothing can be newer and every chip counts.
+    latest_lineup_at: dict[int, object] = {}
+    if "created_at" in decision_log.columns:
+        lineups = decision_log[decision_log["decision_type"] == "lineup"]
+        for _, row in lineups.iterrows():
+            gw = int(row["gameweek"])
+            ts = row["created_at"]
+            if gw not in latest_lineup_at or ts > latest_lineup_at[gw]:
+                latest_lineup_at[gw] = ts
+
     used: list[tuple[Chip, int]] = []
     for _, row in chip_rows.iterrows():
         try:
             chip = Chip(json.loads(row["details"])["chip"])
         except (TypeError, ValueError, KeyError):
             continue
-        used.append((chip, int(row["gameweek"])))
+        gameweek = int(row["gameweek"])
+        newer_lineup = latest_lineup_at.get(gameweek)
+        if newer_lineup is not None and row.get("created_at") is not None:
+            if newer_lineup > row["created_at"]:
+                continue
+        used.append((chip, gameweek))
     # P1.8 (2026-08-16): de-duplicate on (chip, gameweek). A chip can only be
     # played ONCE in a given gameweek, but `_record_decision` appends a row
     # every run -- so re-running a gameweek's decision (a dry-run rehearsal, a
