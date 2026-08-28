@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 2,
   "label": "GW2 \u2014 28 Aug 2026",
-  "generated_at": "2026-08-28T10:21:48.758788+00:00",
+  "generated_at": "2026-08-28T10:44:38.258099+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -41,24 +41,6 @@
       }
     },
     {
-      "player_id": 20,
-      "web_name": "Rice",
-      "position": "MID",
-      "team_short": "ARS",
-      "now_cost": 7.5,
-      "is_starting": true,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": null,
-      "xpts": {
-        "p10": 0.0,
-        "median": 5.8874,
-        "mean": 5.8874,
-        "p90": 12.2859,
-        "approx": true
-      }
-    },
-    {
       "player_id": 210,
       "web_name": "Thiago",
       "position": "FWD",
@@ -82,10 +64,10 @@
       "position": "DEF",
       "team_short": "TOT",
       "now_cost": 5.0,
-      "is_starting": false,
+      "is_starting": true,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": 2,
+      "bench_order": null,
       "xpts": {
         "p10": 0.0,
         "median": 3.3938,
@@ -145,24 +127,6 @@
         "median": 4.902,
         "mean": 4.902,
         "p90": 10.6723,
-        "approx": true
-      }
-    },
-    {
-      "player_id": 498,
-      "web_name": "Gu\u00e9hi",
-      "position": "DEF",
-      "team_short": "MCI",
-      "now_cost": 6.0,
-      "is_starting": true,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": null,
-      "xpts": {
-        "p10": 0.0,
-        "median": 5.4213,
-        "mean": 5.4213,
-        "p90": 12.3678,
         "approx": true
       }
     },
@@ -239,6 +203,24 @@
       }
     },
     {
+      "player_id": 633,
+      "web_name": "Gibbs-White",
+      "position": "MID",
+      "team_short": "NFO",
+      "now_cost": 8.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "xpts": {
+        "p10": 0.0,
+        "median": 4.4216,
+        "mean": 4.4216,
+        "p90": 8.8619,
+        "approx": true
+      }
+    },
+    {
       "player_id": 635,
       "web_name": "Anderson",
       "position": "MID",
@@ -271,6 +253,24 @@
         "median": 2.2825,
         "mean": 2.2825,
         "p90": 5.2043,
+        "approx": true
+      }
+    },
+    {
+      "player_id": 714,
+      "web_name": "Pedro Porro",
+      "position": "DEF",
+      "team_short": "TOT",
+      "now_cost": 5.5,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 2,
+      "xpts": {
+        "p10": 0.0,
+        "median": 2.842,
+        "mean": 2.842,
+        "p90": 7.0071,
         "approx": true
       }
     }
@@ -473,6 +473,14 @@
     }
   ],
   "history": [
+    {
+      "gameweek": 2,
+      "type": "transfers",
+      "transfers_in": [],
+      "transfers_out": [],
+      "hits_taken": 0,
+      "net_xpts_gain": 0.0
+    },
     {
       "gameweek": 2,
       "type": "transfers",
