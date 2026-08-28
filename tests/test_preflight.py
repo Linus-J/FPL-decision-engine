@@ -81,20 +81,20 @@ def test_missing_baseline_is_not_a_failure(tmp_path, monkeypatch):
     assert r.failures == []
 
 
-def test_the_committed_baseline_matches_the_squad_in_the_checklist():
-    """The checklist is what gets typed into FPL. It has been stale once
-    already -- listing a bench decision_log did not contain -- so tie the two
-    together rather than trusting them to be updated in step."""
-    from pathlib import Path
-
-    baseline = json.loads(preflight.BASELINE_PATH.read_text())
-    checklist = (Path(__file__).resolve().parents[1] / "docs" / "gw1-checklist.md").read_text()
-
-    for name in baseline["starting_xi"]:
-        assert name in checklist, f"{name} is in the recorded XI but not the checklist"
-    for name in baseline["bench_order"]:
-        assert name in checklist, f"{name} is on the recorded bench but not the checklist"
-    assert baseline["captain"] in checklist
+# Retired 2026-08-28: test_the_committed_baseline_matches_the_squad_in_the_checklist.
+#
+# It pinned the live preflight baseline to docs/gw1-checklist.md, guarding a
+# real failure -- that checklist once listed a bench decision_log did not
+# contain. But the checklist is a GW1 document and the baseline moves every
+# time the squad does, so from the first real transfer onward the only way to
+# keep it green was to edit a historical document to match this week's squad.
+# A test you satisfy by editing docs is a test that trains you to edit docs.
+#
+# Its intent is now enforced for EVERY gameweek, on live data, by preflight's
+# own site-export check ("GW<n> site squad/XI matches decision_log") -- which
+# is stronger: it compares the published artefact to decision_log on every
+# run, rather than a committed baseline to prose. Confirmed working the same
+# day: both legs failed on a stale export and passed once it was regenerated.
 
 
 @pytest.mark.parametrize("quota", [preflight.POSITION_QUOTA])

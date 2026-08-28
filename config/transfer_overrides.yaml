@@ -141,4 +141,10 @@ exclude:
 # cannot see. Empty for now: every entry the user asked for is a hard veto
 # above. Kept because the tier is the right one for a genuine doubt, and the
 # mechanism is tested.
-rotation_risk: []
+rotation_risk:
+- code: 222531
+  start_probability: 0.75
+  reason: 'Knee injury, 75% chance of playing — shown in the FPL app but NOT in
+    the public API/website (status=a, chance_of_playing_next_round=100, news
+    empty, re-checked 13:06Z). Nothing downstream can see it, so entered by hand.'
+  as_of: '2026-08-28'
