@@ -500,58 +500,129 @@ _SUM_HISTORY_FIELDS = (
 )
 
 
-def _accumulate_gw_history(history: list[dict]) -> dict[int, dict]:
-    """FPL's per-element ``history`` -> one row per gameweek. Pure/testable.
+# Never NULL. SQLite does not treat two NULLs as equal for uniqueness, so a
+# NULL ``opponent_team_id`` makes ``on_conflict_do_update`` match nothing and
+# insert a fresh duplicate row on every single re-run. 0 is never a real FPL
+# team id, so it is a safe stand-in for "this entry named no opponent".
+_NO_OPPONENT_SENTINEL = 0
 
-    Real bug found 2026-07-28 (data-completeness audit): the unique key on
-    ``PlayerGameweekStats`` is ``(player_id, gameweek, season)`` with no
-    fixture/opponent component, but a genuine double-gameweek player's
-    history has TWO entries with the same ``round`` -- the old caller wrote
-    each entry with its own ``on_conflict_do_update``, so the second
-    fixture's stat line silently overwrote (not summed with) the first,
-    destroying one match's entire contribution. ``selected``/``value`` are
-    point-in-time squad-value/ownership snapshots, not per-fixture stats, so
-    the LATEST entry's value is kept rather than summed.
+
+def _history_rows(history: list[dict]) -> dict[tuple[int, int], dict]:
+    """FPL's per-element ``history`` -> one row per (gameweek, opponent). Pure.
+
+    Keyed to match ``PlayerGameweekStats``' unique constraint
+    ``(player_id, gameweek, season, opponent_team_id)``, which is also the
+    shape ``scripts/backfill_history.py`` writes. Both of a double gameweek's
+    fixtures therefore survive as their own rows, carrying their own opponent
+    and home/away flag.
+
+    This used to pre-sum a gameweek into ONE row with the sentinel opponent --
+    a workaround for the older 3-column key, under which the second fixture's
+    stat line silently overwrote the first instead of adding to it. The key
+    has since been widened, so the summing is redundant, and it was actively
+    harmful: it dropped ``opponent_team``/``was_home`` on the floor, which is
+    what every odds and FDR join in ``projection/features.py`` matches on.
+    Found 2026-08-28 -- all 571 live-season rows had my_cs_prob/opp_cs_prob
+    pinned at 0.2 and over25_prob at 0.5 while the model was fitted on real
+    variation.
+
+    ``selected``/``value`` are point-in-time squad-value/ownership snapshots
+    rather than per-fixture stats, so each row keeps its own rather than
+    summing. Two entries sharing one (round, opponent) -- which real fixture
+    data should never produce -- are summed, because the unique key cannot
+    hold them separately.
     """
-    by_gw: dict[int, dict] = {}
+    by_key: dict[tuple[int, int], dict] = {}
     for entry in history:
         gw = entry.get("round")
         if not gw:
             continue
-        acc = by_gw.setdefault(gw, dict.fromkeys(_SUM_HISTORY_FIELDS, 0))
+        opponent = entry.get("opponent_team")
+        key = (int(gw), int(opponent) if opponent else _NO_OPPONENT_SENTINEL)
+        acc = by_key.get(key)
+        if acc is None:
+            acc = dict.fromkeys(_SUM_HISTORY_FIELDS, 0)
+            acc["opponent_team_id"] = key[1]
+            acc["was_home"] = None
+            acc["fpl_fixture_id"] = None
+            by_key[key] = acc
         for field in _SUM_HISTORY_FIELDS:
             acc[field] += entry.get(field, 0) or 0
         acc["selected"] = entry.get("selected", 0)
         acc["value"] = entry.get("value", 0) / 10.0
-    return by_gw
+        if entry.get("was_home") is not None:
+            acc["was_home"] = bool(entry["was_home"])
+        if entry.get("fixture") is not None:
+            acc["fpl_fixture_id"] = int(entry["fixture"])
+    return by_key
 
 
-# Real bug found 2026-07-30 (a regression from THIS session's own earlier
-# fix): PlayerGameweekStats' unique constraint was widened from
-# (player_id, gameweek, season) to include opponent_team_id, so both of a
-# DGW's fixtures could be stored (see data/models.py). This function
-# deliberately pre-sums a DGW into ONE row (_accumulate_gw_history, a
-# different, already-correct fix for the SAME underlying DGW bug class,
-# from earlier still) and never set opponent_team_id at all -- meaning
-# every row here got the column's NULL default, and SQLite never treats
-# two NULLs as equal for uniqueness, so `on_conflict_do_update` targeting
-# the OLD 3-column shape no longer matches any real constraint, and even a
-# fixed 4-column target would insert a fresh duplicate row every single
-# re-run instead of updating. A fixed sentinel (0 -- never a real FPL team
-# id) keeps this path's existing summed-row design and its tests intact
-# while making the conflict target real again.
-_NO_OPPONENT_SENTINEL = 0
+def _resolve_team_id_season(
+    fixture_sides: dict[int, tuple[int, int]],
+    fpl_fixture_id: int | None,
+    was_home: bool | None,
+) -> int | None:
+    """The player's OWN team id for this fixture, from the fixture's two sides.
+
+    Derived from the fixture rather than read off ``players.team_id`` so a
+    mid-season transfer does not retroactively relabel the player's earlier
+    gameweeks with his new club. ``None`` when the fixture has not been
+    ingested or the entry carries no home/away flag -- honest about not
+    knowing, rather than guessing a side.
+    """
+    if fpl_fixture_id is None or was_home is None:
+        return None
+    sides = fixture_sides.get(fpl_fixture_id)
+    if not sides:
+        return None
+    home_id, away_id = sides
+    return home_id if was_home else away_id
+
+
+def _load_fixture_sides(season: str) -> dict[int, tuple[int, int]]:
+    """``{FPL fixture id: (team_h_id, team_a_id)}`` for one season.
+
+    Loaded once per ingest and threaded through rather than queried per
+    player -- ``run_full_ingest`` fans out over ~700 of them.
+    """
+    db = get_session()
+    try:
+        rows = db.query(
+            Fixture.fpl_id, Fixture.team_h_id, Fixture.team_a_id
+        ).filter(Fixture.season == season).all()
+        return {
+            int(fpl_id): (int(h), int(a))
+            for fpl_id, h, a in rows
+            if fpl_id is not None and h is not None and a is not None
+        }
+    finally:
+        db.close()
 
 
 async def ingest_player_history(
-    player_fpl_id: int, player_db_id: int, season: str = "2026-27"
+    player_fpl_id: int,
+    player_db_id: int,
+    season: str = "2026-27",
+    fixture_sides: dict[int, tuple[int, int]] | None = None,
 ) -> None:
+    """One ``player_gw_stats`` row per (gameweek, opponent) for this player.
+
+    ``fixture_sides`` resolves each row's ``team_id_season``; pass the map
+    from ``_load_fixture_sides`` to avoid re-querying it per player.
+    """
+    if fixture_sides is None:
+        fixture_sides = _load_fixture_sides(season)
     db = get_session()
     try:
         data = await fetch_player_summary(player_fpl_id)
-        by_gw = _accumulate_gw_history(data.get("history", []))
-        for gw, vals in by_gw.items():
-            vals = {**vals, "opponent_team_id": _NO_OPPONENT_SENTINEL}
+        rows = _history_rows(data.get("history", []))
+        for (gw, _opponent), row in rows.items():
+            vals = dict(row)
+            # Carried only to resolve the player's own side; not a column.
+            fpl_fixture_id = vals.pop("fpl_fixture_id", None)
+            vals["team_id_season"] = _resolve_team_id_season(
+                fixture_sides, fpl_fixture_id, vals["was_home"]
+            )
             stmt = (
                 insert(PlayerGameweekStats)
                 .values(player_id=player_db_id, gameweek=gw, season=season, **vals)
@@ -594,12 +665,17 @@ async def run_full_ingest(season: str = "2026-27") -> None:
     finally:
         db.close()
 
+    # Loaded once and threaded through: this fans out over ~700 players, and
+    # every one of them needs the same fixture -> (home, away) map to resolve
+    # its own side.
+    fixture_sides = _load_fixture_sides(season)
+
     semaphore = asyncio.Semaphore(5)
 
     async def _ingest_with_semaphore(fpl_id: int, db_id: int) -> None:
         async with semaphore:
             try:
-                await ingest_player_history(fpl_id, db_id, season)
+                await ingest_player_history(fpl_id, db_id, season, fixture_sides)
             except Exception as exc:
                 logger.warning("Failed to ingest history for player %d: %s", fpl_id, exc)
 

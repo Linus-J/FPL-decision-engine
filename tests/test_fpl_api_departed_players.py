@@ -66,7 +66,10 @@ async def test_run_full_ingest_skips_history_for_departed_players(session, monke
 
     called_with: list[int] = []
 
-    async def _fake_ingest_history(fpl_id: int, db_id: int, season: str = "2026-27") -> None:
+    async def _fake_ingest_history(
+        fpl_id: int, db_id: int, season: str = "2026-27",
+        fixture_sides: dict | None = None,
+    ) -> None:
         called_with.append(fpl_id)
 
     monkeypatch.setattr(fpl_api, "fetch_bootstrap", _fake_bootstrap)
@@ -104,7 +107,10 @@ async def test_run_full_ingest_still_ingests_history_for_all_active_players(
 
     called_with: list[int] = []
 
-    async def _fake_ingest_history(fpl_id: int, db_id: int, season: str = "2026-27") -> None:
+    async def _fake_ingest_history(
+        fpl_id: int, db_id: int, season: str = "2026-27",
+        fixture_sides: dict | None = None,
+    ) -> None:
         called_with.append(fpl_id)
 
     monkeypatch.setattr(fpl_api, "fetch_bootstrap", _fake_bootstrap)
