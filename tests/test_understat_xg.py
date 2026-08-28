@@ -170,9 +170,60 @@ def test_published_season_passes_the_check():
     assert understat_xg._season_is_published(_Us()) is True
 
 
-def test_unreadable_schedule_is_treated_as_unpublished():
+def test_unreadable_schedule_raises_rather_than_claiming_unpublished():
+    """Reversal of a deliberate earlier choice (2026-08-28).
+
+    This used to swallow every exception and return False, so the caller
+    reported "it is a source lag, not a failure. Prior seasons are
+    unaffected." -- a definitive claim built on an unknown. It was wrong on
+    the GW2 deadline: two runs reported 2026-27 unpublished while the season
+    was live and player_xg_stats sat at 2 non-zero xg rows out of 309, with
+    nothing in the log suggesting anything was wrong. A read that fails and a
+    season that genuinely has not started are different states and must not
+    share a message.
+    """
     class _Us:
         def read_schedule(self):
             raise RuntimeError("network is down")
 
-    assert understat_xg._season_is_published(_Us()) is False
+    with pytest.raises(understat_xg.UnderstatScheduleUnreadable):
+        understat_xg._season_is_published(_Us(), sleep_seconds=0.0)
+
+
+def test_schedule_read_is_retried_before_giving_up():
+    """The observed failure was transient -- it read fine an hour later."""
+    import pandas as pd
+
+    idx = pd.MultiIndex.from_tuples(
+        [("ENG-Premier League", "2627", "game one")],
+        names=["league", "season", "game"],
+    )
+
+    class _Us:
+        def __init__(self):
+            self.calls = 0
+
+        def read_schedule(self):
+            self.calls += 1
+            if self.calls < 2:
+                raise RuntimeError("transient TLS failure")
+            return pd.DataFrame({"date": ["2026-08-21"]}, index=idx)
+
+    us = _Us()
+    assert understat_xg._season_is_published(us, sleep_seconds=0.0) is True
+    assert us.calls == 2
+
+
+def test_retries_are_bounded():
+    class _Us:
+        def __init__(self):
+            self.calls = 0
+
+        def read_schedule(self):
+            self.calls += 1
+            raise RuntimeError("still down")
+
+    us = _Us()
+    with pytest.raises(understat_xg.UnderstatScheduleUnreadable):
+        understat_xg._season_is_published(us, attempts=3, sleep_seconds=0.0)
+    assert us.calls == 3

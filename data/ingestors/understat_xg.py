@@ -22,6 +22,7 @@ expected-assists.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 
 from data.ingestors.fbref import (
@@ -128,7 +129,31 @@ def _load_deadlines(season: str) -> dict[int, datetime]:
         db.close()
 
 
-def _season_is_published(us) -> bool:
+class UnderstatScheduleUnreadable(RuntimeError):
+    """Understat's schedule could not be read at all.
+
+    Deliberately NOT the same state as "this season is not published yet".
+    Conflating the two is what hid a live gap: on 2026-08-28 two runs
+    reported 2026-27 unpublished -- and said so reassuringly -- while the
+    season was live, the match pages existed, and ``player_xg_stats`` held
+    2 non-zero xg rows out of 309. The attacking signal was switched off for
+    the live season and the log said everything was fine.
+    """
+
+
+# The failure observed on 2026-08-28 was transient: identical calls read 380
+# fixtures cleanly about ninety minutes later, from a cold cache. A couple of
+# retries cost seconds and cover exactly that.
+_SCHEDULE_READ_ATTEMPTS = 3
+_SCHEDULE_RETRY_SECONDS = 5.0
+
+
+def _season_is_published(
+    us,
+    *,
+    attempts: int = _SCHEDULE_READ_ATTEMPTS,
+    sleep_seconds: float = _SCHEDULE_RETRY_SECONDS,
+) -> bool:
     """Has Understat published this season yet?
 
     A published season returns a schedule indexed by (league, season, game).
@@ -137,13 +162,30 @@ def _season_is_published(us) -> bool:
     check is on the index SHAPE rather than on row count, because the
     degenerate frame is not empty: it has three rows holding the level names
     themselves.
+
+    Raises ``UnderstatScheduleUnreadable`` if the schedule cannot be read
+    after ``attempts`` tries. That propagates out of the ingest and exits the
+    script non-zero, so ``run_weekly.py``'s warn-and-continue wrapper names
+    the failing step instead of the run reporting success having ingested
+    nothing.
     """
-    try:
-        schedule = us.read_schedule()
-    except Exception as exc:  # noqa: BLE001 -- any read failure means "not usable"
-        logger.warning("Understat schedule unreadable: %s", exc)
-        return False
-    return schedule.index.nlevels >= 3 and not schedule.empty
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            schedule = us.read_schedule()
+        except Exception as exc:  # noqa: BLE001 -- retried, then re-raised typed
+            last_exc = exc
+            logger.warning(
+                "Understat schedule read failed (attempt %d/%d): %s",
+                attempt, attempts, exc,
+            )
+            if attempt < attempts:
+                time.sleep(sleep_seconds)
+            continue
+        return schedule.index.nlevels >= 3 and not schedule.empty
+    raise UnderstatScheduleUnreadable(
+        f"Understat schedule unreadable after {attempts} attempts: {last_exc}"
+    ) from last_exc
 
 
 def ingest_understat_xg_season(  # pragma: no cover - live network (no browser)

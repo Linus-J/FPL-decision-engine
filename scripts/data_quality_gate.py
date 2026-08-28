@@ -186,6 +186,55 @@ def run_dead_column_checks(season: str = "2026-27") -> list:
     return issues
 
 
+def run_xg_liveness_check(season: str = "2026-27") -> list:
+    """Is the LIVE season's xG feed actually carrying xG? (2026-08-28)
+
+    ``player_xg_stats`` for 2026-27 held 309 rows, 147 with ``shots > 0``, and
+    two with a non-zero ``xg`` -- the shots-only shape
+    ``data/ingestors/understat_xg.py`` exists to replace. Nothing reported it:
+    ``projection/assemble.py`` LEFT JOINs the table and COALESCEs a miss to 0,
+    so a shots-only row is indistinguishable from a genuine zero, and the
+    attacking signal was off for the whole live season.
+
+    ``check_stat_column_not_dead`` already existed and was already pointed at
+    ``player_projections``; nothing pointed it here.
+    ``run_understat_coverage_check`` defaults to the PRIOR season and needs
+    the network, so it could not cover this. This one is local and reads the
+    season actually being projected.
+
+    Eligible rows are those with ``shots > 0``: a player who took no shot has
+    no xG to report, so counting him would put roster composition in the
+    denominator. Everyone who DID shoot must carry some xG -- a healthy season
+    sits near 100%, the broken state read 1.4%.
+    """
+    from sqlalchemy import text
+
+    from data.db import get_session
+    from data.quality_checks import check_stat_column_not_dead
+
+    db = get_session()
+    try:
+        eligible = db.execute(
+            text(
+                "SELECT COUNT(*) FROM player_xg_stats "
+                "WHERE season = :s AND shots > 0"
+            ),
+            {"s": season},
+        ).scalar() or 0
+        nonzero = db.execute(
+            text(
+                "SELECT COUNT(*) FROM player_xg_stats "
+                "WHERE season = :s AND shots > 0 AND xg > 0"
+            ),
+            {"s": season},
+        ).scalar() or 0
+    finally:
+        db.close()
+    return check_stat_column_not_dead(
+        f"player_xg_stats.xg ({season}, rows with shots)", int(nonzero), int(eligible)
+    )
+
+
 def run_copied_column_checks() -> list:
     """Columns that should differ from each other but do not.
 
@@ -402,6 +451,7 @@ def main() -> int:
     issues += run_referential_integrity_checks()
     issues += run_projection_sanity_checks()
     issues += run_odds_feature_liveness_check()
+    issues += run_xg_liveness_check()
 
     if not issues:
         logger.info("data quality gate: all checks passed")
