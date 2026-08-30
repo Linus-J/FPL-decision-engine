@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 2,
   "label": "GW2 \u2014 28 Aug 2026",
-  "generated_at": "2026-08-30T11:00:21.457416+00:00",
+  "generated_at": "2026-08-30T12:05:14.758175+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -475,12 +475,6 @@
   "history": [
     {
       "gameweek": 2,
-      "type": "chip",
-      "chip": "3xc",
-      "reason": "TC captain xPts 7.8"
-    },
-    {
-      "gameweek": 2,
       "type": "transfers",
       "transfers_in": [
         "Rice",
@@ -495,61 +489,13 @@
     },
     {
       "gameweek": 2,
-      "type": "transfers",
-      "transfers_in": [
-        "Rice",
-        "Gu\u00e9hi"
-      ],
-      "transfers_out": [
-        "Gibbs-White",
-        "Pedro Porro"
-      ],
-      "hits_taken": 1,
-      "net_xpts_gain": 6.40981082125117
-    },
-    {
-      "gameweek": 2,
-      "type": "transfers",
-      "transfers_in": [],
-      "transfers_out": [],
-      "hits_taken": 0,
-      "net_xpts_gain": 0.0
-    },
-    {
-      "gameweek": 2,
-      "type": "transfers",
-      "transfers_in": [],
-      "transfers_out": [],
-      "hits_taken": 0,
-      "net_xpts_gain": 0.0
-    },
-    {
-      "gameweek": 2,
-      "type": "transfers",
-      "transfers_in": [
-        "Rice",
-        "Gu\u00e9hi"
-      ],
-      "transfers_out": [
-        "Gibbs-White",
-        "Pedro Porro"
-      ],
-      "hits_taken": 0,
-      "net_xpts_gain": 8.05827750444675
-    },
-    {
-      "gameweek": 2,
       "type": "chip",
       "chip": "3xc",
-      "reason": "TC captain xPts 7.7"
+      "reason": "TC captain xPts 7.8"
     },
     {
-      "gameweek": 2,
-      "type": "transfers",
-      "transfers_in": [],
-      "transfers_out": [],
-      "hits_taken": 0,
-      "net_xpts_gain": 0.0
+      "gameweek": 1,
+      "type": "initial_squad"
     }
   ]
 }
