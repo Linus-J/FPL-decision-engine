@@ -106,7 +106,15 @@ def _xpts_entry(
     }
 
 
-def _build_squad_entries(squad_df: pd.DataFrame, dist: dict[int, dict[str, float]]) -> list[dict]:
+def _build_squad_entries(
+    squad_df: pd.DataFrame,
+    dist: dict[int, dict[str, float]],
+    transferred_in_ids: set[int] | None = None,
+) -> list[dict]:
+    """Squad rows for the site. ``transferred_in_ids`` marks who arrived this
+    gameweek; defaults to nobody, which is the right answer for GW1."""
+    transferred_in_ids = transferred_in_ids or set()
+
     bench = squad_df[~squad_df["is_starting"]]
     gk_bench = bench[bench["position"] == "GKP"]
     other_bench = bench[bench["position"] != "GKP"].sort_values("xpts", ascending=False)
@@ -129,6 +137,13 @@ def _build_squad_entries(squad_df: pd.DataFrame, dist: dict[int, dict[str, float
             "is_captain": bool(row["is_captain"]),
             "is_vice_captain": bool(row["is_vice_captain"]),
             "bench_order": bench_order_by_player.get(player_id),
+            # Who arrived THIS gameweek, straight from the decision the bot
+            # acted on. The site used to answer this by diffing the squad
+            # against whichever gameweek the visitor last had open, which made
+            # the mark depend on click order: landing on the newest gameweek
+            # and then selecting GW1 diffed GW1 against GW2 and put a "+" on
+            # the two players GW2 transferred OUT (2026-08-30).
+            "transferred_in": player_id in transferred_in_ids,
             "xpts": _xpts_entry(
                 player_id, dist, row["xpts"], row.get("xpts_var")
             ),
@@ -188,6 +203,38 @@ def _is_no_op_transfer(row: pd.Series) -> bool:
     return not details.get("transfers_in") and not details.get("transfers_out")
 
 
+def _final_transfers_row(history_df: pd.DataFrame, gw: int) -> pd.Series | None:
+    """The transfers decision a gameweek was actually played on, or None.
+
+    ``history_df`` arrives ordered gameweek DESC, created_at DESC, so the
+    first non-no-op row for a gameweek is its last real run before the
+    deadline. Both the published history entry and the squad's
+    ``transferred_in`` marks are derived from this one row, so a "+" on a
+    player and the "-> in" line beneath it cannot name different players.
+    """
+    rows = history_df[
+        (history_df["gameweek"] == gw) & (history_df["decision_type"] == "transfers")
+    ]
+    for _, row in rows.iterrows():
+        if _is_no_op_transfer(row):
+            continue
+        return row
+    return None
+
+
+def _transferred_in_ids(history_df: pd.DataFrame, gw: int) -> set[int]:
+    """Player ids that came in on ``gw``. Empty for GW1, which logs no
+    transfers -- a drafted squad has no arrivals to distinguish."""
+    row = _final_transfers_row(history_df, gw)
+    if row is None:
+        return set()
+    return {
+        int(t["player_id"])
+        for t in row["details"].get("transfers_in", [])
+        if t.get("player_id") is not None
+    }
+
+
 def _build_history_entries(history_df: pd.DataFrame, up_to_gw: int | None = None) -> list[dict]:
     """One published event per decision per gameweek, newest gameweek first.
 
@@ -232,12 +279,9 @@ def _build_history_entries(history_df: pd.DataFrame, up_to_gw: int | None = None
     for gw in sorted({int(g) for g in history_df["gameweek"]}, reverse=True):
         rows = history_df[history_df["gameweek"] == gw]
 
-        transfers = rows[rows["decision_type"] == "transfers"]
-        for _, row in transfers.iterrows():
-            if _is_no_op_transfer(row):
-                continue
-            entries.append(_transfers_entry(row))
-            break
+        transfers_row = _final_transfers_row(history_df, gw)
+        if transfers_row is not None:
+            entries.append(_transfers_entry(transfers_row))
 
         chips = rows[rows["decision_type"] == "chip"]
         if not chips.empty:
@@ -268,7 +312,7 @@ def build_run_payload(db: Session, team_id: int) -> dict:
         "gameweek": gw,
         "label": _label_for_gw(db, season, gw),
         "generated_at": datetime.now(UTC).isoformat(),
-        "squad": _build_squad_entries(squad_df, dist),
+        "squad": _build_squad_entries(squad_df, dist, _transferred_in_ids(history_df, gw)),
         "top15": _build_top15_entries(projections_df, dist, team_names),
         "history": _build_history_entries(history_df, up_to_gw=gw),
     }

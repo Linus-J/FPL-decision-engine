@@ -646,3 +646,128 @@ def test_history_without_a_cutoff_keeps_every_gameweek():
     ])
 
     assert len(payload_module._build_history_entries(rows)) == 2
+
+
+# --- "+" marks come from the decision log, not a squad diff (2026-08-30) --
+#
+# The site used to mark a squad row "new" by diffing it against whichever
+# gameweek the visitor happened to have looked at last. Opening the panel
+# (which lands on the newest gameweek) and then selecting GW1 diffed GW1
+# against GW2, so the two players GW2 had transferred OUT -- Gibbs-White and
+# Pedro Porro -- rendered with a "+" on the initial-draft squad, labelling
+# players about to be lost as newly gained.
+#
+# Which players arrived this gameweek is not a question the site can answer
+# by comparing two published squads; it is recorded in decision_log. Exporting
+# it makes the mark deterministic: right on first load, right in any
+# navigation order, and empty for GW1, which logs no transfers at all.
+
+
+def test_squad_marks_only_the_players_transferred_in():
+    squad_df = pd.DataFrame([
+        {"player_id": 20, "web_name": "Rice", "position": "MID", "team_short": "ARS",
+         "now_cost": 7.5, "is_starting": True, "is_captain": False,
+         "is_vice_captain": False, "xpts": 5.9},
+        {"player_id": 99, "web_name": "Held", "position": "MID", "team_short": "MCI",
+         "now_cost": 6.0, "is_starting": True, "is_captain": False,
+         "is_vice_captain": False, "xpts": 4.0},
+    ])
+
+    entries = payload_module._build_squad_entries(
+        squad_df, dist={}, transferred_in_ids={20}
+    )
+
+    by_id = {e["player_id"]: e for e in entries}
+    assert by_id[20]["transferred_in"] is True
+    assert by_id[99]["transferred_in"] is False
+
+
+def test_squad_marks_nothing_when_the_gameweek_logged_no_transfers():
+    """GW1 drafts a squad rather than transferring into one, so no row on it
+    is 'new' -- the whole squad is. Every entry must still carry the key, so
+    the site never has to distinguish 'not transferred in' from 'unknown'."""
+    squad_df = pd.DataFrame([
+        {"player_id": 633, "web_name": "Gibbs-White", "position": "MID", "team_short": "NFO",
+         "now_cost": 8.0, "is_starting": True, "is_captain": False,
+         "is_vice_captain": False, "xpts": 5.5},
+        {"player_id": 714, "web_name": "Pedro Porro", "position": "DEF", "team_short": "TOT",
+         "now_cost": 5.5, "is_starting": True, "is_captain": False,
+         "is_vice_captain": False, "xpts": 3.0},
+    ])
+
+    entries = payload_module._build_squad_entries(squad_df, dist={}, transferred_in_ids=set())
+
+    assert [e["transferred_in"] for e in entries] == [False, False]
+
+
+def test_transferred_in_ids_come_from_the_final_run_of_the_gameweek():
+    """The same row the history entry is built from -- so the mark on a squad
+    row and the '-> in' line beneath it can never disagree. A superseded
+    earlier run of the same gameweek must not leak its players into the mark."""
+    history_df = _history_df([
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 6.4, "details": {
+            "transfers_in": [{"player_id": 20, "web_name": "Rice"}],
+            "transfers_out": [{"player_id": 633, "web_name": "Gibbs-White"}],
+            "hits_taken": 1,
+        }},
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 3.0, "details": {
+            "transfers_in": [{"player_id": 77, "web_name": "Superseded"}],
+            "transfers_out": [{"player_id": 88, "web_name": "Gone"}],
+            "hits_taken": 0,
+        }},
+    ])
+
+    assert payload_module._transferred_in_ids(history_df, gw=2) == {20}
+
+
+def test_transferred_in_ids_ignore_a_no_op_rerun():
+    """A re-run that recommended nothing is not the gameweek's decision --
+    _build_history_entries already skips it, and the mark must skip it too,
+    or a post-deadline no-op would silently un-mark the week's arrivals."""
+    history_df = _history_df([
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 0.0, "details": {
+            "transfers_in": [], "transfers_out": [], "hits_taken": 0,
+        }},
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 6.4, "details": {
+            "transfers_in": [{"player_id": 20, "web_name": "Rice"}],
+            "transfers_out": [{"player_id": 633, "web_name": "Gibbs-White"}],
+            "hits_taken": 1,
+        }},
+    ])
+
+    assert payload_module._transferred_in_ids(history_df, gw=2) == {20}
+
+
+def test_transferred_in_ids_are_empty_for_a_gameweek_with_no_transfers_row():
+    history_df = _history_df([
+        {"gameweek": 1, "decision_type": "lineup", "projected_gain": 55.0, "details": {}},
+    ])
+
+    assert payload_module._transferred_in_ids(history_df, gw=1) == set()
+
+
+def test_run_payload_marks_agree_with_the_published_history(session, monkeypatch):
+    """End to end: the squad rows carrying transferred_in must be exactly the
+    players the history entry names as coming in."""
+    _seed_full_squad(session)
+
+    monkeypatch.setattr(squad_module, "_get_current_and_next_gw", lambda: (3, 3))
+    monkeypatch.setattr(squad_module, "get_picks", lambda team_id, gw: {})
+    monkeypatch.setattr(
+        squad_module, "get_latest_projections",
+        lambda gw: pd.DataFrame({"player_id": [1, 2], "xpts": [8.0, 2.0]}),
+    )
+    monkeypatch.setattr(payload_module, "_get_current_season", lambda: "2026-27")
+    monkeypatch.setattr(
+        payload_module, "get_latest_projections",
+        lambda gw: pd.DataFrame([
+            {"player_id": 1, "web_name": "Haaland", "position": "FWD", "team_id": 1,
+             "xpts_mean": 8.0},
+        ]),
+    )
+
+    payload = payload_module.build_run_payload(session, team_id=12345)
+
+    marked = {e["web_name"] for e in payload["squad"] if e["transferred_in"]}
+    came_in = set(payload["history"][0]["transfers_in"])
+    assert marked == came_in == {"Haaland"}
