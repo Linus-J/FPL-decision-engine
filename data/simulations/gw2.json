@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 2,
   "label": "GW2 \u2014 28 Aug 2026",
-  "generated_at": "2026-08-30T12:05:14.758175+00:00",
+  "generated_at": "2026-08-30T12:29:48.295760+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -14,6 +14,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0496,
         "median": 5.3764,
@@ -32,6 +33,7 @@
       "is_captain": false,
       "is_vice_captain": true,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 6.9276,
@@ -50,6 +52,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": true,
       "xpts": {
         "p10": 0.0,
         "median": 5.8964,
@@ -68,6 +71,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 5.0307,
@@ -86,6 +90,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": 2,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 3.3948,
@@ -104,6 +109,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 4.5765,
@@ -122,6 +128,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 5.2534,
@@ -140,6 +147,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 4.9404,
@@ -158,6 +166,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": true,
       "xpts": {
         "p10": 0.0,
         "median": 5.4248,
@@ -176,6 +185,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 6.2394,
@@ -194,6 +204,7 @@
       "is_captain": true,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 7.8058,
@@ -212,6 +223,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": 3,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 2.256,
@@ -230,6 +242,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": 4,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 2.2029,
@@ -248,6 +261,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.3368,
         "median": 5.4726,
@@ -266,6 +280,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": 1,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 2.2828,

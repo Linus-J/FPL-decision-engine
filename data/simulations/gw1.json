@@ -14,6 +14,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0567,
         "median": 5.5451,
@@ -32,6 +33,7 @@
       "is_captain": false,
       "is_vice_captain": true,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 7.4663,
@@ -50,6 +52,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 5.1461,
@@ -68,6 +71,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": 2,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 3.5675,
@@ -86,6 +90,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 4.7865,
@@ -104,6 +109,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 5.2721,
@@ -122,6 +128,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 5.1807,
@@ -140,6 +147,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 6.0645,
@@ -158,6 +166,7 @@
       "is_captain": true,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 9.5145,
@@ -176,6 +185,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": 3,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 2.3866,
@@ -194,6 +204,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": 4,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 2.1871,
@@ -212,6 +223,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.2083,
         "median": 5.534,
@@ -230,6 +242,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.2318,
         "median": 5.2628,
@@ -248,6 +261,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": 1,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 2.2973,
@@ -266,6 +280,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
+      "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 2.9741,
