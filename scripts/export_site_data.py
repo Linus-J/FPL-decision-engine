@@ -14,12 +14,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config.settings import settings
 from data.db import get_session
+from scripts.site_export.cdn import purge as purge_cdn
 from scripts.site_export.git_sync import commit_and_push
 from scripts.site_export.payload import build_run_payload
 from scripts.site_export.writer import update_index, write_run_file
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data" / "simulations"
+
+# How the portfolio site addresses this data on jsDelivr. These must match
+# the `repo`, `ref` and `path` constants in that site's
+# assets/panels/fpl.js: a jsDelivr purge is keyed on the request URL, so
+# purging any other spelling clears an entry nobody asks for. The repo was
+# renamed from FPL-26-27-bot; GitHub 301s the old name but the CDN caches
+# the two spellings as separate entries, so this has to be the name the
+# site actually requests, not whatever `origin` happens to be set to.
+CDN_REPO = "Linus-J/FPL-decision-engine"
+CDN_REF = "refs/heads/v2"
+CDN_PATH = "data/simulations"
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +57,16 @@ def run(*, no_push: bool) -> None:
         logger.info("Committed%s", " (not pushed)" if no_push else " and pushed")
     else:
         logger.info("No changes to commit")
+
+    # Pushing is not enough on its own: jsDelivr pins a mutable branch ref
+    # for up to seven days, so without this the site kept serving a
+    # five-day-old squad (2026-08-30). Both files matter -- a fresh
+    # gw{N}.json behind a stale index.json is still a stale page.
+    if committed and not no_push:
+        purge_cdn(
+            repo=CDN_REPO, ref=CDN_REF, path=CDN_PATH,
+            files=["index.json", run_path.name],
+        )
 
 
 def main() -> None:
