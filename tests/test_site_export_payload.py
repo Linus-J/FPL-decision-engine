@@ -425,3 +425,224 @@ def test_approx_marks_the_normal_approximation():
 
     real = {"p10": 1.0, "median": 4.0, "mean": 4.5, "p90": 9.0}
     assert payload_module._xpts_entry(1, {1: real}, 99.0)["approx"] is False
+
+
+# --- history collapses to one decision per gameweek (2026-08-30) ---------
+#
+# decision_log gets a fresh row every time the weekly pipeline runs, and the
+# pipeline is re-run several times in the days before a deadline. The export
+# used to render every one of those rows, so GW2 published seven entries --
+# three superseded transfer plans that contradicted each other on both the
+# hit count and the gain, three no-op rows, and two different 3xc lines.
+# Only the last run before the deadline is the decision that was acted on;
+# it is also the run the squad panel already reflects, so publishing the
+# others put the two halves of the page in disagreement.
+
+
+def _history_df(rows: list[dict]) -> pd.DataFrame:
+    """Rows in the order get_decision_history returns them: gameweek DESC,
+    created_at DESC -- so the newest run of a gameweek comes first."""
+    return pd.DataFrame(rows)
+
+
+def test_history_keeps_only_the_latest_transfers_row_per_gameweek():
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 6.4, "details": {
+            "transfers_in": [{"web_name": "Rice"}, {"web_name": "Guéhi"}],
+            "transfers_out": [{"web_name": "Gibbs-White"}, {"web_name": "Pedro Porro"}],
+            "hits_taken": 1,
+        }},
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 8.1, "details": {
+            "transfers_in": [{"web_name": "Rice"}, {"web_name": "Guéhi"}],
+            "transfers_out": [{"web_name": "Gibbs-White"}, {"web_name": "Pedro Porro"}],
+            "hits_taken": 0,
+        }},
+    ]))
+
+    assert len(entries) == 1
+    # The 13:17 run, not the 10:21 one: the real entry took a -4 hit.
+    assert entries[0]["hits_taken"] == 1
+    assert entries[0]["net_xpts_gain"] == 6.4
+
+
+def test_history_keeps_only_the_latest_chip_row_per_gameweek():
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 2, "decision_type": "chip", "projected_gain": 7.8, "details": {
+            "chip": "3xc", "reason": "TC captain xPts 7.8",
+        }},
+        {"gameweek": 2, "decision_type": "chip", "projected_gain": 7.7, "details": {
+            "chip": "3xc", "reason": "TC captain xPts 7.7",
+        }},
+    ]))
+
+    assert entries == [
+        {"gameweek": 2, "type": "chip", "chip": "3xc", "reason": "TC captain xPts 7.8"}
+    ]
+
+
+def test_history_drops_no_op_transfer_rows():
+    """A run that recommended no transfers is not an event. Publishing it as
+    "none → none, +0.0 xPts" filled the log with rows that say nothing."""
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 3, "decision_type": "transfers", "projected_gain": 0.0, "details": {
+            "transfers_in": [], "transfers_out": [], "hits_taken": 0,
+        }},
+    ]))
+
+    assert entries == []
+
+
+def test_history_prefers_a_real_transfer_over_a_later_no_op_run():
+    """A no-op re-run after the deadline must not erase the week's transfers."""
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 0.0, "details": {
+            "transfers_in": [], "transfers_out": [], "hits_taken": 0,
+        }},
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 6.4, "details": {
+            "transfers_in": [{"web_name": "Rice"}],
+            "transfers_out": [{"web_name": "Gibbs-White"}],
+            "hits_taken": 1,
+        }},
+    ]))
+
+    assert len(entries) == 1
+    assert entries[0]["transfers_in"] == ["Rice"]
+
+
+def test_history_emits_an_initial_squad_entry_for_gameweek_one():
+    """GW1 logs only a lineup row -- there is nothing to transfer from -- so
+    the week rendered as a blank gap in the log instead of the draft it was."""
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 1, "decision_type": "lineup", "projected_gain": 72.3, "details": {
+            "squad_ids": [1, 5], "starting_ids": [1],
+        }},
+    ]))
+
+    assert entries == [{"gameweek": 1, "type": "initial_squad"}]
+
+
+def test_history_does_not_call_a_mid_season_gameweek_the_initial_squad():
+    """Once the 20-gameweek window slides past GW1, the earliest gameweek in
+    it is an ordinary week and must not be relabelled as the draft."""
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 7, "decision_type": "lineup", "projected_gain": 60.0, "details": {
+            "squad_ids": [1, 5],
+        }},
+    ]))
+
+    assert entries == []
+
+
+def test_history_orders_transfers_before_the_chip_within_a_gameweek():
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 2, "decision_type": "chip", "projected_gain": 7.8, "details": {
+            "chip": "3xc", "reason": "TC captain xPts 7.8",
+        }},
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 6.4, "details": {
+            "transfers_in": [{"web_name": "Rice"}],
+            "transfers_out": [{"web_name": "Gibbs-White"}],
+            "hits_taken": 1,
+        }},
+    ]))
+
+    assert [e["type"] for e in entries] == ["transfers", "chip"]
+
+
+def test_history_keeps_gameweeks_in_descending_order():
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 6.4, "details": {
+            "transfers_in": [{"web_name": "Rice"}],
+            "transfers_out": [{"web_name": "Gibbs-White"}],
+            "hits_taken": 1,
+        }},
+        {"gameweek": 1, "decision_type": "lineup", "projected_gain": 72.3, "details": {
+            "squad_ids": [1, 5],
+        }},
+    ]))
+
+    assert [(e["gameweek"], e["type"]) for e in entries] == [
+        (2, "transfers"), (1, "initial_squad"),
+    ]
+
+
+def test_history_reproduces_the_published_gw1_and_gw2_log():
+    """End-to-end shape against the real 2026-27 decision_log rows."""
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 2, "decision_type": "chip", "projected_gain": 7.8058, "details": {
+            "chip": "3xc", "reason": "TC captain xPts 7.8"}},
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 6.4286, "details": {
+            "transfers_in": [{"web_name": "Rice"}, {"web_name": "Guéhi"}],
+            "transfers_out": [{"web_name": "Gibbs-White"}, {"web_name": "Pedro Porro"}],
+            "hits_taken": 1}},
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 0.0, "details": {
+            "transfers_in": [], "transfers_out": [], "hits_taken": 0}},
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 8.0583, "details": {
+            "transfers_in": [{"web_name": "Rice"}, {"web_name": "Guéhi"}],
+            "transfers_out": [{"web_name": "Gibbs-White"}, {"web_name": "Pedro Porro"}],
+            "hits_taken": 0}},
+        {"gameweek": 2, "decision_type": "chip", "projected_gain": 7.7096, "details": {
+            "chip": "3xc", "reason": "TC captain xPts 7.7"}},
+        {"gameweek": 1, "decision_type": "lineup", "projected_gain": 72.2612, "details": {
+            "squad_ids": [1, 5]}},
+    ]))
+
+    assert entries == [
+        {"gameweek": 2, "type": "transfers",
+         "transfers_in": ["Rice", "Guéhi"],
+         "transfers_out": ["Gibbs-White", "Pedro Porro"],
+         "hits_taken": 1, "net_xpts_gain": 6.4286},
+        {"gameweek": 2, "type": "chip", "chip": "3xc", "reason": "TC captain xPts 7.8"},
+        {"gameweek": 1, "type": "initial_squad"},
+    ]
+
+
+# --- a run file must not leak decisions from later gameweeks (2026-08-30) --
+#
+# gw1.json was exported while GW1 was current, but the engine plans the next
+# gameweek ahead of the deadline, so decision_log already held GW2 rows. The
+# export dumped the whole log regardless of the run's own gameweek, and the
+# published gw1.json carried three GW2 events -- transfers into a squad the
+# GW1 squad panel above it does not contain. Selecting GW1 on the site
+# should show GW1 as it stood, not a preview of the week after.
+
+
+def test_history_excludes_gameweeks_after_the_run():
+    rows = _history_df([
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 8.1, "details": {
+            "transfers_in": [{"web_name": "Rice"}],
+            "transfers_out": [{"web_name": "Gibbs-White"}],
+            "hits_taken": 0}},
+        {"gameweek": 1, "decision_type": "lineup", "projected_gain": 72.3, "details": {
+            "squad_ids": [1, 5]}},
+    ])
+
+    assert payload_module._build_history_entries(rows, up_to_gw=1) == [
+        {"gameweek": 1, "type": "initial_squad"}
+    ]
+
+
+def test_history_includes_the_run_gameweek_itself():
+    rows = _history_df([
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 6.4, "details": {
+            "transfers_in": [{"web_name": "Rice"}],
+            "transfers_out": [{"web_name": "Gibbs-White"}],
+            "hits_taken": 1}},
+    ])
+
+    entries = payload_module._build_history_entries(rows, up_to_gw=2)
+
+    assert [e["gameweek"] for e in entries] == [2]
+
+
+def test_history_without_a_cutoff_keeps_every_gameweek():
+    """The cutoff is opt-in so the dashboard's own callers are unaffected."""
+    rows = _history_df([
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 6.4, "details": {
+            "transfers_in": [{"web_name": "Rice"}],
+            "transfers_out": [{"web_name": "Gibbs-White"}],
+            "hits_taken": 1}},
+        {"gameweek": 1, "decision_type": "lineup", "projected_gain": 72.3, "details": {
+            "squad_ids": [1, 5]}},
+    ])
+
+    assert len(payload_module._build_history_entries(rows)) == 2
