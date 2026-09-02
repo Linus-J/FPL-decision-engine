@@ -142,9 +142,13 @@ exclude:
 # above. Kept because the tier is the right one for a genuine doubt, and the
 # mechanism is tested.
 rotation_risk:
-- code: 222531
-  start_probability: 0.75
-  reason: 'Knee injury, 75% chance of playing — shown in the FPL app but NOT in
-    the public API/website (status=a, chance_of_playing_next_round=100, news
-    empty, re-checked 13:06Z). Nothing downstream can see it, so entered by hand.'
-  as_of: '2026-08-28'
+# Gibbs-White's 0.75 cap REMOVED 2026-09-02. The doubt it encoded was wrong:
+# he started and played 90 minutes in both GW1 and GW2, scoring 13 in GW2,
+# and FPL has carried status=a / chance_of_playing=100 throughout. The cap
+# was still discounting him across the whole GW3-GW7 horizon.
+#
+# Worth remembering why it was entered: the FPL app showed a knee doubt the
+# public API never carried. That asymmetry is real, but a hand-entered cap has
+# no expiry -- it kept applying for two gameweeks after the player had
+# demonstrably answered the question on the pitch. Re-enter only with a date
+# to review it by.
