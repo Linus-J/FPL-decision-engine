@@ -57,6 +57,15 @@ class ChipOption:
     detail: str
 
 
+@dataclass(frozen=True)
+class ChipComparison:
+    """Every option that solved, plus the choice the margins imply."""
+
+    options: list[ChipOption]
+    no_chip: ChipOption | None
+    best: ChipOption | None
+
+
 def _base_xpts(
     current_squad_ids: list[int], projections: pd.DataFrame, horizon: int
 ) -> float:
@@ -258,3 +267,32 @@ def build_free_hit_option(
             f"into a continuation worth {plan.net_xpts_gain:+.2f}"
         ),
     )
+
+
+def pick_best(
+    options: list[ChipOption],
+    *,
+    free_hit_margin: float,
+    wildcard_margin: float,
+    free_hit_chip,
+    wildcard_chip,
+) -> ChipOption | None:
+    """The chip that beats the no-chip option by at least its margin, or None.
+
+    Returns None when the no-chip option is absent: there is no honest margin
+    to measure against a baseline that did not solve, so the caller must fall
+    back to the legacy path rather than guess.
+    """
+    no_chip = next((o for o in options if o.chip is None), None)
+    if no_chip is None:
+        return None
+    margins = {free_hit_chip: free_hit_margin, wildcard_chip: wildcard_margin}
+    qualifying = [
+        o
+        for o in options
+        if o.chip is not None
+        and o.horizon_xpts - no_chip.horizon_xpts >= margins.get(o.chip, float("inf"))
+    ]
+    if not qualifying:
+        return None
+    return max(qualifying, key=lambda o: o.horizon_xpts)

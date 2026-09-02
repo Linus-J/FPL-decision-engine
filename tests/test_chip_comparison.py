@@ -4,7 +4,12 @@ import pandas as pd
 import pytest
 
 from config.strategy import CHIP_TIMING, OPTIMISER, assert_horizons_consistent
-from optimiser.chip_comparison import build_free_hit_option, build_no_chip_option
+from optimiser.chip_comparison import (
+    ChipOption,
+    build_free_hit_option,
+    build_no_chip_option,
+    pick_best,
+)
 from optimiser.transfers import TransferPlan, roll_forward_free_transfers
 
 
@@ -151,3 +156,47 @@ def test_free_hit_collapses_to_one_week_at_the_horizon_edge(monkeypatch):
     )
     assert option is not None
     assert option.horizon_xpts == pytest.approx(24.0)
+
+
+def _opt(chip, total):
+    return ChipOption(
+        chip=chip,
+        horizon_xpts=total,
+        plan=TransferPlan([], [], 0, 0.0, 0.0),
+        detail="",
+    )
+
+
+def test_a_chip_must_beat_the_alternative_by_the_margin():
+    options = [_opt(None, 100.0), _opt("FH", 108.0)]
+    # 8 points better, but the bar is 12
+    assert pick_best(options, free_hit_margin=12.0, wildcard_margin=25.0,
+                     free_hit_chip="FH", wildcard_chip="WC") is None
+
+
+def test_a_chip_clearing_the_margin_wins():
+    options = [_opt(None, 100.0), _opt("FH", 113.0)]
+    best = pick_best(options, free_hit_margin=12.0, wildcard_margin=25.0,
+                     free_hit_chip="FH", wildcard_chip="WC")
+    assert best is not None and best.chip == "FH"
+
+
+def test_at_zero_margin_any_improvement_wins():
+    options = [_opt(None, 100.0), _opt("FH", 100.5)]
+    best = pick_best(options, free_hit_margin=0.0, wildcard_margin=0.0,
+                     free_hit_chip="FH", wildcard_chip="WC")
+    assert best is not None and best.chip == "FH"
+
+
+def test_without_a_no_chip_baseline_nothing_is_chosen():
+    """No honest margin exists against a baseline that did not solve."""
+    options = [_opt("FH", 999.0)]
+    assert pick_best(options, free_hit_margin=12.0, wildcard_margin=25.0,
+                     free_hit_chip="FH", wildcard_chip="WC") is None
+
+
+def test_the_better_of_two_qualifying_chips_wins():
+    options = [_opt(None, 100.0), _opt("FH", 120.0), _opt("WC", 130.0)]
+    best = pick_best(options, free_hit_margin=12.0, wildcard_margin=25.0,
+                     free_hit_chip="FH", wildcard_chip="WC")
+    assert best is not None and best.chip == "WC"
