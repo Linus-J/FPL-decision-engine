@@ -18,9 +18,16 @@ from config.strategy import (
 )
 from data.db import get_session
 from data.ingestors.ownership import load_latest_ownership
-from data.models import DecisionLog, SimDecisionLog, SimManager
+from data.models import ChipComparisonLog, DecisionLog, SimDecisionLog, SimManager
 from data.overrides import apply_team_overrides, load_p_leave_overrides, log_rumoured_squad_members
-from optimiser.chips import Chip, ChipRecommendation, chips_used_this_season, recommend_chip
+from optimiser.chip_comparison import compare_chip_options
+from optimiser.chips import (
+    Chip,
+    ChipRecommendation,
+    chips_available_this_half,
+    chips_used_this_season,
+    recommend_chip,
+)
 from optimiser.departure_risk import apply_departure_discount
 from optimiser.squad import optimise_squad_joint, optimise_starting_xi
 from optimiser.transfers import (
@@ -301,6 +308,44 @@ def _bench_xpts(squad_ids: list[int], projections: pd.DataFrame, gw: int) -> flo
     return float(gw_proj.iloc[11:]["xpts"].sum())
 
 
+def _chip_comparison_rows(
+    *,
+    season: str,
+    gameweek: int,
+    sim_manager_id: int | None,
+    comparison,
+    live_chip,
+) -> list[dict]:
+    """One row per option, marking what the live path did and what the
+    comparison would have done. Pure, so it is testable without a DB."""
+    names = {None: "none", Chip.FREE_HIT: "free_hit", Chip.WILDCARD: "wildcard"}
+    shadow_chip = comparison.best.chip if comparison.best is not None else None
+    rows = []
+    for option in comparison.options:
+        rows.append({
+            "season": season,
+            "gameweek": gameweek,
+            "sim_manager_id": sim_manager_id,
+            "option": names.get(option.chip, str(option.chip)),
+            "horizon_xpts": round(option.horizon_xpts, 4),
+            "detail": option.detail,
+            "chosen_live": option.chip == live_chip,
+            "chosen_shadow": option.chip == shadow_chip,
+        })
+    return rows
+
+
+def _persist_chip_comparison(db, rows: list[dict]) -> None:
+    """Best-effort: a logging failure must never break a decision run."""
+    try:
+        for row in rows:
+            db.add(ChipComparisonLog(**row))
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("chip comparison log not written: %s", exc)
+        db.rollback()
+
+
 def _run_decision_cycle(
     season: str,
     dry_run: bool,
@@ -521,6 +566,40 @@ def _run_decision_cycle(
 
     bench_pts = _bench_xpts(squad_ids, projections, next_gw) if squad_ids else 0.0
 
+    # 2026-09-02 (Task 7): the horizon-total comparison, computed BEFORE
+    # recommend_chip so it can be consulted rather than only logged after the
+    # fact. Best-effort — a squad-optimisation failure inside the comparison
+    # must never take down a decision run that the legacy threshold path
+    # would otherwise have completed fine.
+    comparison = None
+    if squad_ids:
+        try:
+            comparison = compare_chip_options(
+                current_squad_ids=squad_ids,
+                projections=projections,
+                players=players,
+                free_transfers=free_transfers,
+                current_gw=next_gw,
+                horizon=chip_timing.chip_comparison_horizon_gws,
+                free_hit_chip=Chip.FREE_HIT,
+                wildcard_chip=Chip.WILDCARD,
+                free_hit_margin=chip_timing.free_hit_comparison_margin,
+                wildcard_margin=chip_timing.wildcard_comparison_margin,
+                eligible_chips=(
+                    {Chip.FREE_HIT, Chip.WILDCARD}
+                    & set(chips_available_this_half(chips_used, next_gw, season))
+                ),
+                available_budget=available_budget,
+                bank=state.bank,
+                purchase_prices=state.purchase_prices,
+                ownership=ownership,
+                season=season,
+                config=config,
+                transfer_rules=transfer_rules,
+            )
+        except Exception as exc:  # noqa: BLE001 -- shadow work never breaks a run
+            logger.warning("chip comparison skipped: %s", exc)
+
     chip_rec: ChipRecommendation
     if force_chip:
         chip_rec = ChipRecommendation(force_chip, "forced by operator", 0.0)
@@ -546,7 +625,21 @@ def _run_decision_cycle(
             # rebuild it could not afford to buy.
             bank=state.bank,
             purchase_prices=state.purchase_prices,
+            comparison=comparison,
         )
+
+    if comparison is not None:
+        db = get_session()
+        try:
+            _persist_chip_comparison(
+                db,
+                _chip_comparison_rows(
+                    season=season, gameweek=next_gw, sim_manager_id=sim_manager_id,
+                    comparison=comparison, live_chip=chip_rec.chip,
+                ),
+            )
+        finally:
+            db.close()
 
     wildcard_active = chip_rec.chip == Chip.WILDCARD
     free_hit_active = chip_rec.chip == Chip.FREE_HIT

@@ -198,3 +198,25 @@ def test_chip_comparison_log_columns():
         "season", "gameweek", "sim_manager_id", "option",
         "horizon_xpts", "chosen_live", "chosen_shadow", "created_at",
     } <= cols
+
+
+def test_persist_marks_live_and_shadow_choices_separately():
+    """Divergence is the measurement, so both must be recorded per option."""
+    from agent.decision_engine import _chip_comparison_rows
+    from optimiser.chip_comparison import ChipComparison, ChipOption
+    from optimiser.chips import Chip
+    from optimiser.transfers import TransferPlan
+
+    none_opt = ChipOption(None, 100.0, TransferPlan([], [], 0, 0.0, 0.0), "no chip")
+    fh_opt = ChipOption(Chip.FREE_HIT, 120.0, TransferPlan([], [], 0, 0.0, 0.0), "fh")
+    comparison = ChipComparison([none_opt, fh_opt], none_opt, fh_opt)
+
+    rows = _chip_comparison_rows(
+        season="2026-27", gameweek=3, sim_manager_id=None,
+        comparison=comparison, live_chip=None,
+    )
+    by_option = {r["option"]: r for r in rows}
+    assert by_option["none"]["chosen_live"] is True      # live played no chip
+    assert by_option["none"]["chosen_shadow"] is False
+    assert by_option["free_hit"]["chosen_shadow"] is True  # comparison wanted FH
+    assert by_option["free_hit"]["chosen_live"] is False
