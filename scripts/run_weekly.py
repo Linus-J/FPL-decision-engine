@@ -39,6 +39,7 @@ import logging
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -72,6 +73,20 @@ def _run(args: list[str], env: dict[str, str] | None = None) -> int:
 # healthy re-run legitimately changes no counts, and warning on "nothing
 # changed" would fire every week. Collected and re-reported together at the
 # end, because a warning 200 lines up the log is a warning nobody reads.
+#
+# SCOPE is the whole game (2026-09-02). These checks were season-wide, which
+# made them blind to exactly the failure they were written for: on the morning
+# of 2026-09-02 the FBref scrape hit "CAPTCHA detected and could not be
+# solved" on all five attempts and collected nothing for GW2, and the
+# post-condition counted GW1's 302 rows still sitting in the table and passed.
+# A season-wide count can only fail in the first week of a season; after that
+# it answers "has this table ever had data", which is never the question.
+#
+# So each check is scoped to what THIS run was supposed to produce: the last
+# finished gameweek for the three tables keyed by one, and the run's start
+# instant for the two that carry a timestamp instead (set-piece roles and
+# ownership snapshots). That is still a post-condition rather than a delta --
+# an idempotent re-run bumps updated_at and re-satisfies it.
 _POSTCONDITION_WARNINGS: list[str] = []
 
 
@@ -96,7 +111,15 @@ def _postcondition_warning(step_name: str, label: str, count: int | None) -> str
 
 
 def _count_rows(sql: str, params: dict) -> int | None:
-    """Row count for a post-condition, or None if the query cannot be run."""
+    """Row count for a post-condition, or None if the query cannot be run.
+
+    A ``None`` in ``params`` means the scope of the check could not be
+    resolved (typically the target gameweek). The query is NOT run with the
+    scope dropped: an unscoped count is precisely the blind spot these
+    post-conditions exist to close, so it is reported as unverified instead.
+    """
+    if any(v is None for v in params.values()):
+        return None
     try:
         from sqlalchemy import text
 
@@ -163,6 +186,34 @@ def _season_has_started(season: str) -> bool:
         return True
 
 
+def _last_finished_gameweek(season: str) -> int | None:
+    """The most recent gameweek that has actually been PLAYED, from the live
+    FPL feed -- the gameweek this run's match-event scrapes exist to collect.
+
+    Deliberately not read from the local DB (2026-09-02). ``gameweeks`` is
+    refreshed by ``run_full_ingest``, which happens inside ``run_agent.py``
+    LATER in this pipeline, so at scrape time the table still says whatever
+    last week's run left there: on the morning of 2026-09-02 it had GW2 as
+    *next* and unfinished, hours after GW2 had been played and scored. A
+    post-condition scoped on that would have checked the wrong gameweek and
+    passed on last week's rows.
+
+    Returns None when the feed cannot be read, which makes every check that
+    depends on it report "unverified" rather than silently widening.
+    """
+    try:
+        import asyncio
+
+        from data.ingestors.fpl_api import fetch_bootstrap
+
+        bootstrap = asyncio.run(fetch_bootstrap())
+        finished = [e["id"] for e in bootstrap.get("events", []) if e.get("finished")]
+        return max(finished) if finished else None
+    except Exception as exc:  # noqa: BLE001 -- an unreadable feed is reported, not raised
+        logger.warning("Could not determine the last finished gameweek: %s", exc)
+        return None
+
+
 def _current_gameweek() -> int | None:
     """The gameweek whose deadline has just passed -- the one to sample a
     fresh ownership snapshot for (see ingest_ownership.py's own caveat:
@@ -193,6 +244,20 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Post-condition scope. Both are resolved BEFORE any step runs: the
+    # gameweek from the live feed (the local DB is a week stale at this point
+    # -- see _last_finished_gameweek), and the wall-clock instant for the two
+    # tables that carry a timestamp but no gameweek.
+    target_gw = _last_finished_gameweek(args.season)
+    run_started = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")
+    if target_gw is None:
+        logger.warning(
+            "Could not resolve the last finished gameweek -- every "
+            "gameweek-scoped post-condition below will report as unverified"
+        )
+    else:
+        logger.info("Post-conditions scoped to GW%d (last finished)", target_gw)
+
     if args.skip_match_events:
         logger.info("Skipping FBref/WhoScored match-event refresh (--skip-match-events)")
     elif not _season_has_started(args.season):
@@ -215,9 +280,10 @@ def main() -> None:
             [sys.executable, "scripts/scrape_fbref.py", args.season],
             env=fbref_env,
             postcondition=(
-                f"{args.season} match events",
-                "SELECT COUNT(*) FROM player_match_events WHERE season = :s",
-                {"s": args.season},
+                f"{args.season} GW{target_gw} match events",
+                "SELECT COUNT(*) FROM player_match_events "
+                "WHERE season = :s AND gameweek = :gw",
+                {"s": args.season, "gw": target_gw},
             ),
         )
         _run_or_warn(
@@ -228,11 +294,11 @@ def main() -> None:
             # are the ones only this step can fill -- the DefCon/bonus gap it
             # exists to close.
             postcondition=(
-                f"{args.season} match events carrying defensive actions",
+                f"{args.season} GW{target_gw} match events carrying defensive actions",
                 "SELECT COUNT(*) FROM player_match_events "
-                "WHERE season = :s AND (clearances > 0 OR interceptions > 0 "
-                "OR recoveries > 0)",
-                {"s": args.season},
+                "WHERE season = :s AND gameweek = :gw "
+                "AND (clearances > 0 OR interceptions > 0 OR recoveries > 0)",
+                {"s": args.season, "gw": target_gw},
             ),
         )
         # P3.7: penalty/set-piece duty. Shares the browser requirement above,
@@ -244,9 +310,10 @@ def main() -> None:
             [sys.executable, "scripts/scrape_setpieces.py", args.season],
             env=fbref_env,
             postcondition=(
-                f"{args.season} set-piece roles",
-                "SELECT COUNT(*) FROM player_setpiece_roles WHERE season = :s",
-                {"s": args.season},
+                f"{args.season} set-piece roles refreshed by THIS run",
+                "SELECT COUNT(*) FROM player_setpiece_roles "
+                "WHERE season = :s AND updated_at >= :since",
+                {"s": args.season, "since": run_started},
             ),
         )
 
@@ -273,9 +340,10 @@ def main() -> None:
             # xg > 0, not a row count: the failure mode this exists to catch
             # wrote 309 rows carrying shots and no xG at all.
             postcondition=(
-                f"{args.season} xG rows carrying real xg",
-                "SELECT COUNT(*) FROM player_xg_stats WHERE season = :s AND xg > 0",
-                {"s": args.season},
+                f"{args.season} GW{target_gw} xG rows carrying real xg",
+                "SELECT COUNT(*) FROM player_xg_stats "
+                "WHERE season = :s AND gameweek = :gw AND xg > 0",
+                {"s": args.season, "gw": target_gw},
             ),
         )
 
@@ -285,9 +353,9 @@ def main() -> None:
             "scripts/ingest_ownership.py",
             [sys.executable, "scripts/ingest_ownership.py", str(gw)],
             postcondition=(
-                "ownership snapshots",
-                "SELECT COUNT(*) FROM ownership_snapshots",
-                {},
+                "ownership snapshots taken by THIS run",
+                "SELECT COUNT(*) FROM ownership_snapshots WHERE snapshot_ts >= :since",
+                {"since": run_started},
             ),
         )
 
