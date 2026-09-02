@@ -186,14 +186,19 @@ def test_map_keeper_row():
     assert out == {"saves": 5, "penalties_saved": 1}
 
 
-def test_map_xg_row_extracts_and_defaults():
+def test_map_xg_row_extracts_only_what_fbref_published():
     out = fbref.map_xg_row({
         "Expected xG": 0.42, "Expected npxG": 0.31, "Expected xAG": 0.18,
         "Performance Sh": 3,
     })
     assert out == {"xg": 0.42, "npxg": 0.31, "xa": 0.18, "shots": 3}
-    # missing cols default to 0
-    assert fbref.map_xg_row({"Expected xG": 0.5}) == {"xg": 0.5, "npxg": 0.0, "xa": 0.0, "shots": 0}
+    # A missing column is OMITTED, never defaulted to 0 (2026-09-02): these
+    # rows are upserted with set_=fields, so a 0 here overwrites the real
+    # value Understat stored. FBref publishes no Expected columns at all for
+    # 2026-27, which zeroed the season's xG down to 19 non-zero rows.
+    assert fbref.map_xg_row({"Expected xG": 0.5}) == {"xg": 0.5}
+    assert fbref.map_xg_row({"Performance Sh": 4}) == {"shots": 4}
+    assert fbref.map_xg_row({}) == {}
 
 
 def test_aggregate_xg_rows_sums_dgw():
@@ -208,6 +213,19 @@ def test_aggregate_xg_rows_sums_dgw():
     assert agg[(1, 5)]["shots"] == 3
     assert agg[(1, 5)]["xgi"] == pytest.approx(0.6 + 0.4)   # xg + xa
     assert agg[(2, 5)]["npxg"] == pytest.approx(0.9)
+
+
+def test_aggregate_xg_rows_drops_fields_no_source_supplied():
+    """A shots-only source must not write xg/xa/npxg/xgi at all.
+
+    This is the 2026-27 FBref shape: shots present, no Expected columns.
+    Emitting zeros for the rest overwrote Understat's real values, because
+    _write_xg_rows sets exactly the keys the aggregate hands it.
+    """
+    agg = fbref.aggregate_xg_rows([(1, 5, {"shots": 2}), (1, 5, {"shots": 3})])
+    assert agg[(1, 5)] == {"shots": 5}
+    assert "xg" not in agg[(1, 5)]
+    assert "xgi" not in agg[(1, 5)]
 
 
 def test_normalize_position():

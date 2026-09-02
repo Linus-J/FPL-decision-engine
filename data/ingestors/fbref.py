@@ -173,17 +173,34 @@ FBREF_XG_MAP: dict[str, str] = {
 
 
 def map_xg_row(raw: Mapping) -> dict:
-    """FBref match-summary row → per-match xG fields (floats; shots int)."""
+    """FBref match-summary row → per-match xG fields (floats; shots int).
+
+    Only the fields FBref ACTUALLY published are returned. An absent column
+    must not become a zero here (2026-09-02): FBref's Expected columns are
+    published per competition-season, and 2026-27's match reports carry 30
+    stat columns with no xG/npxG/xAG among them. Defaulting those to 0.0 and
+    upserting them wrote a confident zero over Understat's real value --
+    ``_write_xg_rows`` sets exactly the keys it is given, so a missing key
+    now leaves the stored value alone.
+
+    The damage was invisible because ``run_weekly.py`` happens to run FBref
+    before Understat, so Understat overwrote the zeros seconds later. Running
+    the FBref scrape by hand AFTER a weekly run reversed the order and cut
+    2026-27 from 304 rows carrying real xG to 19 -- and
+    ``projection/assemble.py`` LEFT JOINs this table and COALESCEs to 0, so a
+    zeroed xG is indistinguishable from a genuine one.
+    """
     out: dict[str, float] = {}
     for field, col in FBREF_XG_MAP.items():
         if col in raw and raw[col] is not None:
             out[field] = _num(raw, col)
-    return {
-        "xg": round(out.get("xg", 0.0), 4),
-        "xa": round(out.get("xa", 0.0), 4),
-        "npxg": round(out.get("npxg", 0.0), 4),
-        "shots": int(out.get("shots", 0)),
-    }
+    fields: dict[str, float | int] = {}
+    for field in ("xg", "xa", "npxg"):
+        if field in out:
+            fields[field] = round(out[field], 4)
+    if "shots" in out:
+        fields["shots"] = int(out["shots"])
+    return fields
 
 
 def aggregate_xg_rows(
@@ -193,22 +210,38 @@ def aggregate_xg_rows(
     two matches in one GW combine (player_xg_stats is keyed per GW). Input is
     ``(player_id, gameweek, xg_fields)`` triples."""
     agg: dict[tuple[int, int], dict] = {}
+    seen: dict[tuple[int, int], set[str]] = {}
     for player_id, gw, fields in per_match:
         key = (player_id, gw)
         cur = agg.setdefault(
             key, {"xg": 0.0, "xa": 0.0, "npxg": 0.0, "shots": 0, "key_passes": 0}
         )
-        cur["xg"] += fields.get("xg", 0.0)
-        cur["xa"] += fields.get("xa", 0.0)
-        cur["npxg"] += fields.get("npxg", 0.0)
-        cur["shots"] += fields.get("shots", 0)
-        cur["key_passes"] += fields.get("key_passes", 0)
-    for cur in agg.values():
-        cur["xg"] = round(cur["xg"], 4)
-        cur["xa"] = round(cur["xa"], 4)
-        cur["npxg"] = round(cur["npxg"], 4)
-        cur["xgi"] = round(cur["xg"] + cur["xa"], 4)
-    return agg
+        present = seen.setdefault(key, set())
+        for field, zero in (
+            ("xg", 0.0), ("xa", 0.0), ("npxg", 0.0), ("shots", 0), ("key_passes", 0)
+        ):
+            if field in fields:
+                cur[field] += fields.get(field, zero)
+                present.add(field)
+    # A field no source row supplied is DROPPED, not written as 0 -- see
+    # map_xg_row. Callers upsert exactly these keys, so dropping one leaves
+    # whatever another source (Understat) already stored intact.
+    out: dict[tuple[int, int], dict] = {}
+    for key, cur in agg.items():
+        present = seen.get(key, set())
+        row: dict = {}
+        for field in ("xg", "xa", "npxg"):
+            if field in present:
+                row[field] = round(cur[field], 4)
+        for field in ("shots", "key_passes"):
+            if field in present:
+                row[field] = cur[field]
+        # xgi is xg + xa; it is only meaningful when BOTH were supplied.
+        if "xg" in present and "xa" in present:
+            row["xgi"] = round(cur["xg"] + cur["xa"], 4)
+        if row:
+            out[key] = row
+    return out
 
 
 def normalize_position(fbref_pos: str | None) -> str:
@@ -839,6 +872,10 @@ def _write_xg_rows(  # pragma: no cover - live DB write
     written = 0
     try:
         for (player_id, gw), fields in agg.items():
+            if not fields:
+                # Nothing this source actually measured -- writing the row
+                # would only stamp column defaults over another source's data.
+                continue
             stmt = (
                 insert(PlayerXGStats)
                 .values(player_id=player_id, gameweek=gw, season=season, **fields)
