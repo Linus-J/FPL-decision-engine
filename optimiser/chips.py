@@ -437,18 +437,27 @@ def recommend_chip(
     def _try_fh(force: bool = False) -> ChipRecommendation | None:
         if _chip_uses_remaining(Chip.FREE_HIT, chips_used, current_gw, season) <= 0:
             return None
-        chosen = _comparison_choice(comparison, Chip.FREE_HIT, timing)
-        if chosen is not None:
-            return chosen
-        if (
-            timing.chip_comparison_enabled
-            and comparison is not None
-            and comparison.no_chip is not None
-        ):
-            # The comparison ran and did NOT pick the free hit. Falling through
-            # to the legacy threshold here would let the old, wrong baseline
-            # overrule the new one -- the exact bug this replaces.
-            return None
+        # Only consult the comparison on a non-forced call. A forced call
+        # comes from the salvage block below, which is rescuing a chip that
+        # would otherwise be DESTROYED at the half boundary -- there the
+        # question is "which chip do I salvage", not "is this better than
+        # transfers", so a comparison margin must never be able to veto it.
+        # Declining to play a chip that is about to expire is strictly worse
+        # than playing it on a mediocre week.
+        if not force:
+            chosen = _comparison_choice(comparison, Chip.FREE_HIT, timing)
+            if chosen is not None:
+                return chosen
+            if (
+                timing.chip_comparison_enabled
+                and comparison is not None
+                and comparison.no_chip is not None
+            ):
+                # The comparison ran and did NOT pick the free hit. Falling
+                # through to the legacy threshold here would let the old,
+                # wrong baseline overrule the new one -- the exact bug this
+                # replaces.
+                return None
         # 2026-07-30 (user's own review: "the free hit is usually handy
         # during double game weeks where it is not worth triple
         # captaining") -- Free Hit used to only ever trigger on a BGW
@@ -494,18 +503,24 @@ def recommend_chip(
             return None
         if not force and squad_age_gws < timing.wildcard_min_managed_gws:
             return None
-        chosen = _comparison_choice(comparison, Chip.WILDCARD, timing)
-        if chosen is not None:
-            return chosen
-        if (
-            timing.chip_comparison_enabled
-            and comparison is not None
-            and comparison.no_chip is not None
-        ):
-            # The comparison ran and did NOT pick the wildcard. Falling through
-            # to the legacy threshold here would let the old, wrong baseline
-            # overrule the new one -- the exact bug this replaces.
-            return None
+        # Only consult the comparison on a non-forced call -- same reasoning
+        # as `_try_fh` above: a forced call is the half-boundary salvage
+        # block rescuing a chip that would otherwise be DESTROYED, and a
+        # comparison margin must never be able to veto that rescue.
+        if not force:
+            chosen = _comparison_choice(comparison, Chip.WILDCARD, timing)
+            if chosen is not None:
+                return chosen
+            if (
+                timing.chip_comparison_enabled
+                and comparison is not None
+                and comparison.no_chip is not None
+            ):
+                # The comparison ran and did NOT pick the wildcard. Falling
+                # through to the legacy threshold here would let the old,
+                # wrong baseline overrule the new one -- the exact bug this
+                # replaces.
+                return None
         # §12 (2026-08-18): decide with the SAME optimiser that will execute
         # it. A played wildcard is run through
         # `evaluate_transfers(wildcard_active=True)` by the decision engine, so
