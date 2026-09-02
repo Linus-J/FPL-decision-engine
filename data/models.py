@@ -700,3 +700,31 @@ class SimDecisionLog(Base):
     projected_gain: Mapped[float] = mapped_column(Float, default=0.0)
     actual_outcome: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ChipComparisonLog(Base):
+    """What the horizon-total comparison said, every run (2026-09-02).
+
+    Read by nothing in the decision path. It exists so "the cohort agrees"
+    is a measurable claim rather than a vibe: how often the legacy gate and
+    the corrected comparison diverge, and when they do, which scored better.
+
+    ``sim_manager_id`` is NULL for the real bot.
+    """
+
+    __tablename__ = "chip_comparison_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    season: Mapped[str] = mapped_column(String(7), nullable=False)
+    gameweek: Mapped[int] = mapped_column(Integer, nullable=False)
+    sim_manager_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("sim_managers.id"), nullable=True
+    )
+    option: Mapped[str] = mapped_column(String(16), nullable=False)  # none|free_hit|wildcard
+    horizon_xpts: Mapped[float] = mapped_column(Float, nullable=False)
+    detail: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # What the live path actually did, and what the comparison WOULD have
+    # done. Both stored so divergence is a query rather than a reconstruction.
+    chosen_live: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    chosen_shadow: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

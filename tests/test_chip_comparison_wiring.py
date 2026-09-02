@@ -188,3 +188,13 @@ def test_forced_free_hit_still_fires_when_the_comparison_ran_but_rejected_it(mon
 
     assert rec.chip == chips.Chip.FREE_HIT
     assert "Forced before expiry" in rec.reason
+
+
+def test_chip_comparison_log_columns():
+    from data.models import ChipComparisonLog
+
+    cols = {c.name for c in ChipComparisonLog.__table__.columns}
+    assert {
+        "season", "gameweek", "sim_manager_id", "option",
+        "horizon_xpts", "chosen_live", "chosen_shadow", "created_at",
+    } <= cols
