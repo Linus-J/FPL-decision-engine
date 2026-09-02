@@ -296,3 +296,66 @@ def pick_best(
     if not qualifying:
         return None
     return max(qualifying, key=lambda o: o.horizon_xpts)
+
+
+def compare_chip_options(
+    current_squad_ids: list[int],
+    projections: pd.DataFrame,
+    players: pd.DataFrame,
+    *,
+    free_transfers: int,
+    current_gw: int,
+    horizon: int,
+    free_hit_chip,
+    wildcard_chip,
+    free_hit_margin: float,
+    wildcard_margin: float,
+    eligible_chips: set | None = None,
+    available_budget: float | None = None,
+    bank: float | None = None,
+    purchase_prices: dict[int, float] | None = None,
+    ownership: pd.DataFrame | None = None,
+    season: str | None = None,
+    config=None,
+    transfer_rules=None,
+) -> ChipComparison:
+    """Score every mutually-exclusive option over one common horizon.
+
+    ``eligible_chips`` (optional) restricts which chips are considered -- a
+    chip already spent this half must not be offered. ``None`` means both.
+    """
+    shared = dict(
+        available_budget=available_budget, bank=bank, purchase_prices=purchase_prices,
+        ownership=ownership, config=config, transfer_rules=transfer_rules,
+    )
+    options: list[ChipOption] = []
+    no_chip = build_no_chip_option(
+        current_squad_ids, projections, players,
+        free_transfers=free_transfers, horizon=horizon, **shared,
+    )
+    if no_chip is not None:
+        options.append(no_chip)
+
+    allowed = eligible_chips if eligible_chips is not None else {free_hit_chip, wildcard_chip}
+    if free_hit_chip in allowed:
+        fh = build_free_hit_option(
+            current_squad_ids, projections, players,
+            free_transfers=free_transfers, horizon=horizon, current_gw=current_gw,
+            chip=free_hit_chip, season=season, **shared,
+        )
+        if fh is not None:
+            options.append(fh)
+    if wildcard_chip in allowed:
+        wc = build_wildcard_option(
+            current_squad_ids, projections, players,
+            horizon=horizon, chip=wildcard_chip, **shared,
+        )
+        if wc is not None:
+            options.append(wc)
+
+    best = pick_best(
+        options,
+        free_hit_margin=free_hit_margin, wildcard_margin=wildcard_margin,
+        free_hit_chip=free_hit_chip, wildcard_chip=wildcard_chip,
+    )
+    return ChipComparison(options=options, no_chip=no_chip, best=best)

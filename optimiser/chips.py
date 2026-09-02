@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from config.strategy import CHIP_TIMING, CHIPS, ChipTimingThresholds, OptimiserConfig
 from data.db import get_session
+from optimiser.chip_comparison import ChipComparison
 from optimiser.chip_scenarios import gain_distribution, load_scenario_totals
 from optimiser.squad import optimise_squad
 from optimiser.transfers import evaluate_transfers, squad_xpts
@@ -303,6 +304,29 @@ def must_play_a_chip_now(
     return gws_left <= 2
 
 
+def _comparison_choice(
+    comparison: "ChipComparison | None",
+    chip: Chip,
+    timing: ChipTimingThresholds,
+) -> ChipRecommendation | None:
+    """The comparison's verdict for ``chip``, or None to fall through to the
+    legacy threshold.
+
+    Returns None whenever the flag is off, the comparison is missing, or its
+    baseline did not solve -- so a legacy run cannot be perturbed by a
+    comparison that happens to be present for shadow logging.
+    """
+    if not timing.chip_comparison_enabled:
+        return None
+    if comparison is None or comparison.no_chip is None or comparison.best is None:
+        return None
+    if comparison.best.chip is not chip:
+        return None
+    margin = comparison.best.horizon_xpts - comparison.no_chip.horizon_xpts
+    reason = f"beats no-chip by {margin:.1f} xPts — {comparison.best.detail}"
+    return ChipRecommendation(chip, reason, margin)
+
+
 def recommend_chip(
     current_gw: int,
     current_squad_ids: list[int],
@@ -320,6 +344,7 @@ def recommend_chip(
     config: OptimiserConfig | None = None,
     bank: float | None = None,
     purchase_prices: dict[int, float] | None = None,
+    comparison: "ChipComparison | None" = None,
 ) -> ChipRecommendation:
     """``bank``/``purchase_prices`` (optional, 2026-08-18): the real
     affordability ledger, forwarded to the wildcard's own
@@ -412,6 +437,18 @@ def recommend_chip(
     def _try_fh(force: bool = False) -> ChipRecommendation | None:
         if _chip_uses_remaining(Chip.FREE_HIT, chips_used, current_gw, season) <= 0:
             return None
+        chosen = _comparison_choice(comparison, Chip.FREE_HIT, timing)
+        if chosen is not None:
+            return chosen
+        if (
+            timing.chip_comparison_enabled
+            and comparison is not None
+            and comparison.no_chip is not None
+        ):
+            # The comparison ran and did NOT pick the free hit. Falling through
+            # to the legacy threshold here would let the old, wrong baseline
+            # overrule the new one -- the exact bug this replaces.
+            return None
         # 2026-07-30 (user's own review: "the free hit is usually handy
         # during double game weeks where it is not worth triple
         # captaining") -- Free Hit used to only ever trigger on a BGW
@@ -456,6 +493,18 @@ def recommend_chip(
         if _chip_uses_remaining(Chip.WILDCARD, chips_used, current_gw, season) <= 0:
             return None
         if not force and squad_age_gws < timing.wildcard_min_managed_gws:
+            return None
+        chosen = _comparison_choice(comparison, Chip.WILDCARD, timing)
+        if chosen is not None:
+            return chosen
+        if (
+            timing.chip_comparison_enabled
+            and comparison is not None
+            and comparison.no_chip is not None
+        ):
+            # The comparison ran and did NOT pick the wildcard. Falling through
+            # to the legacy threshold here would let the old, wrong baseline
+            # overrule the new one -- the exact bug this replaces.
             return None
         # §12 (2026-08-18): decide with the SAME optimiser that will execute
         # it. A played wildcard is run through
