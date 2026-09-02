@@ -140,11 +140,18 @@ def _skip_bb_fh_wc_kwargs(current_gw: int = 5) -> dict:
     from optimiser.chips import Chip
     # Mark BB/FH/WC as already used THIS half (same half as current_gw) so
     # _chip_uses_remaining reports 0 for them, leaving only TC available.
+    #
+    # Recorded against the PRECEDING gameweek, not current_gw itself
+    # (2026-09-02): a chip logged against the gameweek being decided is that
+    # gameweek's own earlier run, which _chip_uses_remaining deliberately
+    # discounts so a re-run does not refuse the chip it just chose. Every call
+    # site here passes current_gw >= 5, so gw-1 is always a real gameweek in
+    # the same half.
     return {
         "chips_used": [
-            (Chip.BENCH_BOOST, current_gw),
-            (Chip.FREE_HIT, current_gw),
-            (Chip.WILDCARD, current_gw),
+            (Chip.BENCH_BOOST, current_gw - 1),
+            (Chip.FREE_HIT, current_gw - 1),
+            (Chip.WILDCARD, current_gw - 1),
         ],
         "squad_age_gws": 0,
     }
@@ -274,8 +281,11 @@ def test_recommend_chip_wildcard_fires_and_is_evaluated_by_the_executing_optimis
         players=players,
         available_budget=200.0,
         free_transfers=1,
-        # Only the wildcard is left available this half.
-        chips_used=[(Chip.BENCH_BOOST, 5), (Chip.FREE_HIT, 5), (Chip.TRIPLE_CAPTAIN, 5)],
+        # Only the wildcard is left available this half. Recorded against
+        # GW4, not GW5: a chip logged against the gameweek being decided is
+        # that gameweek's own earlier run, which _chip_uses_remaining
+        # discounts rather than treating as spent.
+        chips_used=[(Chip.BENCH_BOOST, 4), (Chip.FREE_HIT, 4), (Chip.TRIPLE_CAPTAIN, 4)],
         squad_age_gws=99,
     )
     assert rec.chip == Chip.WILDCARD

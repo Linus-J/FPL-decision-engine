@@ -121,6 +121,25 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     added = _add_missing_columns()
     _seed_data_checked_from_finished(added)
+    _migrate_chip_comparison_unique()
+
+
+def _migrate_chip_comparison_unique() -> None:
+    """Add ``uq_chip_comparison`` to a ``chip_comparison_log`` created without
+    it (2026-09-02).
+
+    ``create_all`` builds MISSING tables in full but never alters an existing
+    one, and ``_add_missing_columns`` is ADD COLUMN only, so a database that ran
+    the agent before the constraint existed keeps the old shape forever. The
+    migration is idempotent and does nothing once the constraint is present, so
+    running it on every startup costs one reflection and is what stops a fresh
+    clone, a backtest database or another machine's copy drifting in silence.
+
+    Imported inside the function because the script imports ``data.db``.
+    """
+    from scripts.migrate_chip_comparison_unique import migrate
+
+    migrate(engine)
 
 
 def get_session() -> Session:

@@ -16,6 +16,13 @@ The lesson is not "special-case the wildcard age gate": ANY chip-specific
 downstream guard reproduces this shape. A single winner is the wrong contract
 for a decision that can be refused after the fact, so the comparison now also
 exposes every option that cleared its own margin, in preference order.
+
+A convention throughout this file: spent chips are recorded against GW4 while
+every decision under test is for GW5. ``_chip_uses_remaining`` discounts a chip
+logged against the gameweek BEING DECIDED (2026-09-02) -- that row is the same
+gameweek's own earlier run, not spent history -- so marking a chip used "at
+GW5" no longer removes it from a GW5 decision. The preceding gameweek is the
+honest way to say "already played, earlier this half".
 """
 from __future__ import annotations
 
@@ -120,7 +127,7 @@ def test_a_qualifying_free_hit_survives_a_wildcard_nomination_the_engine_refuses
         free_transfers=1,
         # TC and BB already spent, so neither can preempt the FH/WC pair --
         # and with two chips left against fourteen gameweeks nothing is forced.
-        chips_used=[(chips.Chip.TRIPLE_CAPTAIN, 5), (chips.Chip.BENCH_BOOST, 5)],
+        chips_used=[(chips.Chip.TRIPLE_CAPTAIN, 4), (chips.Chip.BENCH_BOOST, 4)],
         # Three gameweeks old against wildcard_min_managed_gws of six: the
         # wildcard the comparison nominated is unplayable.
         squad_age_gws=3,
@@ -161,9 +168,9 @@ def test_a_chip_that_failed_its_margin_is_still_blocked(half_boundary_at_19):
         # The wildcard is spent too, so the ranked winner is unavailable and
         # only the free hit is left -- and it must stay blocked.
         chips_used=[
-            (chips.Chip.TRIPLE_CAPTAIN, 5),
-            (chips.Chip.BENCH_BOOST, 5),
-            (chips.Chip.WILDCARD, 5),
+            (chips.Chip.TRIPLE_CAPTAIN, 4),
+            (chips.Chip.BENCH_BOOST, 4),
+            (chips.Chip.WILDCARD, 4),
         ],
         squad_age_gws=99,
         chip_timing=timing,
@@ -197,13 +204,54 @@ def test_the_better_ranked_chip_is_attempted_first(half_boundary_at_19):
         players=players,
         available_budget=200.0,
         free_transfers=1,
-        chips_used=[(chips.Chip.TRIPLE_CAPTAIN, 5), (chips.Chip.BENCH_BOOST, 5)],
+        chips_used=[(chips.Chip.TRIPLE_CAPTAIN, 4), (chips.Chip.BENCH_BOOST, 4)],
         squad_age_gws=99,
         chip_timing=timing,
         comparison=comparison,
     )
 
     assert rec.chip is chips.Chip.WILDCARD
+
+
+def test_the_dgw_order_is_not_reordered_by_the_comparison(half_boundary_at_19):
+    """On an ACTIVE double gameweek the rank-based swap is skipped entirely.
+
+    Identical to the test above -- the wildcard outranks the free hit and the
+    squad is old enough to play it -- except that GW5 is a double. The normal
+    order is [tc, bb, fh, wc], where swapping the pair is a clean exchange; the
+    DGW order is [bb, fh, tc, wc], where the same swap yields [bb, wc, tc, fh]
+    and hands the Wildcard first refusal over the Triple Captain, which it has
+    never had. The DGW ordering is deliberate (whole-squad chips extract
+    double-fixture value; TC only amplifies an already-chosen captain), so it
+    wins, and the Free Hit keeps first refusal here despite ranking second.
+    That trade-off is accepted: on a double, "best wins" is not honoured
+    between Free Hit and Wildcard.
+    """
+    none_opt = ChipOption(None, 274.30, _plan(), "no chip")
+    fh_opt = ChipOption(chips.Chip.FREE_HIT, 288.49, _plan(), "free hit")
+    wc_opt = ChipOption(chips.Chip.WILDCARD, 323.69, _plan(), "wildcard")
+    comparison = ChipComparison(
+        options=[none_opt, fh_opt, wc_opt], no_chip=none_opt,
+        best=wc_opt, ranked=[wc_opt, fh_opt],
+    )
+    timing = dataclasses.replace(CHIP_TIMING, chip_comparison_enabled=True)
+    players, squad, proj = _squad_scenario()
+
+    rec = chips.recommend_chip(
+        current_gw=5,
+        current_squad_ids=squad,
+        projections=proj,
+        players=players,
+        available_budget=200.0,
+        free_transfers=1,
+        chips_used=[(chips.Chip.TRIPLE_CAPTAIN, 4), (chips.Chip.BENCH_BOOST, 4)],
+        squad_age_gws=99,
+        chip_timing=timing,
+        comparison=comparison,
+        dgw_gws={5},
+    )
+
+    assert rec.chip is chips.Chip.FREE_HIT
 
 
 def test_triple_captain_and_bench_boost_stay_outside_the_ranking(half_boundary_at_19):
@@ -261,7 +309,13 @@ def test_rank_qualifying_is_empty_without_a_no_chip_baseline():
 
 
 def test_best_is_the_head_of_ranked():
-    """`best` and `ranked[0]` answer different questions but must agree."""
+    """`best` and `ranked[0]` answer different questions but must agree.
+
+    `pick_best` delegates to `rank_qualifying` (2026-09-02), so this is now a
+    structural guarantee rather than two implementations that happen to match.
+    The cases below are the ones where duplicated predicates used to drift:
+    ordinary ranking, an exact tie, and no qualifier at all.
+    """
     from optimiser.chip_comparison import pick_best
 
     none_opt = ChipOption(None, 100.0, _plan(), "")
@@ -275,6 +329,18 @@ def test_best_is_the_head_of_ranked():
     ranked = rank_qualifying(options, **kwargs)
     assert ranked
     assert pick_best(options, **kwargs) is ranked[0]
+
+    # A tie on horizon_xpts: both orderings are stable on list order, so the
+    # same OBJECT must come back, not merely an equal one.
+    tied = [none_opt, ChipOption(chips.Chip.FREE_HIT, 130.0, _plan(), ""), wc_opt]
+    tied_ranked = rank_qualifying(tied, **kwargs)
+    assert tied_ranked
+    assert pick_best(tied, **kwargs) is tied_ranked[0]
+
+    # Nothing qualifies: empty ranking and None must agree too.
+    weak = [none_opt, ChipOption(chips.Chip.FREE_HIT, 105.0, _plan(), "")]
+    assert rank_qualifying(weak, **kwargs) == []
+    assert pick_best(weak, **kwargs) is None
 
 
 def test_compare_chip_options_populates_ranked_alongside_best():

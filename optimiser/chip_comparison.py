@@ -296,20 +296,22 @@ def pick_best(
     Returns None when the no-chip option is absent: there is no honest margin
     to measure against a baseline that did not solve, so the caller must fall
     back to the legacy path rather than guess.
+
+    Delegates to ``rank_qualifying`` (2026-09-02) rather than re-deriving the
+    margin rule. The two implementations agreed, ties included, but they were
+    the same rule written twice: edit one and ``best`` silently stops being
+    ``ranked[0]``, which split-brains ``_comparison_choice`` -- it approves on
+    membership in ``ranked`` -- against every consumer of ``best``. The public
+    semantics here are unchanged; only the source of truth moved.
     """
-    no_chip = next((o for o in options if o.chip is None), None)
-    if no_chip is None:
-        return None
-    margins = {free_hit_chip: free_hit_margin, wildcard_chip: wildcard_margin}
-    qualifying = [
-        o
-        for o in options
-        if o.chip is not None
-        and o.horizon_xpts - no_chip.horizon_xpts >= margins.get(o.chip, float("inf"))
-    ]
-    if not qualifying:
-        return None
-    return max(qualifying, key=lambda o: o.horizon_xpts)
+    ranked = rank_qualifying(
+        options,
+        free_hit_margin=free_hit_margin,
+        wildcard_margin=wildcard_margin,
+        free_hit_chip=free_hit_chip,
+        wildcard_chip=wildcard_chip,
+    )
+    return ranked[0] if ranked else None
 
 
 def rank_qualifying(

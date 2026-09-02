@@ -225,8 +225,18 @@ def _squad_age_gws(
     module never did, so the gate was inert live and a wildcard could fire
     against a one-week-old squad. Counts from the last wildcard (which is
     exactly "rebuilt from scratch"), else from the first gameweek this bot
-    ever recorded a lineup for."""
-    wildcard_gws = [gw for chip, gw in chips_used if chip == Chip.WILDCARD]
+    ever recorded a lineup for.
+
+    A wildcard recorded against ``next_gw`` ITSELF is excluded (2026-09-02, the
+    same rule ``_chip_uses_remaining`` applies to uses): it is this gameweek's
+    own earlier run, and on a re-run the rebuild has not happened -- that is
+    precisely the decision being remade. Counting it reported age 0, so
+    ``wildcard_min_managed_gws`` refused the wildcard on the re-run and the run
+    after that offered it again, reproducing the chip-alternation defect through
+    the age gate instead of the uses count."""
+    wildcard_gws = [
+        gw for chip, gw in chips_used if chip == Chip.WILDCARD and gw != next_gw
+    ]
     if wildcard_gws:
         return max(0, next_gw - max(wildcard_gws))
     if decision_log.empty or "decision_type" not in decision_log.columns:
@@ -243,7 +253,7 @@ def _comparison_eligible_chips(
     season: str,
     squad_age_gws: int,
     chip_timing: ChipTimingThresholds,
-) -> set:
+) -> set[Chip]:
     """Which of Free Hit / Wildcard the comparison may nominate.
 
     ``chips_available_this_half`` only knows about USES REMAINING. It has no

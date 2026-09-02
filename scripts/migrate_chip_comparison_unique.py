@@ -15,19 +15,23 @@ destroy it.
 
 Idempotent: does nothing when the constraint is already present, or when the
 table does not exist yet (``init_db`` will then create it with the constraint).
+That is why ``init_db`` calls it on every startup -- it is cheap, and running it
+there is what stops a fresh clone, a backtest database or a second machine's
+copy drifting into the old shape silently. ``--db PATH`` points it at any other
+database; with no argument it targets ``DB_PATH``, exactly as before.
 """
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sqlalchemy import MetaData, inspect, text  # noqa: E402
+from sqlalchemy import Engine, MetaData, create_engine, inspect, text  # noqa: E402
 from sqlalchemy.schema import CreateTable  # noqa: E402
 
-from data.db import engine  # noqa: E402
 from data.models import ChipComparisonLog, SimManager  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -35,7 +39,19 @@ logger = logging.getLogger(__name__)
 _TMP = "chip_comparison_log_new"
 
 
-def _new_table_ddl() -> str:
+def _default_engine() -> Engine:
+    """``DB_PATH``'s engine, imported lazily.
+
+    ``data.db.init_db`` calls ``migrate``, so importing ``data.db`` at module
+    scope here would be a cycle. Resolving it at call time also means an
+    explicit ``--db`` never touches the live database at all.
+    """
+    from data.db import engine
+
+    return engine
+
+
+def _new_table_ddl(engine: Engine) -> str:
     """The CREATE TABLE the model itself implies, under a temporary name.
 
     Generated rather than hand-written so the rebuilt table cannot drift from
@@ -50,8 +66,9 @@ def _new_table_ddl() -> str:
     return str(CreateTable(table).compile(engine))
 
 
-def migrate() -> bool:
+def migrate(engine: Engine | None = None) -> bool:
     """Returns True when the table was rebuilt, False when nothing was needed."""
+    engine = engine if engine is not None else _default_engine()
     inspector = inspect(engine)
     if "chip_comparison_log" not in inspector.get_table_names():
         logger.info("chip_comparison_log does not exist yet; init_db will create it")
@@ -63,7 +80,7 @@ def migrate() -> bool:
 
     columns = ", ".join(c.name for c in ChipComparisonLog.__table__.columns)
     with engine.begin() as conn:
-        conn.execute(text(_new_table_ddl()))
+        conn.execute(text(_new_table_ddl(engine)))
         conn.execute(text(
             f"INSERT INTO {_TMP} ({columns}) SELECT {columns} FROM chip_comparison_log"
         ))
@@ -73,6 +90,17 @@ def migrate() -> bool:
     return True
 
 
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--db",
+        help="SQLite file to migrate. Defaults to DB_PATH, the live database.",
+    )
+    args = parser.parse_args(argv)
+    engine = create_engine(f"sqlite:///{args.db}") if args.db else _default_engine()
+    migrate(engine)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    migrate()
+    main()

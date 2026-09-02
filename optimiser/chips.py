@@ -253,11 +253,32 @@ def _chip_uses_remaining(
     available in the other half" — worse, feeding a `set` into a
     multiplicity count silently caps every chip at one use for the whole
     season regardless of what the config says."""
+    # 2026-09-02: a chip recorded against ``current_gw`` ITSELF is not spent
+    # history -- it is this same decision's own earlier attempt. `chips_used`
+    # is read at the top of a decision cycle, before that cycle writes any of
+    # its own rows, so the newest rows for the gameweek being decided always
+    # belong to a PREVIOUS run of that same gameweek. The engine writes the
+    # lineup row before the chip row within a run (by design, so
+    # `chips_used_this_season`'s supersede rule keeps a chip the newest run
+    # chose), which means a chip-playing run leaves its chip row newest and
+    # therefore surviving. Consulted while re-deciding that very gameweek,
+    # that reads as "already spent" -- live at GW3, where a run that played
+    # the Free Hit made the next run refuse it, and the run after that offer
+    # it again, so the chip alternated with the parity of the re-run count.
+    #
+    # Only the current gameweek is discounted. A chip played in an EARLIER
+    # gameweek is genuinely gone and still counts, so this cannot make a chip
+    # reusable; it only stops one gameweek's decision from being an input to
+    # itself. `chips_available_this_half` and `must_play_a_chip_now` inherit
+    # the correction through this function, which is what they should: on the
+    # re-run the chip really is back in hand for that gameweek, so it belongs
+    # in the "chips versus remaining slots" arithmetic too.
+    spent = [(c, gw) for c, gw in used if gw != current_gw]
     half_boundary = _get_wc_half_boundary(season)
     if current_gw <= half_boundary:
-        uses_this_half = sum(1 for c, gw in used if c == chip and gw <= half_boundary)
+        uses_this_half = sum(1 for c, gw in spent if c == chip and gw <= half_boundary)
     else:
-        uses_this_half = sum(1 for c, gw in used if c == chip and gw > half_boundary)
+        uses_this_half = sum(1 for c, gw in spent if c == chip and gw > half_boundary)
     return max(0, 1 - uses_this_half)
 
 
@@ -606,8 +627,19 @@ def recommend_chip(
     # to be. Only these two swap: Triple Captain and Bench Boost are orthogonal
     # to transfers, are absent from the comparison entirely, and keep their
     # DGW-versus-normal placement untouched.
+    #
+    # Skipped entirely on an ACTIVE DGW (2026-09-02). Swapping positions works
+    # cleanly on the normal order [tc, bb, fh, wc], but the DGW order is
+    # [bb, fh, tc, wc], where the same swap yields [bb, wc, tc, fh] -- handing
+    # the Wildcard first refusal over the Triple Captain, which it has never
+    # had and which the DGW ordering above deliberately withholds. The
+    # documented DGW order is the stronger claim: on a double, whole-squad
+    # chips go first. The accepted trade-off is that on a double gameweek
+    # "best wins" is NOT honoured between Free Hit and Wildcard -- the Free
+    # Hit keeps first refusal there even when the Wildcard outranks it.
     if (
-        timing.chip_comparison_enabled
+        not dgw_active_now
+        and timing.chip_comparison_enabled
         and comparison is not None
         and comparison.ranked
     ):

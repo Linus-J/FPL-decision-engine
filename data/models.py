@@ -721,6 +721,17 @@ class ChipComparisonLog(Base):
     # same option twice. Readers must therefore filter to the latest
     # ``created_at`` per (season, gameweek, sim_manager_id); without that,
     # counting how often live and shadow diverge double-counts every re-run.
+    #
+    # It does NOT enforce for the real bot's own rows (2026-09-02). SQLite
+    # treats NULLs as distinct for uniqueness purposes, and ``sim_manager_id``
+    # is NULL for the real bot -- so no two of its rows ever collide on this
+    # key, whatever else they share. Nobody should mistake this for protection
+    # the live path has. It is left as written rather than reworked: with
+    # ``created_at`` at microsecond resolution the constraint rejects nothing
+    # but a byte-identical re-insert anyway, and within one run each option is
+    # written at most once by construction. The real defence against
+    # double-counting is the read-side filter to the latest ``created_at``
+    # described above, for whenever something actually queries this table.
     __table_args__ = (
         UniqueConstraint(
             "season", "gameweek", "sim_manager_id", "option", "created_at",

@@ -525,8 +525,12 @@ def test_chips_used_deduplicates_reruns_of_the_same_gameweek():
     assert used == [(Chip.TRIPLE_CAPTAIN, 7)]
     # still available in the SECOND half -- one use per half, not per season
     assert _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, used, current_gw=30, season=None) == 1
-    # and correctly spent for the first half
-    assert _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, used, current_gw=7, season=None) == 0
+    # and correctly spent for the rest of the first half. Asked from GW8, not
+    # GW7: a chip logged against the gameweek being DECIDED is that gameweek's
+    # own earlier run, which _chip_uses_remaining discounts (2026-09-02) so a
+    # re-run cannot refuse the chip it just chose. Spent-ness is a question the
+    # following gameweeks ask.
+    assert _chip_uses_remaining(Chip.TRIPLE_CAPTAIN, used, current_gw=8, season=None) == 0
 
 
 def test_chips_used_keeps_genuinely_separate_gameweeks():
