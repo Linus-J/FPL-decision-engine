@@ -31,7 +31,13 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from optimiser.transfers import TransferPlan, evaluate_transfers, squad_xpts
+from optimiser.squad import optimise_squad_joint
+from optimiser.transfers import (
+    TransferPlan,
+    evaluate_transfers,
+    roll_forward_free_transfers,
+    squad_xpts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,4 +158,103 @@ def build_wildcard_option(
         horizon_xpts=total,
         plan=plan,
         detail=f"wildcard: rebuild worth {plan.net_xpts_gain:+.2f} over {horizon} GWs",
+    )
+
+
+def build_free_hit_option(
+    current_squad_ids: list[int],
+    projections: pd.DataFrame,
+    players: pd.DataFrame,
+    *,
+    free_transfers: int,
+    horizon: int,
+    current_gw: int,
+    chip,
+    available_budget: float | None = None,
+    bank: float | None = None,
+    purchase_prices: dict[int, float] | None = None,
+    ownership: pd.DataFrame | None = None,
+    season: str | None = None,
+    config=None,
+    transfer_rules=None,
+) -> ChipOption | None:
+    """One week of the best legal eleven, then the ORIGINAL squad back --
+    still holding the free transfers the chip did not spend.
+
+    That continuation is where banked transfers get priced. No coefficient is
+    invented for them: the continuation genuinely still has them, so its plan
+    is simply worth more. This is the whole reason the comparison is done on
+    horizon totals rather than on one-week gains.
+    """
+    gws = sorted(projections["gameweek"].unique())[:horizon]
+    if not gws:
+        return None
+    fh_gw, rest_gws = gws[0], gws[1:]
+
+    try:
+        solution = optimise_squad_joint(
+            projections[projections["gameweek"] == fh_gw],
+            players,
+            budget=available_budget,
+            horizon=1,
+            season=season,
+            gameweek=current_gw,
+            ownership=ownership,
+            config=config,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("chip comparison: free hit option did not solve (%s)", exc)
+        return None
+
+    fh_squad_ids = solution.squad["id"].tolist()
+    fh_week = squad_xpts(
+        fh_squad_ids, projections[projections["gameweek"] == fh_gw], horizon=1
+    )
+
+    if not rest_gws:
+        # At the horizon edge there is nothing after this week to plan.
+        return ChipOption(
+            chip=chip,
+            horizon_xpts=fh_week,
+            plan=TransferPlan(
+                transfers_in=[], transfers_out=[], hits_taken=0,
+                xpts_gain=0.0, net_xpts_gain=0.0,
+            ),
+            detail=f"free hit: {fh_week:.2f} over 1 GW (no continuation)",
+        )
+
+    rest = projections[projections["gameweek"].isin(rest_gws)]
+    # transfers_made=0: a Free Hit's transfers are outside the allowance
+    # entirely, so nothing is spent and the saved transfers survive.
+    continuation_fts = roll_forward_free_transfers(
+        free_transfers, transfers_made=0, free_hit_played=True,
+        transfer_rules=transfer_rules,
+    )
+    try:
+        plan = evaluate_transfers(
+            current_squad_ids=current_squad_ids,
+            projections=rest,
+            players=players,
+            free_transfers=continuation_fts,
+            available_budget=available_budget,
+            bank=bank,
+            purchase_prices=purchase_prices,
+            ownership=ownership,
+            config=config,
+            transfer_rules=transfer_rules,
+            horizon=len(rest_gws),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("chip comparison: free hit continuation did not solve (%s)", exc)
+        return None
+
+    total = fh_week + _base_xpts(current_squad_ids, rest, len(rest_gws)) + plan.net_xpts_gain
+    return ChipOption(
+        chip=chip,
+        horizon_xpts=total,
+        plan=plan,
+        detail=(
+            f"free hit: {fh_week:.2f} in GW{fh_gw}, then {continuation_fts} FT(s) "
+            f"into a continuation worth {plan.net_xpts_gain:+.2f}"
+        ),
     )

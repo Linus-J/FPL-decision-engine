@@ -4,8 +4,8 @@ import pandas as pd
 import pytest
 
 from config.strategy import CHIP_TIMING, OPTIMISER, assert_horizons_consistent
-from optimiser.chip_comparison import build_no_chip_option
-from optimiser.transfers import TransferPlan
+from optimiser.chip_comparison import build_free_hit_option, build_no_chip_option
+from optimiser.transfers import TransferPlan, roll_forward_free_transfers
 
 
 def test_comparison_ships_live_with_bars_seeded_from_the_legacy_thresholds():
@@ -74,3 +74,80 @@ def test_a_failed_solve_yields_no_option_rather_than_a_zero(monkeypatch):
         horizon=1,
     )
     assert option is None
+
+
+def test_free_hit_continuation_keeps_the_banked_transfers(monkeypatch):
+    """The point of the whole design.
+
+    FPL RETAINS saved free transfers across a Free Hit (transfers.py:51-57,
+    checked against the Premier League's own worked example). So the
+    continuation must plan with the rolled-forward allowance, NOT with what
+    would be left after spending them.
+    """
+    squad = list(range(1, 16))
+    proj = _projections(squad, [3, 4, 5], xpts=2.0)
+    seen = {}
+
+    def _fake_evaluate(*args, **kwargs):
+        seen["free_transfers"] = kwargs["free_transfers"]
+        seen["horizon"] = kwargs["horizon"]
+        return TransferPlan(
+            transfers_in=[], transfers_out=[], hits_taken=0, xpts_gain=0.0, net_xpts_gain=0.0
+        )
+
+    # (a plain attribute assignment here would collide with the outer
+    # `squad` name in class-body scope, raising NameError before the RHS
+    # is even evaluated -- assign after the class is built instead)
+    class _Solution:
+        pass
+
+    _Solution.squad = pd.DataFrame({"id": squad})
+
+    monkeypatch.setattr("optimiser.chip_comparison.evaluate_transfers", _fake_evaluate)
+    monkeypatch.setattr(
+        "optimiser.chip_comparison.optimise_squad_joint", lambda *a, **k: _Solution()
+    )
+
+    build_free_hit_option(
+        current_squad_ids=squad,
+        projections=proj,
+        players=pd.DataFrame({"id": squad}),
+        free_transfers=2,
+        horizon=3,
+        current_gw=3,
+        chip="FH",
+    )
+    assert seen["free_transfers"] == roll_forward_free_transfers(
+        2, transfers_made=0, free_hit_played=True
+    )
+    assert seen["horizon"] == 2  # H - 1: the weeks AFTER the free hit
+
+
+def test_free_hit_collapses_to_one_week_at_the_horizon_edge(monkeypatch):
+    """Near a half boundary there is no continuation to plan."""
+    squad = list(range(1, 16))
+    proj = _projections(squad, [38], xpts=2.0)
+
+    class _Solution:
+        pass
+
+    _Solution.squad = pd.DataFrame({"id": squad})
+
+    def _must_not_be_called(*a, **k):
+        raise AssertionError("no continuation should be planned at horizon 1")
+
+    monkeypatch.setattr("optimiser.chip_comparison.evaluate_transfers", _must_not_be_called)
+    monkeypatch.setattr(
+        "optimiser.chip_comparison.optimise_squad_joint", lambda *a, **k: _Solution()
+    )
+    option = build_free_hit_option(
+        current_squad_ids=squad,
+        projections=proj,
+        players=pd.DataFrame({"id": squad}),
+        free_transfers=1,
+        horizon=1,
+        current_gw=38,
+        chip="FH",
+    )
+    assert option is not None
+    assert option.horizon_xpts == pytest.approx(24.0)
