@@ -27,7 +27,7 @@ transfer-plan baseline from them would be a new bug.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -59,11 +59,21 @@ class ChipOption:
 
 @dataclass(frozen=True)
 class ChipComparison:
-    """Every option that solved, plus the choice the margins imply."""
+    """Every option that solved, plus the choices the margins imply.
+
+    ``best`` is the single winner; ``ranked`` is every option that cleared its
+    own margin, best first. They answer different questions, and the second one
+    is the one that matters when the winner turns out to be unplayable for a
+    reason the comparison cannot see -- see ``rank_qualifying``.
+    """
 
     options: list[ChipOption]
     no_chip: ChipOption | None
     best: ChipOption | None
+    # Defaulted so a caller that only cares about the winner (and the tests
+    # that predate the ranking) still construct a valid comparison. An empty
+    # ranking approves nothing, which is the safe reading.
+    ranked: list[ChipOption] = field(default_factory=list)
 
 
 def _base_xpts(
@@ -197,6 +207,10 @@ def build_free_hit_option(
     """
     gws = sorted(projections["gameweek"].unique())[:horizon]
     if not gws:
+        # The only path here that dropped an option without saying so. Every
+        # other one logs, which is what makes "an option is missing from the
+        # comparison" diagnosable at all.
+        logger.warning("chip comparison: free hit option has no gameweeks to plan")
         return None
     fh_gw, rest_gws = gws[0], gws[1:]
 
@@ -298,6 +312,40 @@ def pick_best(
     return max(qualifying, key=lambda o: o.horizon_xpts)
 
 
+def rank_qualifying(
+    options: list[ChipOption],
+    *,
+    free_hit_margin: float,
+    wildcard_margin: float,
+    free_hit_chip,
+    wildcard_chip,
+) -> list[ChipOption]:
+    """Every chip that beats the no-chip option by at least its margin, best first.
+
+    ``pick_best`` answers "which single option wins". This answers "which
+    options are ACCEPTABLE, in preference order" -- a different question, and
+    the one that matters when the winner turns out to be unplayable for a
+    reason the comparison cannot see (a wildcard on a squad too young, say).
+    Without it, one refused nomination suppresses every qualifying alternative,
+    which is exactly how the GW3 frame ended up playing no chip and taking a -4
+    hit while a Free Hit that had cleared its margin by 14.19 sat unused.
+
+    Empty when there is no no-chip option: there is no honest margin to measure
+    against a baseline that did not solve.
+    """
+    no_chip = next((o for o in options if o.chip is None), None)
+    if no_chip is None:
+        return []
+    margins = {free_hit_chip: free_hit_margin, wildcard_chip: wildcard_margin}
+    qualifying = [
+        o
+        for o in options
+        if o.chip is not None
+        and o.horizon_xpts - no_chip.horizon_xpts >= margins.get(o.chip, float("inf"))
+    ]
+    return sorted(qualifying, key=lambda o: o.horizon_xpts, reverse=True)
+
+
 def compare_chip_options(
     current_squad_ids: list[int],
     projections: pd.DataFrame,
@@ -337,6 +385,17 @@ def compare_chip_options(
         options.append(no_chip)
 
     allowed = eligible_chips if eligible_chips is not None else {free_hit_chip, wildcard_chip}
+    # Say which chips were filtered out, and by whom. An option absent from the
+    # log used to be indistinguishable from an option that failed to solve, and
+    # the difference matters: "already spent this half" and "the squad is too
+    # young to wildcard" are both correct exclusions, while a failed solve is a
+    # problem. The caller's filter is the only place that knows which.
+    excluded = {free_hit_chip, wildcard_chip} - allowed
+    if excluded:
+        logger.info(
+            "chip comparison: not offering %s (ineligible this gameweek)",
+            ", ".join(sorted(str(getattr(c, "value", c)) for c in excluded)),
+        )
     if free_hit_chip in allowed:
         fh = build_free_hit_option(
             current_squad_ids, projections, players,
@@ -353,9 +412,13 @@ def compare_chip_options(
         if wc is not None:
             options.append(wc)
 
-    best = pick_best(
-        options,
+    margin_args = dict(
         free_hit_margin=free_hit_margin, wildcard_margin=wildcard_margin,
         free_hit_chip=free_hit_chip, wildcard_chip=wildcard_chip,
     )
-    return ChipComparison(options=options, no_chip=no_chip, best=best)
+    best = pick_best(options, **margin_args)
+    # Both are published because a downstream guard may refuse `best` -- the
+    # ranking is what keeps the runners-up available instead of stranding them.
+    # `best` is by construction `ranked[0]` whenever anything qualified.
+    ranked = rank_qualifying(options, **margin_args)
+    return ChipComparison(options=options, no_chip=no_chip, best=best, ranked=ranked)

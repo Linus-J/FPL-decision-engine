@@ -31,7 +31,9 @@ def test_comparison_is_ignored_when_the_flag_is_off():
         chip=None, horizon_xpts=0.0,
         plan=TransferPlan([], [], 0, 0.0, 0.0), detail="",
     )
-    comparison = ChipComparison(options=[quiet, loud], no_chip=quiet, best=loud)
+    comparison = ChipComparison(
+        options=[quiet, loud], no_chip=quiet, best=loud, ranked=[loud],
+    )
     timing = dataclasses.replace(CHIP_TIMING, chip_comparison_enabled=False)
     assert chips._comparison_choice(comparison, chips.Chip.FREE_HIT, timing) is None
 
@@ -48,7 +50,9 @@ def test_comparison_is_consulted_when_the_flag_is_on():
         chip=None, horizon_xpts=0.0,
         plan=TransferPlan([], [], 0, 0.0, 0.0), detail="",
     )
-    comparison = ChipComparison(options=[quiet, loud], no_chip=quiet, best=loud)
+    comparison = ChipComparison(
+        options=[quiet, loud], no_chip=quiet, best=loud, ranked=[loud],
+    )
     timing = dataclasses.replace(CHIP_TIMING, chip_comparison_enabled=True)
     rec = chips._comparison_choice(comparison, chips.Chip.FREE_HIT, timing)
     assert rec is not None
@@ -64,7 +68,7 @@ def test_tc_and_bb_are_never_governed_by_the_comparison():
 
     none_opt = ChipOption(None, 0.0, TransferPlan([], [], 0, 0.0, 0.0), "")
     loud = ChipOption(chips.Chip.FREE_HIT, 10_000.0, TransferPlan([], [], 0, 0.0, 0.0), "")
-    comparison = ChipComparison([none_opt, loud], none_opt, loud)
+    comparison = ChipComparison([none_opt, loud], none_opt, loud, [loud])
     timing = dataclasses.replace(CHIP_TIMING, chip_comparison_enabled=True)
 
     for chip in (chips.Chip.TRIPLE_CAPTAIN, chips.Chip.BENCH_BOOST):

@@ -713,6 +713,20 @@ class ChipComparisonLog(Base):
     """
 
     __tablename__ = "chip_comparison_log"
+    # ``created_at`` is deliberately part of the key, following `Projection`,
+    # `OwnershipSnapshot` and `FixtureOdds`. Re-running a gameweek is normal,
+    # and if the re-run flips the verdict that flip IS the measurement -- an
+    # upsert on (season, gameweek, sim_manager_id, option) would silently
+    # delete it. What the key buys instead is that one RUN cannot write the
+    # same option twice. Readers must therefore filter to the latest
+    # ``created_at`` per (season, gameweek, sim_manager_id); without that,
+    # counting how often live and shadow diverge double-counts every re-run.
+    __table_args__ = (
+        UniqueConstraint(
+            "season", "gameweek", "sim_manager_id", "option", "created_at",
+            name="uq_chip_comparison",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     season: Mapped[str] = mapped_column(String(7), nullable=False)

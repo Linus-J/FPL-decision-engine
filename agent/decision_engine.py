@@ -237,6 +237,35 @@ def _squad_age_gws(
     return max(0, next_gw - int(lineups["gameweek"].min()))
 
 
+def _comparison_eligible_chips(
+    chips_used: list[tuple[Chip, int]],
+    next_gw: int,
+    season: str,
+    squad_age_gws: int,
+    chip_timing: ChipTimingThresholds,
+) -> set:
+    """Which of Free Hit / Wildcard the comparison may nominate.
+
+    ``chips_available_this_half`` only knows about USES REMAINING. It has no
+    idea that ``recommend_chip`` refuses a wildcard on a squad younger than
+    ``wildcard_min_managed_gws``, so on the GW3 frame the comparison was
+    offered a chip the engine would never play, nominated it, and had that
+    nomination discarded downstream -- stranding a Free Hit that had cleared
+    its own margin. A chip the engine will refuse does not belong in the
+    comparison at all.
+
+    ``squad_age_gws`` is the caller's single value, the same one handed to
+    ``recommend_chip``: computing it a second way here is how the two gates
+    drift apart.
+    """
+    eligible = {Chip.FREE_HIT, Chip.WILDCARD} & set(
+        chips_available_this_half(chips_used, next_gw, season)
+    )
+    if squad_age_gws < chip_timing.wildcard_min_managed_gws:
+        eligible.discard(Chip.WILDCARD)
+    return eligible
+
+
 def _lineup_shape(squad: pd.DataFrame) -> dict:
     """The fields an outcome scorer needs to replay FPL's auto-substitutions
     (P2.1, 2026-08-16).
@@ -571,6 +600,11 @@ def _run_decision_cycle(
     # fact. Best-effort — a squad-optimisation failure inside the comparison
     # must never take down a decision run that the legacy threshold path
     # would otherwise have completed fine.
+    # One value, two consumers: the eligibility filter below and
+    # `recommend_chip`'s own wildcard gate must agree, or the comparison can
+    # again nominate a chip the engine refuses.
+    squad_age_gws = _squad_age_gws(decision_log, chips_used, next_gw)
+
     comparison = None
     if squad_ids:
         try:
@@ -585,9 +619,8 @@ def _run_decision_cycle(
                 wildcard_chip=Chip.WILDCARD,
                 free_hit_margin=chip_timing.free_hit_comparison_margin,
                 wildcard_margin=chip_timing.wildcard_comparison_margin,
-                eligible_chips=(
-                    {Chip.FREE_HIT, Chip.WILDCARD}
-                    & set(chips_available_this_half(chips_used, next_gw, season))
+                eligible_chips=_comparison_eligible_chips(
+                    chips_used, next_gw, season, squad_age_gws, chip_timing,
                 ),
                 available_budget=available_budget,
                 bank=state.bank,
@@ -615,7 +648,7 @@ def _run_decision_cycle(
             bench_xpts=bench_pts,
             dgw_gws=dgw_gws,
             bgw_affected_count=bgw_affected,
-            squad_age_gws=_squad_age_gws(decision_log, chips_used, next_gw),
+            squad_age_gws=squad_age_gws,
             season=season,
             chip_timing=chip_timing,
             config=config,
@@ -629,8 +662,14 @@ def _run_decision_cycle(
         )
 
     if comparison is not None:
-        db = get_session()
+        # The session construction belongs inside the guard too. Only
+        # `_persist_chip_comparison` was best-effort, so a `get_session()`
+        # failure -- a locked or missing database, say -- still propagated and
+        # killed a decision run over shadow logging that nothing in the
+        # decision path reads.
+        db = None
         try:
+            db = get_session()
             _persist_chip_comparison(
                 db,
                 _chip_comparison_rows(
@@ -638,8 +677,11 @@ def _run_decision_cycle(
                     comparison=comparison, live_chip=chip_rec.chip,
                 ),
             )
+        except Exception as exc:  # noqa: BLE001 -- logging never breaks a run
+            logger.warning("chip comparison session not opened: %s", exc)
         finally:
-            db.close()
+            if db is not None:
+                db.close()
 
     wildcard_active = chip_rec.chip == Chip.WILDCARD
     free_hit_active = chip_rec.chip == Chip.FREE_HIT

@@ -304,6 +304,15 @@ def must_play_a_chip_now(
     return gws_left <= 2
 
 
+# The only two chips the horizon comparison governs. Triple Captain and Bench
+# Boost are orthogonal to transfers -- you play them AND make your normal moves
+# -- so they are never scored against a transfer-plan baseline and must never
+# be approved by one, whatever a caller puts in `ranked`. This used to be
+# implicit in `best` only ever holding a Free Hit or Wildcard; approving on
+# membership in a list makes it worth stating outright.
+_COMPARABLE_CHIPS = frozenset({Chip.FREE_HIT, Chip.WILDCARD})
+
+
 def _comparison_choice(
     comparison: "ChipComparison | None",
     chip: Chip,
@@ -315,15 +324,26 @@ def _comparison_choice(
     Returns None whenever the flag is off, the comparison is missing, or its
     baseline did not solve -- so a legacy run cannot be perturbed by a
     comparison that happens to be present for shadow logging.
+
+    Approval is membership in ``comparison.ranked``, not being ``comparison.best``
+    (2026-09-02, Task 7b). The single winner was the wrong test: the GW3 frame
+    nominated a wildcard that `_try_wc` then refused on squad age, and because
+    the free hit was merely out-ranked rather than unqualified, it was blocked
+    too and the run played no chip at all. A chip that cleared its own margin is
+    playable whenever the chips above it are not; only its rank decides who gets
+    first refusal.
     """
     if not timing.chip_comparison_enabled:
         return None
-    if comparison is None or comparison.no_chip is None or comparison.best is None:
+    if chip not in _COMPARABLE_CHIPS:
         return None
-    if comparison.best.chip is not chip:
+    if comparison is None or comparison.no_chip is None:
         return None
-    margin = comparison.best.horizon_xpts - comparison.no_chip.horizon_xpts
-    reason = f"beats no-chip by {margin:.1f} xPts — {comparison.best.detail}"
+    option = next((o for o in comparison.ranked if o.chip is chip), None)
+    if option is None:
+        return None
+    margin = option.horizon_xpts - comparison.no_chip.horizon_xpts
+    reason = f"beats no-chip by {margin:.1f} xPts — {option.detail}"
     return ChipRecommendation(chip, reason, margin)
 
 
@@ -453,10 +473,12 @@ def recommend_chip(
                 and comparison is not None
                 and comparison.no_chip is not None
             ):
-                # The comparison ran and did NOT pick the free hit. Falling
-                # through to the legacy threshold here would let the old,
-                # wrong baseline overrule the new one -- the exact bug this
-                # replaces.
+                # The comparison ran and the free hit did not clear its
+                # margin at all. Falling through to the legacy threshold here
+                # would let the old, wrong baseline overrule the new one --
+                # the exact bug this replaces. Being merely OUT-RANKED is not
+                # grounds to block: the chip above may yet be refused
+                # downstream, and then this one is the right answer.
                 return None
         # 2026-07-30 (user's own review: "the free hit is usually handy
         # during double game weeks where it is not worth triple
@@ -516,10 +538,12 @@ def recommend_chip(
                 and comparison is not None
                 and comparison.no_chip is not None
             ):
-                # The comparison ran and did NOT pick the wildcard. Falling
-                # through to the legacy threshold here would let the old,
-                # wrong baseline overrule the new one -- the exact bug this
-                # replaces.
+                # The comparison ran and the wildcard did not clear its
+                # margin at all. Falling through to the legacy threshold here
+                # would let the old, wrong baseline overrule the new one --
+                # the exact bug this replaces. Being merely OUT-RANKED is not
+                # grounds to block: the chip above may yet be refused
+                # downstream, and then this one is the right answer.
                 return None
         # §12 (2026-08-18): decide with the SAME optimiser that will execute
         # it. A played wildcard is run through
@@ -574,6 +598,27 @@ def recommend_chip(
         [_try_bb, _try_fh, _try_tc, _try_wc] if dgw_active_now
         else [_try_tc, _try_bb, _try_fh, _try_wc]
     )
+    # The static order puts Free Hit ahead of Wildcard, which was fine while
+    # neither had a number attached. Now that the comparison scores both on one
+    # horizon total, the better-scoring of the pair deserves first refusal --
+    # otherwise a wildcard worth 35 more points loses to a free hit purely by
+    # position, and the free hit is no longer merely the fallback it is meant
+    # to be. Only these two swap: Triple Captain and Bench Boost are orthogonal
+    # to transfers, are absent from the comparison entirely, and keep their
+    # DGW-versus-normal placement untouched.
+    if (
+        timing.chip_comparison_enabled
+        and comparison is not None
+        and comparison.ranked
+    ):
+        rank = {o.chip: i for i, o in enumerate(comparison.ranked)}
+        if (
+            Chip.WILDCARD in rank
+            and Chip.FREE_HIT in rank
+            and rank[Chip.WILDCARD] < rank[Chip.FREE_HIT]
+        ):
+            fh_at, wc_at = order.index(_try_fh), order.index(_try_wc)
+            order[fh_at], order[wc_at] = order[wc_at], order[fh_at]
     for candidate in order:
         rec = candidate()
         if rec is not None:
