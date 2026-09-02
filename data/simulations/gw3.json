@@ -1,0 +1,522 @@
+{
+  "schema_version": 1,
+  "gameweek": 3,
+  "label": "GW3 \u2014 4 Sep 2026",
+  "generated_at": "2026-09-02T10:10:53.984286+00:00",
+  "squad": [
+    {
+      "player_id": 177,
+      "web_name": "Kelleher",
+      "position": "GKP",
+      "team_short": "BRE",
+      "now_cost": 5.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 2.0,
+        "median": 3.0,
+        "mean": 3.9133333333333336,
+        "p90": 6.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 226,
+      "web_name": "De Cuyper",
+      "position": "DEF",
+      "team_short": "BHA",
+      "now_cost": 4.7,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 0.0,
+        "median": 4.0,
+        "mean": 5.6466666666666665,
+        "p90": 14.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 249,
+      "web_name": "Gomez",
+      "position": "MID",
+      "team_short": "BHA",
+      "now_cost": 5.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 1.0,
+        "median": 5.0,
+        "mean": 6.54,
+        "p90": 15.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 387,
+      "web_name": "Leno",
+      "position": "GKP",
+      "team_short": "FUL",
+      "now_cost": 4.5,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 1,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 1.0,
+        "median": 3.0,
+        "mean": 3.3666666666666667,
+        "p90": 6.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 886,
+      "web_name": "Ajayi",
+      "position": "DEF",
+      "team_short": "HUL",
+      "now_cost": 4.1,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 2,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 0.0,
+        "median": 2.0,
+        "mean": 4.673333333333333,
+        "p90": 10.099999999999994,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 897,
+      "web_name": "Slater",
+      "position": "MID",
+      "team_short": "HUL",
+      "now_cost": 4.5,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 4,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 1.0,
+        "median": 2.0,
+        "mean": 3.1,
+        "p90": 7.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 475,
+      "web_name": "Gakpo",
+      "position": "MID",
+      "team_short": "LIV",
+      "now_cost": 7.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 2.0,
+        "median": 5.0,
+        "mean": 5.92,
+        "p90": 12.099999999999994,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 478,
+      "web_name": "Szoboszlai",
+      "position": "MID",
+      "team_short": "LIV",
+      "now_cost": 7.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": true,
+      "bench_order": null,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 2.0,
+        "median": 6.0,
+        "mean": 6.973333333333334,
+        "p90": 15.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 488,
+      "web_name": "Isak",
+      "position": "FWD",
+      "team_short": "LIV",
+      "now_cost": 9.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 0.9000000000000004,
+        "median": 2.0,
+        "mean": 5.833333333333333,
+        "p90": 13.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 498,
+      "web_name": "Gu\u00e9hi",
+      "position": "DEF",
+      "team_short": "MCI",
+      "now_cost": 6.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 1.0,
+        "median": 6.0,
+        "mean": 6.6,
+        "p90": 15.099999999999994,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 502,
+      "web_name": "Gvardiol",
+      "position": "DEF",
+      "team_short": "MCI",
+      "now_cost": 5.6,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 1.0,
+        "median": 5.5,
+        "mean": 5.64,
+        "p90": 13.099999999999994,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 526,
+      "web_name": "Haaland",
+      "position": "FWD",
+      "team_short": "MCI",
+      "now_cost": 15.5,
+      "is_starting": true,
+      "is_captain": true,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 1.0,
+        "median": 8.0,
+        "mean": 7.56,
+        "p90": 16.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 553,
+      "web_name": "B.Fernandes",
+      "position": "MID",
+      "team_short": "MUN",
+      "now_cost": 12.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 0.0,
+        "median": 5.0,
+        "mean": 6.3,
+        "p90": 15.099999999999994,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 953,
+      "web_name": "Gonzalo",
+      "position": "FWD",
+      "team_short": "FUL",
+      "now_cost": 6.0,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": null,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 2.0,
+        "median": 7.0,
+        "mean": 6.166666666666667,
+        "p90": 13.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 966,
+      "web_name": "Mendy",
+      "position": "DEF",
+      "team_short": "HUL",
+      "now_cost": 4.0,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 3,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 0.0,
+        "median": 2.0,
+        "mean": 4.453333333333333,
+        "p90": 11.0,
+        "approx": false
+      }
+    }
+  ],
+  "top15": [
+    {
+      "player_id": 526,
+      "web_name": "Haaland",
+      "position": "FWD",
+      "team_short": "MCI",
+      "xpts": {
+        "p10": 1.0,
+        "median": 8.0,
+        "mean": 7.56,
+        "p90": 16.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 478,
+      "web_name": "Szoboszlai",
+      "position": "MID",
+      "team_short": "LIV",
+      "xpts": {
+        "p10": 2.0,
+        "median": 6.0,
+        "mean": 6.973333333333334,
+        "p90": 15.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 498,
+      "web_name": "Gu\u00e9hi",
+      "position": "DEF",
+      "team_short": "MCI",
+      "xpts": {
+        "p10": 1.0,
+        "median": 6.0,
+        "mean": 6.6,
+        "p90": 15.099999999999994,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 249,
+      "web_name": "Gomez",
+      "position": "MID",
+      "team_short": "BHA",
+      "xpts": {
+        "p10": 1.0,
+        "median": 5.0,
+        "mean": 6.54,
+        "p90": 15.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 553,
+      "web_name": "B.Fernandes",
+      "position": "MID",
+      "team_short": "MUN",
+      "xpts": {
+        "p10": 0.0,
+        "median": 5.0,
+        "mean": 6.3,
+        "p90": 15.099999999999994,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 953,
+      "web_name": "Gonzalo",
+      "position": "FWD",
+      "team_short": "FUL",
+      "xpts": {
+        "p10": 2.0,
+        "median": 7.0,
+        "mean": 6.166666666666667,
+        "p90": 13.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 513,
+      "web_name": "Foden",
+      "position": "MID",
+      "team_short": "MCI",
+      "xpts": {
+        "p10": 1.0,
+        "median": 5.0,
+        "mean": 6.006666666666667,
+        "p90": 14.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 475,
+      "web_name": "Gakpo",
+      "position": "MID",
+      "team_short": "LIV",
+      "xpts": {
+        "p10": 2.0,
+        "median": 5.0,
+        "mean": 5.92,
+        "p90": 12.099999999999994,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 488,
+      "web_name": "Isak",
+      "position": "FWD",
+      "team_short": "LIV",
+      "xpts": {
+        "p10": 0.9000000000000004,
+        "median": 2.0,
+        "mean": 5.833333333333333,
+        "p90": 13.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 226,
+      "web_name": "De Cuyper",
+      "position": "DEF",
+      "team_short": "BHA",
+      "xpts": {
+        "p10": 0.0,
+        "median": 4.0,
+        "mean": 5.6466666666666665,
+        "p90": 14.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 502,
+      "web_name": "Gvardiol",
+      "position": "DEF",
+      "team_short": "MCI",
+      "xpts": {
+        "p10": 1.0,
+        "median": 5.5,
+        "mean": 5.64,
+        "p90": 13.099999999999994,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 633,
+      "web_name": "Gibbs-White",
+      "position": "MID",
+      "team_short": "NFO",
+      "xpts": {
+        "p10": 0.0,
+        "median": 3.0,
+        "mean": 5.84,
+        "p90": 15.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 496,
+      "web_name": "Semenyo",
+      "position": "MID",
+      "team_short": "MCI",
+      "xpts": {
+        "p10": 1.0,
+        "median": 3.0,
+        "mean": 5.3933333333333335,
+        "p90": 12.099999999999994,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 375,
+      "web_name": "Barry",
+      "position": "FWD",
+      "team_short": "EVE",
+      "xpts": {
+        "p10": 1.0,
+        "median": 2.0,
+        "mean": 5.273333333333333,
+        "p90": 12.099999999999994,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 579,
+      "web_name": "Wissa",
+      "position": "FWD",
+      "team_short": "NEW",
+      "xpts": {
+        "p10": 1.0,
+        "median": 2.0,
+        "mean": 5.053333333333334,
+        "p90": 12.099999999999994,
+        "approx": false
+      }
+    }
+  ],
+  "history": [
+    {
+      "gameweek": 3,
+      "type": "chip",
+      "chip": "freehit",
+      "reason": "BGW free hit gain 14.2 xPts"
+    },
+    {
+      "gameweek": 2,
+      "type": "transfers",
+      "transfers_in": [
+        "Rice",
+        "Gu\u00e9hi"
+      ],
+      "transfers_out": [
+        "Gibbs-White",
+        "Pedro Porro"
+      ],
+      "hits_taken": 1,
+      "net_xpts_gain": 6.428560517084776
+    },
+    {
+      "gameweek": 2,
+      "type": "chip",
+      "chip": "3xc",
+      "reason": "TC captain xPts 7.8"
+    },
+    {
+      "gameweek": 1,
+      "type": "initial_squad"
+    }
+  ]
+}
