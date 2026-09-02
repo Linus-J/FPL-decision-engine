@@ -264,6 +264,34 @@ class ChipTimingThresholds:
 
     free_hit_single_gw_gain_threshold: float = 12.0
 
+    # --- horizon-total chip comparison (2026-09-02) -----------------------
+    # recommend_chip gates each chip on a gain measured against DOING NOTHING
+    # with the current squad, decided before evaluate_transfers ever runs. So
+    # Free Hit and Wildcard are never compared against the transfer plan they
+    # displace, and the free transfers a Free Hit preserves are never priced.
+    # Those are opposing errors that partly cancel, which is why this has not
+    # shown up as a visibly bad decision.
+    #
+    # LIVE from the start (2026-09-02). The cohort sweep below is the real
+    # experiment and runs whatever this is set to, so leaving the bot on the
+    # known-wrong baseline only delayed any benefit. Set False and every
+    # existing path is byte-identical again -- that is the reverse gear, and
+    # the legacy cohort personas exercise it every week.
+    chip_comparison_enabled: bool = True
+    # The common horizon every option is scored over. MUST be registered in
+    # assert_horizons_consistent below.
+    chip_comparison_horizon_gws: int = 5
+    # Margins, NOT thresholds: how far a chip must beat the best non-chip plan
+    # by, rather than how far it must beat doing nothing. Separate constants
+    # because reusing the thresholds above would silently redefine a
+    # calibrated number. They default to those values so the first run starts
+    # from today's strictness -- but note 12.0 was calibrated as a gain over
+    # DOING NOTHING, and as a margin over the best alternative it is a
+    # stricter and so far unjustified bar. That is what the cohort axis is
+    # sweeping.
+    free_hit_comparison_margin: float = 12.0
+    wildcard_comparison_margin: float = 25.0
+
     bench_boost_min_bench_xpts: float = 20.0
 
     # 2026-07-30 (user's own review: "how can it ever be worth not playing
@@ -757,6 +785,7 @@ def assert_horizons_consistent(
     consumers = {
         "transfer_planning_horizon_gws": cfg.transfer_planning_horizon_gws,
         "wildcard_eval_horizon_gws": timing.wildcard_eval_horizon_gws,
+        "chip_comparison_horizon_gws": timing.chip_comparison_horizon_gws,
     }
     too_long = {name: gws for name, gws in consumers.items() if gws > cfg.projection_horizon_gws}
     if too_long:
