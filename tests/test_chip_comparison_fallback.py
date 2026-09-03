@@ -145,15 +145,26 @@ def test_a_qualifying_free_hit_survives_a_wildcard_nomination_the_engine_refuses
 def test_a_chip_that_failed_its_margin_is_still_blocked(half_boundary_at_19):
     """The fallthrough guard's original purpose must survive.
 
-    The free hit is absent from `ranked` (it did not clear its margin), so it
-    must not be played even though the LEGACY threshold would have fired on
-    this scenario's enormous one-week gain. Approving on qualification rather
-    than on winning must not degrade into approving everything.
+    The free hit is IN `options` -- it was evaluated -- but absent from
+    `ranked` (it did not clear its margin), so it must not be played even
+    though the LEGACY threshold would have fired on this scenario's enormous
+    one-week gain. Approving on qualification rather than on winning must not
+    degrade into approving everything.
+
+    Without `fh_opt` in `options`, `_comparison_choice` (chips.py) can only
+    ever find the free hit missing from `comparison.ranked` because it was
+    never a candidate at all -- the same code path as a chip nobody asked
+    about. This test previously omitted it and so proved nothing: mutating
+    `_comparison_choice` to fall back to `comparison.options` on a
+    `ranked`-miss left it green. `fh_opt` being present and still excluded
+    from `ranked` is what makes "evaluated and failed" distinct from "never
+    evaluated".
     """
     none_opt = ChipOption(None, 274.30, _plan(), "no chip")
+    fh_opt = ChipOption(chips.Chip.FREE_HIT, 279.30, _plan(), "free hit")
     wc_opt = ChipOption(chips.Chip.WILDCARD, 323.69, _plan(), "wildcard")
     comparison = ChipComparison(
-        options=[none_opt, wc_opt], no_chip=none_opt, best=wc_opt, ranked=[wc_opt],
+        options=[none_opt, fh_opt, wc_opt], no_chip=none_opt, best=wc_opt, ranked=[wc_opt],
     )
     timing = dataclasses.replace(CHIP_TIMING, chip_comparison_enabled=True)
     players, squad, proj = _squad_scenario()

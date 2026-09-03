@@ -370,11 +370,17 @@ def check_chips_are_reachable(db, result: Result) -> dict:
         result.note("fixtures loaded", "none — cannot assess the chip budget")
         return {"chips_left_this_half": 0, "gws_left_this_half": 0}
 
+    # `is_next` only, matching what the engine passes as `current_gw`
+    # (`next_gw` in `agent/decision_engine.py`). `_chip_uses_remaining` now
+    # treats its `current_gw` as "the gameweek being decided" and deliberately
+    # does not count a chip recorded THERE against remaining uses (2026-09-02)
+    # -- so during a live gameweek, `is_current` would select the IN-PROGRESS
+    # one, and a chip genuinely played in it would be reported as still
+    # available and inflate the `len(available) <= gws_left` check below. This
+    # report never feeds a decision or a submission, but it must not drift
+    # from the engine's own definition of "current".
     current_gw = db.execute(
-        text(
-            "SELECT id FROM gameweeks WHERE season = :s AND (is_next = 1 OR is_current = 1) "
-            "ORDER BY id LIMIT 1"
-        ),
+        text("SELECT id FROM gameweeks WHERE season = :s AND is_next = 1 ORDER BY id LIMIT 1"),
         {"s": SEASON},
     ).scalar() or 1
     current_gw = int(current_gw)

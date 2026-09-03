@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
 from sqlalchemy import create_engine, inspect, text
 
+from data.migrations import migrate
 from data.models import Base, ChipComparisonLog
-from scripts.migrate_chip_comparison_unique import migrate
 
 
 def _old_shape_db(path) -> None:
@@ -107,3 +108,58 @@ def test_init_db_runs_the_migration(monkeypatch, tmp_path):
     db.init_db()
 
     assert "uq_chip_comparison" in _constraint_names(engine)
+
+
+def test_init_db_survives_a_failed_migration(monkeypatch, tmp_path, caplog):
+    """Task 7d item 3: a schema nicety must never be able to stop the engine.
+
+    ``uq_chip_comparison`` "rejects nothing but a byte-identical re-insert" --
+    with 12 call sites for ``init_db``, a failed DROP/RENAME (a locked file,
+    a permissions error, disk full mid-rebuild) must not take every one of
+    them down. Matches the existing best-effort handling for the chip
+    comparison itself in ``agent/decision_engine.py``.
+    """
+    import data.db as db
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'broken.db'}")
+    monkeypatch.setattr(db, "engine", engine)
+
+    def _boom(engine):
+        raise RuntimeError("disk full mid-rebuild")
+
+    monkeypatch.setattr("data.migrations.migrate", _boom)
+
+    with caplog.at_level("WARNING"):
+        db.init_db()  # must not raise
+
+    assert "disk full mid-rebuild" in caplog.text
+    # create_all still ran, so the rest of init_db did its job regardless.
+    assert "chip_comparison_log" in inspect(engine).get_table_names()
+
+
+def test_main_migrates_the_db_flag_target(tmp_path):
+    """Task 7d item 4c: the ``--db`` deliverable had no test at all."""
+    from scripts.migrate_chip_comparison_unique import main
+
+    target = tmp_path / "other.db"
+    _old_shape_db(target)
+
+    main(["--db", str(target)])
+
+    engine = create_engine(f"sqlite:///{target}")
+    assert "uq_chip_comparison" in _constraint_names(engine)
+
+
+def test_main_rejects_a_nonexistent_db_path(tmp_path):
+    """Task 7d item 4b: SQLite's own behaviour is to silently create an empty
+    file for a missing path, which is never what a typo'd ``--db`` meant."""
+    from scripts.migrate_chip_comparison_unique import main
+
+    missing = tmp_path / "does_not_exist.db"
+    assert not missing.exists()
+
+    with pytest.raises(SystemExit):
+        main(["--db", str(missing)])
+
+    # And it must not have done SQLite's usual thing of creating it anyway.
+    assert not missing.exists()

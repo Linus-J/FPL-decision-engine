@@ -252,7 +252,16 @@ def _chip_uses_remaining(
     which structurally cannot represent "used once already, one more
     available in the other half" — worse, feeding a `set` into a
     multiplicity count silently caps every chip at one use for the whole
-    season regardless of what the config says."""
+    season regardless of what the config says.
+
+    Precondition on ``current_gw`` (2026-09-02): it means the gameweek being
+    DECIDED, not merely "today" or "the live one". A chip recorded against
+    ``current_gw`` itself is deliberately not counted against remaining uses
+    (see below) -- it is read as this same decision's own earlier attempt.
+    Passing an already-locked or in-progress gameweek therefore OVER-reports
+    availability, since a chip genuinely played there is excluded from the
+    count as if it were still in hand. Callers must pass the next
+    undecided gameweek (``next_gw``), never ``is_current``."""
     # 2026-09-02: a chip recorded against ``current_gw`` ITSELF is not spent
     # history -- it is this same decision's own earlier attempt. `chips_used`
     # is read at the top of a decision cycle, before that cycle writes any of

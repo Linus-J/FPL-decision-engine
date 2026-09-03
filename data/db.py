@@ -135,11 +135,28 @@ def _migrate_chip_comparison_unique() -> None:
     running it on every startup costs one reflection and is what stops a fresh
     clone, a backtest database or another machine's copy drifting in silence.
 
-    Imported inside the function because the script imports ``data.db``.
-    """
-    from scripts.migrate_chip_comparison_unique import migrate
+    Imported inside the function (2026-09-02, Task 7d item 5) so a test can
+    monkeypatch ``data.migrations.migrate`` and have this call see it -- a
+    module-level ``from data.migrations import migrate`` would bind the name
+    once at import time, before any monkeypatch runs. No cycle risk drives
+    this any more: unlike the old ``scripts.migrate_chip_comparison_unique``
+    import this replaced, ``data.migrations`` does not import ``data.db``.
 
-    migrate(engine)
+    Best-effort (2026-09-02, Task 7d review): this constraint "rejects
+    nothing but a byte-identical re-insert" -- a schema nicety, not something
+    the engine's own correctness depends on. ``init_db`` has 12 call sites
+    across the repo, so a failed DROP/RENAME here (a locked file, a
+    permissions error, disk full mid-rebuild) must never be able to stop
+    every one of them from starting, matching the same "best-effort work
+    never breaks a run" handling already used for the chip comparison itself
+    in ``agent/decision_engine.py``.
+    """
+    from data.migrations import migrate
+
+    try:
+        migrate(engine)
+    except Exception as exc:  # noqa: BLE001 -- a schema nicety never breaks a run
+        logger.warning("chip_comparison_log migration skipped: %s", exc)
 
 
 def get_session() -> Session:
