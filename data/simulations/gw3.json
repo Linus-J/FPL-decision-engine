@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 3,
   "label": "GW3 \u2014 4 Sep 2026",
-  "generated_at": "2026-09-03T15:30:59.176874+00:00",
+  "generated_at": "2026-09-03T16:07:41.677649+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -109,7 +109,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": 2,
-      "transferred_in": true,
+      "transferred_in": false,
       "xpts": {
         "p10": 1.0,
         "median": 4.0,
@@ -261,7 +261,7 @@
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
-      "transferred_in": true,
+      "transferred_in": false,
       "xpts": {
         "p10": 1.0,
         "median": 6.0,
@@ -488,20 +488,6 @@
     }
   ],
   "history": [
-    {
-      "gameweek": 3,
-      "type": "transfers",
-      "transfers_in": [
-        "Gomez",
-        "Wissa"
-      ],
-      "transfers_out": [
-        "Rice",
-        "Neave"
-      ],
-      "hits_taken": 1,
-      "net_xpts_gain": 7.099915967623531
-    },
     {
       "gameweek": 3,
       "type": "chip",
