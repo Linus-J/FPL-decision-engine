@@ -183,80 +183,12 @@ def test_write_scopes_roles_per_season(session):
     assert session.query(PlayerSetPieceRole).count() == 2
 
 
-# --- depth-chart parsing (2026-08-16) ------------------------------------
-
-
-def test_parse_reads_order_from_position_in_the_cell():
-    """Order is the whole point: the first-choice penalty taker is worth
-    several times the third-choice one, and a boolean cannot say so."""
-    from data.ingestors.setpiece import parse_setpiece_table
-
-    rows = parse_setpiece_table(
-        "Team | Penalties | Free Kicks | Corners\n"
-        "Arsenal | Saka, Gyokeres, Odegaard | Rice, Saka | Rice, Saka\n"
-    )
-    by_name = {r["player"]: r for r in rows}
-    assert by_name["Saka"]["penalty_order"] == 1
-    assert by_name["Gyokeres"]["penalty_order"] == 2
-    assert by_name["Odegaard"]["penalty_order"] == 3
-    # a player can hold several duties at different depths
-    assert by_name["Saka"]["freekick_order"] == 2
-    assert by_name["Rice"]["corner_order"] == 1
-    assert by_name["Rice"]["penalty_order"] is None
-
-
-def test_parse_maps_published_team_names_onto_fpl_names():
-    from data.ingestors.setpiece import parse_setpiece_table
-
-    rows = parse_setpiece_table("Man United | Fernandes | Fernandes | Fernandes")
-    assert rows[0]["team"] == "Man Utd"
-
-
-def test_parse_flags_uncertain_names_without_dropping_them():
-    """An asterisk marks a doubt in the source. Silently trusting it is how a
-    phantom taker reaches projections; silently dropping it loses a real
-    taker. Record and report."""
-    from data.ingestors.setpiece import parse_setpiece_table
-
-    rows = parse_setpiece_table("Bournemouth | Kluivert, Kroupi* | | ")
-    by_name = {r["player"]: r for r in rows}
-    assert by_name["Kroupi"]["uncertain"] is True
-    assert by_name["Kroupi"]["penalty_order"] == 2
-    assert by_name["Kluivert"]["uncertain"] is False
-
-
-def test_parse_ignores_the_header_and_blank_cells():
-    from data.ingestors.setpiece import parse_setpiece_table
-
-    rows = parse_setpiece_table(
-        "Team | Penalties | Free Kicks | Corners\n"
-        "\n"
-        "Fulham | Iwobi |  | Iwobi, Bobb\n"
-    )
-    assert {r["player"] for r in rows} == {"Iwobi", "Bobb"}
-
-
 def test_penalty_value_decays_with_depth_chart_position():
     from data.ingestors.setpiece import penalty_xg_for_order
 
     assert penalty_xg_for_order(1) > penalty_xg_for_order(2) > penalty_xg_for_order(3)
     assert penalty_xg_for_order(None) == 0.0
     assert penalty_xg_for_order(9) == 0.0
-
-
-def test_depth_chart_roles_do_not_claim_key_passes():
-    """A published taker list has no opinion on key passes. Emitting 0.0
-    would clobber a real value from the Understat/FBref path, because the
-    write is a partial update keyed on what the source actually knows."""
-    from data.ingestors.setpiece import roles_from_depth_chart
-
-    roles = roles_from_depth_chart([
-        {"player": "A", "team": "Arsenal", "uncertain": False,
-         "penalty_order": 1, "freekick_order": None, "corner_order": None},
-    ])
-    assert "key_passes_per_game" not in roles[0]
-    assert roles[0]["is_penalty_taker"] is True
-    assert roles[0]["is_set_piece_taker"] is False
 
 
 def test_partial_write_preserves_fields_the_source_did_not_set(session):
@@ -322,62 +254,6 @@ def test_a_stale_scrape_cannot_zero_a_published_taker(session):
 # Both of these caused real data loss against the live depth chart, found by
 # auditing the database rather than by any test: the file produced 102 roles
 # and the table held 100.
-
-
-def test_spelling_variants_of_one_name_merge_into_one_role():
-    """A published list spells the same player differently between columns —
-    "Schär" under free kicks, "Schar" under corners. Keyed by the raw name
-    those became two roles for one player, and since the write is an upsert
-    on (player_id, season), the second silently erased the first. Schär lost
-    his free-kick duty exactly this way."""
-    from data.ingestors.setpiece import parse_setpiece_table
-
-    rows = parse_setpiece_table(
-        "Newcastle United | Woltemade | Hall, Schär | Hall, Barnes, Schar"
-    )
-    schar = [r for r in rows if r["player"].lower().startswith("sch")]
-    assert len(schar) == 1, "one player, not two"
-    assert schar[0]["freekick_order"] == 2
-    assert schar[0]["corner_order"] == 3
-
-
-def test_accents_do_not_split_a_player_in_two():
-    from data.ingestors.setpiece import parse_setpiece_table
-
-    rows = parse_setpiece_table("Brighton | Groß | Gross | Groß")
-    assert len(rows) == 1
-    r = rows[0]
-    assert r["penalty_order"] == 1 and r["freekick_order"] == 1 and r["corner_order"] == 1
-
-
-def test_an_ambiguous_short_name_is_skipped_not_guessed(caplog, monkeypatch):
-    """Chelsea field both João Pedro and Pedro Neto. "Pedro" resolves to Pedro
-    Neto on his first name, so João Pedro's penalty duty was assigned to Neto
-    and then overwritten by Neto's own entries — Chelsea's second penalty
-    taker vanished. Guessing is worse than reporting."""
-    import data.ingestors.setpiece as sp
-
-    # two source names that both resolve to the same player id
-    monkeypatch.setattr(sp, "_match_player", lambda name, squad: 99)
-    monkeypatch.setattr(sp, "write_setpiece_roles", lambda season, roles: len(list(roles)))
-
-    class _FakeDB:
-        def query(self, model):
-            return self
-
-        def all(self):
-            return []
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(sp, "get_session", lambda: _FakeDB())
-    # no teams resolve, so this exercises the unknown-team path; the collision
-    # path is covered by the live reload documented in the commit.
-    written, unresolved = sp.ingest_depth_chart(
-        "2026-27", "Chelsea | Palmer, Pedro | Neto", "test"
-    )
-    assert unresolved, "an unmatchable team must be reported, never guessed"
 
 
 def test_requested_stat_types_are_ones_soccerdata_actually_serves():
@@ -456,3 +332,129 @@ def test_role_with_no_fields_is_not_written(session):
 
     assert n == 0
     assert session.query(PlayerSetPieceRole).count() == 0
+
+
+# --- FPL's own published orders (2026-09-03) -----------------------------
+
+def _el(code, *, pen=None, fk=None, corner=None):
+    return {
+        "code": code,
+        "penalties_order": pen,
+        "direct_freekicks_order": fk,
+        "corners_and_indirect_freekicks_order": corner,
+    }
+
+
+def test_orders_become_roles_with_the_value_the_order_implies():
+    from data.ingestors.setpiece import roles_from_fpl_elements
+
+    roles = roles_from_fpl_elements([_el(100, pen=1, fk=2, corner=2)], {100: 7})
+
+    assert roles == [{
+        "player_id": 7, "penalty_order": 1, "freekick_order": 2,
+        "corner_order": 2, "is_penalty_taker": True,
+        "penalty_xg_per_game": 0.08058, "is_set_piece_taker": True,
+        "source": "fpl",
+    }]
+
+
+def test_only_the_first_choice_is_the_penalty_taker():
+    """Order is the whole point. A second-choice taker carries real value but
+    is not "the" taker, and the boolean is what features.py reads."""
+    from data.ingestors.setpiece import roles_from_fpl_elements
+
+    roles = roles_from_fpl_elements([_el(100, pen=2)], {100: 7})
+
+    assert roles[0]["is_penalty_taker"] is False
+    assert roles[0]["penalty_xg_per_game"] == pytest.approx(0.01138)
+
+
+def test_players_with_no_duty_at_all_are_skipped():
+    """Most of a 650-player pool takes nothing. A row asserting False carries
+    no more information than no row, and writing one for everybody would make
+    players_with_published_roles meaningless."""
+    from data.ingestors.setpiece import roles_from_fpl_elements
+
+    assert roles_from_fpl_elements([_el(100), _el(101, corner=3)], {100: 7, 101: 8}) == [
+        {"player_id": 8, "penalty_order": None, "freekick_order": None,
+         "corner_order": 3, "is_penalty_taker": False,
+         "penalty_xg_per_game": 0.0, "is_set_piece_taker": True, "source": "fpl"},
+    ]
+
+
+def test_a_set_piece_only_taker_is_still_a_set_piece_taker():
+    from data.ingestors.setpiece import roles_from_fpl_elements
+
+    roles = roles_from_fpl_elements([_el(100, fk=1)], {100: 7})
+
+    assert roles[0]["is_set_piece_taker"] is True
+    assert roles[0]["is_penalty_taker"] is False
+
+
+def test_an_unknown_code_is_skipped_rather_than_guessed_at():
+    """The join is on `code` precisely so there is nothing to guess. A code
+    with no player is a squad we have not ingested yet, not a near-match."""
+    from data.ingestors.setpiece import roles_from_fpl_elements
+
+    assert roles_from_fpl_elements([_el(999, pen=1)], {100: 7}) == []
+
+
+def test_fpl_roles_claim_nothing_about_key_passes():
+    """FPL has no opinion on key passes, and write_setpiece_roles updates
+    partially — so omitting the key preserves what Understat wrote."""
+    from data.ingestors.setpiece import roles_from_fpl_elements
+
+    assert "key_passes_per_game" not in roles_from_fpl_elements(
+        [_el(100, pen=1)], {100: 7}
+    )[0]
+
+
+def test_a_player_fpl_no_longer_lists_is_retired():
+    """Only possible because the feed is COMPLETE: absence from it is a
+    positive statement of no duty. Enzo, Ndiaye and Marmoush all held orders
+    at clubs they had left because the old text file was reloaded, never
+    diffed."""
+    from data.ingestors.setpiece import retirement_roles
+
+    assert retirement_roles({7, 8}, {7}) == [{
+        "player_id": 8, "penalty_order": None, "freekick_order": None,
+        "corner_order": None, "is_penalty_taker": False,
+        "penalty_xg_per_game": 0.0, "is_set_piece_taker": False,
+        "source": "fpl",
+    }]
+
+
+def test_retirement_clears_the_flags_as_well_as_the_orders():
+    """load_penalty_duty filters on penalty_order and reads the VALUE, so a
+    half-cleared row is exactly the shape that hid the Understat clobber."""
+    from data.ingestors.setpiece import retirement_roles
+
+    (role,) = retirement_roles({8}, set())
+    assert role["penalty_order"] is None
+    assert role["is_penalty_taker"] is False
+    assert role["penalty_xg_per_game"] == 0.0
+
+
+def test_a_still_listed_player_is_not_retired():
+    from data.ingestors.setpiece import retirement_roles
+
+    assert retirement_roles({7}, {7}) == []
+
+
+def test_retirement_actually_clears_the_row(session):
+    from data.ingestors.setpiece import (
+        players_with_published_roles,
+        retirement_roles,
+    )
+
+    write_setpiece_roles("2026-27", [
+        {"player_id": 8, "penalty_order": 1, "is_penalty_taker": True,
+         "penalty_xg_per_game": 0.08058},
+    ])
+    assert players_with_published_roles("2026-27") == {8}
+
+    write_setpiece_roles("2026-27", retirement_roles({8}, set()))
+
+    assert players_with_published_roles("2026-27") == set()
+    row = session.query(PlayerSetPieceRole).one()
+    assert row.penalty_order is None and row.penalty_xg_per_game == 0.0

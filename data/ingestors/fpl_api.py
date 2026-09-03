@@ -6,6 +6,7 @@ import aiohttp
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session
+from data.ingestors.setpiece import ingest_fpl_setpiece_roles
 from data.models import (
     Fixture,
     Gameweek,
@@ -644,6 +645,10 @@ async def run_full_ingest(season: str = "2026-27") -> None:
     upsert_teams(bootstrap, season)
     upsert_gameweeks(bootstrap, season)
     upsert_players(bootstrap)
+    # AFTER upsert_players: resolves against players.code, so the squad has to
+    # be current first. FPL publishes the set-piece taker orders itself, which
+    # is what retired the hand-maintained depth-chart file (2026-09-03).
+    ingest_fpl_setpiece_roles(bootstrap, season)
     # Append-only point-in-time capture (source of truth for leakage-free reads).
     write_player_snapshots(bootstrap, datetime.utcnow(), season)
 

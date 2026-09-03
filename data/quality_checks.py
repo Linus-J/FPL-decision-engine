@@ -313,9 +313,9 @@ def check_setpiece_duty_consistency(
             message=(
                 f"{len(mismatches)}/{published_total} published depth-chart "
                 f"rows contradict their own flags: {shown}{more}. An ingest has "
-                f"overwritten the taker list -- re-run "
-                f"scripts/load_setpiece_depth_chart.py and check which source "
-                f"failed to defer to it."
+                f"overwritten FPL's published taker orders -- re-run "
+                f"run_full_ingest and check which source failed to defer to "
+                f"ingest_fpl_setpiece_roles."
             ),
         )
     ]

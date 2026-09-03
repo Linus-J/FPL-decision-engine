@@ -39,7 +39,6 @@ from sqlalchemy import text
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session
-from data.ingestors.fbref import _match_player, _normalize_name
 from data.models import PlayerSetPieceRole
 
 logger = logging.getLogger(__name__)
@@ -421,10 +420,10 @@ def _merge_season_tables(shooting, standard) -> list[dict]:  # pragma: no cover
     The consequence is bounded rather than silent. ``derive_setpiece_roles``
     already treats a missing corner count as "not a set-piece taker" rather
     than guessing, so no false duty is invented -- corner and free-kick duty
-    simply has to come from the published depth chart loaded by
-    ``scripts/load_setpiece_depth_chart.py``, which this ingest defers to for
-    any player with a published duty anyway. Penalty duty, the part that
-    carries real expected-points weight, is unaffected.
+    comes from FPL's own published orders (``ingest_fpl_setpiece_roles``),
+    which this ingest defers to for any player with a published duty anyway.
+    Penalty duty, the part that carries real expected-points weight, is
+    unaffected.
     """
     records: dict[tuple[str, str], dict] = {}
 
@@ -456,7 +455,7 @@ def _merge_season_tables(shooting, standard) -> list[dict]:  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
-# Published depth charts (2026-08-16)
+# Depth-chart ORDER (2026-08-16; source replaced 2026-09-03)
 #
 # The FBref route above infers duty from last season's attempt share. Two
 # problems with that at the start of a season, both real: FBref has not
@@ -464,42 +463,13 @@ def _merge_season_tables(shooting, standard) -> list[dict]:  # pragma: no cover
 # transfer window -- Isak, Semenyo and Gyokeres all changed clubs, and their
 # old clubs' penalty duty went with them.
 #
-# A published pre-season taker list beats both. It also carries ORDER, which
-# attempt share only approximates and a boolean cannot express at all: the
+# A published taker list beats both. It also carries ORDER, which attempt
+# share only approximates and a boolean cannot express at all: the
 # first-choice penalty taker is worth several times the third-choice one.
+#
+# That list used to be a hand-maintained text file parsed by name. It is now
+# FPL's own bootstrap -- see ingest_fpl_setpiece_roles below.
 # ---------------------------------------------------------------------------
-
-# Team names as published, mapped onto the names FPL uses in `teams`.
-_TEAM_ALIASES = {
-    "man united": "Man Utd",
-    "manchester united": "Man Utd",
-    "manchester city": "Man City",
-    "newcastle united": "Newcastle",
-    "leeds united": "Leeds",
-    "nottingham forest": "Nott'm Forest",
-    "tottenham": "Spurs",
-    "tottenham hotspur": "Spurs",
-    "wolverhampton wanderers": "Wolves",
-    "brighton and hove albion": "Brighton",
-    "west ham united": "West Ham",
-}
-
-# A published list marks some names with an asterisk (a doubt: not yet
-# registered, injured, or a rumoured departure). Recorded normally but
-# reported, because silently trusting a flagged name is how a phantom
-# penalty taker gets into projections.
-_UNCERTAIN_MARKER = "*"
-
-# Squad-scoped disambiguation, for short names that are genuinely ambiguous
-# WITHIN one squad. Deliberately not added to fbref.py's global alias map:
-# "Pedro" means João Pedro at Chelsea and nothing in particular elsewhere.
-# Each entry is a real ambiguity the collision check refused to guess at.
-_TEAM_ALIASES_BY_SQUAD: dict[tuple[str, str], str] = {
-    # Chelsea field both João Pedro and Pedro Neto. The published list uses
-    # "Pedro" and "Neto" as separate entries in the same table, so they are
-    # meant as different players — "Pedro" is João Pedro.
-    ("Chelsea", "pedro"): "João Pedro",
-}
 
 # League-average penalties awarded to a given team in a given match. ~90-100
 # penalties across 380 PL matches is ~0.12 per team per game. Combined with
@@ -528,169 +498,136 @@ def penalty_xg_for_order(order: int | None) -> float:
     return round(TEAM_PENALTIES_PER_GAME * share * PENALTY_CONVERSION, 5)
 
 
-def parse_setpiece_table(raw: str) -> list[dict]:
-    """Parse a ``Team | Penalties | Free Kicks | Corners`` table.
+# --- FPL's own published orders (2026-09-03) ------------------------------
+#
+# FPL publishes the taker list itself, on every element in bootstrap-static:
+# `penalties_order`, `direct_freekicks_order` and
+# `corners_and_indirect_freekicks_order`. This replaced a hand-maintained
+# text file (`setPiece2627GW1.txt`) parsed by player name.
+#
+# Three things make it strictly better, and the first is not a nicety:
+#
+#   * It is refreshed every run, so it survives a transfer window. The hand
+#     file was a GW1 snapshot; by GW3 it still had Ndiaye taking Everton's
+#     penalties after he had moved to Man City, Marmoush at City after he had
+#     moved to Spurs, and -- the one that mattered -- Liverpool's order as
+#     Isak ahead of Szoboszlai, which FPL has the other way round.
+#   * It is COMPLETE, so a player FPL stops listing can be retired
+#     automatically. Reloading the text file could only ever add or update;
+#     stale duty from a departed player had to be cleared by hand.
+#   * It joins on `code`, so there is no name matching at all -- 651/651
+#     exact against `players` on 2026-09-03. `fpl_id` is NOT usable here: it
+#     is reassigned between seasons and mismatched 240 of the same 651.
+#     Every name-matching failure the text loader had -- unresolved surnames,
+#     the Chelsea "Pedro"/Neto collision, transliteration, squad aliases --
+#     simply cannot occur.
 
-    Each cell is a comma-separated list in DEPTH-CHART ORDER. Returns one
-    dict per (team, player) with 1-based ``penalty_order`` / ``freekick_order``
-    / ``corner_order``, ``None`` where the player is not on that duty.
+_FPL_ORDER_FIELDS = (
+    ("penalties_order", "penalty_order"),
+    ("direct_freekicks_order", "freekick_order"),
+    ("corners_and_indirect_freekicks_order", "corner_order"),
+)
 
-    Pure: no DB, no network. Name resolution happens in the caller, scoped to
-    the team -- which matters, because a bare surname like "Wilson" is
-    ambiguous league-wide and unique within a squad.
+FPL_SOURCE = "fpl"
+
+
+def roles_from_fpl_elements(
+    elements: Iterable[Mapping], code_to_player_id: Mapping[int, int]
+) -> list[dict]:
+    """Role dicts for every element FPL gives at least one set-piece order.
+
+    Elements with no order at all are skipped rather than written as False:
+    that is the overwhelming majority of the pool, and a row saying "not a
+    taker" carries the same information as no row. Retirement of a player who
+    USED to hold an order is a separate, deliberate step -- see
+    ``retirement_roles``.
+
+    ``key_passes_per_game`` is deliberately absent. A taker list has no
+    opinion on it, and ``write_setpiece_roles`` updates only the keys it is
+    given, so leaving it out preserves whatever the Understat ingest wrote.
     """
-    roles: dict[tuple[str, str], dict] = {}
-    duty_columns = ("penalty_order", "freekick_order", "corner_order")
-
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or "|" not in line:
+    roles: list[dict] = []
+    for el in elements:
+        orders = {
+            column: el.get(field)
+            for field, column in _FPL_ORDER_FIELDS
+        }
+        if all(v is None for v in orders.values()):
             continue
-        cells = [c.strip() for c in line.split("|")]
-        team = cells[0]
-        if not team or team.lower() == "team":
-            continue  # header
-        team = _TEAM_ALIASES.get(team.lower(), team)
-
-        for column, duty in zip(cells[1:4], duty_columns, strict=False):
-            for order, name in enumerate(
-                (n.strip() for n in column.split(",")), start=1
-            ):
-                if not name:
-                    continue
-                uncertain = _UNCERTAIN_MARKER in name
-                name = name.replace(_UNCERTAIN_MARKER, "").strip()
-                if not name:
-                    continue
-                # Keyed by the NORMALISED name, not the raw one. A published
-                # list spells the same player differently between columns
-                # ("Schär" under free kicks, "Schar" under corners), which
-                # produced two role dicts for one player -- and since the
-                # write is an upsert on (player_id, season), the second
-                # silently erased the first's duty. Schär lost his free-kick
-                # role exactly this way.
-                key = (team, _normalize_name(name))
-                role = roles.setdefault(
-                    key,
-                    {
-                        "team": team, "player": name, "uncertain": False,
-                        "penalty_order": None, "freekick_order": None,
-                        "corner_order": None,
-                    },
-                )
-                role[duty] = order
-                role["uncertain"] = role["uncertain"] or uncertain
-
-    return list(roles.values())
-
-
-def roles_from_depth_chart(parsed: list[dict]) -> list[dict]:
-    """Turn parsed depth-chart rows into ``player_setpiece_roles`` fields.
-
-    ``key_passes_per_game`` is deliberately ABSENT rather than 0.0: a
-    published taker list has no opinion on it, and writing a zero would
-    clobber a real value from the FBref path. ``write_setpiece_roles`` only
-    updates the keys it is given.
-    """
-    out = []
-    for row in parsed:
-        out.append({
-            "player": row["player"],
-            "team": row["team"],
-            "uncertain": row["uncertain"],
-            "penalty_order": row["penalty_order"],
-            "freekick_order": row["freekick_order"],
-            "corner_order": row["corner_order"],
-            "is_penalty_taker": row["penalty_order"] == 1,
-            "penalty_xg_per_game": penalty_xg_for_order(row["penalty_order"]),
+        player_id = code_to_player_id.get(el.get("code"))
+        if player_id is None:
+            continue
+        penalty_order = orders["penalty_order"]
+        roles.append({
+            "player_id": player_id,
+            **orders,
+            "is_penalty_taker": penalty_order == 1,
+            "penalty_xg_per_game": penalty_xg_for_order(penalty_order),
             "is_set_piece_taker": (
-                row["freekick_order"] is not None or row["corner_order"] is not None
+                orders["freekick_order"] is not None
+                or orders["corner_order"] is not None
             ),
+            "source": FPL_SOURCE,
         })
-    return out
+    return roles
 
 
-def ingest_depth_chart(season: str, raw: str, source: str) -> tuple[int, list[str]]:
-    """Load a published taker list into ``player_setpiece_roles``.
+def retirement_roles(previously_published: set[int], now_listed: set[int]) -> list[dict]:
+    """Clear the orders of players FPL no longer lists as taking anything.
 
-    Returns ``(rows_written, unresolved_names)``. Names are matched WITHIN
-    the stated team, so a surname that is ambiguous league-wide resolves
-    cleanly -- and a name that matches nobody in that squad is reported
-    rather than guessed at, since a wrong match would hand one player's
-    penalty duty to another.
+    Only possible because the FPL feed is COMPLETE: absence from it is a
+    positive statement that the player holds no duty, which absence from a
+    partial source would not be. The text file could not support this -- it
+    was reloaded, never diffed -- so a player who changed clubs kept his old
+    club's duty until somebody noticed. On 2026-09-03 that was Enzo, Iliman
+    Ndiaye and Marmoush, all three still holding orders at clubs they had
+    left, and Ndiaye still marked Everton's FIRST-choice penalty taker.
+
+    The flags are zeroed alongside the orders because ``load_penalty_duty``
+    filters on ``penalty_order IS NOT NULL`` and then reads the VALUE: a row
+    left half-cleared is exactly the shape that made the Understat clobber
+    invisible.
     """
+    return [
+        {
+            "player_id": pid,
+            "penalty_order": None,
+            "freekick_order": None,
+            "corner_order": None,
+            "is_penalty_taker": False,
+            "penalty_xg_per_game": 0.0,
+            "is_set_piece_taker": False,
+            "source": FPL_SOURCE,
+        }
+        for pid in sorted(previously_published - now_listed)
+    ]
 
-    roles = roles_from_depth_chart(parse_setpiece_table(raw))
-    if not roles:
-        return 0, []
 
+def ingest_fpl_setpiece_roles(bootstrap: Mapping, season: str) -> tuple[int, int]:
+    """Load FPL's published set-piece orders. Returns ``(written, retired)``.
+
+    Called from ``run_full_ingest`` on every run, after ``upsert_players`` --
+    it resolves against ``players.code``, so the players must be current.
+    """
     db = get_session()
     try:
-        from data.models import Player, Team
+        from data.models import Player
 
-        team_ids = {t.name.lower(): t.id for t in db.query(Team).all()}
-        by_team: dict[int, dict[str, int]] = {}
-        for p in db.query(Player).all():
-            squad = by_team.setdefault(p.team_id, {})
-            squad[_normalize_name(f"{p.first_name} {p.second_name}")] = p.id
-            squad[_normalize_name(p.web_name)] = p.id
+        code_to_player_id = {
+            p.code: p.id for p in db.query(Player).all() if p.code is not None
+        }
     finally:
         db.close()
 
-    unresolved: list[str] = []
-    uncertain: list[str] = []
-    resolved_to: dict[int, str] = {}
-    collisions: list[str] = []
-    for role in roles:
-        team_id = team_ids.get(role["team"].lower())
-        if team_id is None:
-            unresolved.append(f"{role['player']} (unknown team {role['team']!r})")
-            continue
-        squad = by_team.get(team_id, {})
-        alias = _TEAM_ALIASES_BY_SQUAD.get((role["team"], _normalize_name(role["player"])))
-        player_id = _match_player(alias or role["player"], squad)
-        if player_id is None:
-            unresolved.append(f"{role['player']} ({role['team']})")
-            continue
-        # Two DIFFERENT source names resolving to one player means the matcher
-        # guessed. Chelsea list both "Pedro" and "Neto"; "Pedro" resolves to
-        # Pedro Neto on his first name, so João Pedro's penalty duty was
-        # assigned to Neto and then overwritten by Neto's own entries --
-        # Chelsea's second penalty taker vanished entirely. Skipping and
-        # reporting beats guessing: the project's matcher already refuses
-        # fuzzy matches for exactly this reason.
-        if player_id in resolved_to:
-            collisions.append(
-                f"{role['team']}: {resolved_to[player_id]!r} and {role['player']!r} "
-                f"both resolve to the same player — SKIPPED, add a squad alias"
-            )
-            continue
-        resolved_to[player_id] = role["player"]
-        role["player_id"] = player_id
-        role["source"] = source
-        if role["uncertain"]:
-            uncertain.append(f"{role['player']} ({role['team']})")
+    roles = roles_from_fpl_elements(bootstrap.get("elements", []), code_to_player_id)
+    listed = {r["player_id"] for r in roles}
+    retirements = retirement_roles(players_with_published_roles(season), listed)
 
-    written = write_setpiece_roles(season, roles)
-    if uncertain:
-        logger.warning(
-            "%d taker(s) flagged uncertain in the source and recorded anyway "
-            "— verify before the deadline: %s",
-            len(uncertain), ", ".join(sorted(uncertain)),
-        )
-    if collisions:
-        logger.error(
-            "%d ambiguous name(s) skipped rather than guessed:\n  %s",
-            len(collisions), "\n  ".join(collisions),
-        )
-    if unresolved:
-        logger.warning(
-            "%d name(s) did not resolve to a player in that squad and were "
-            "SKIPPED: %s", len(unresolved), ", ".join(sorted(unresolved)),
-        )
+    written = write_setpiece_roles(season, roles + retirements)
+    takers = sum(1 for r in roles if r["is_penalty_taker"])
     logger.info(
-        "Depth chart %s: %d roles written (%d penalty takers)",
-        season, written,
-        sum(1 for r in roles if r.get("player_id") and r["is_penalty_taker"]),
+        "FPL set-piece orders %s: %d roles written (%d first-choice penalty "
+        "takers), %d retired",
+        season, written, takers, len(retirements),
     )
-    return written, unresolved
+    return written, len(retirements)
