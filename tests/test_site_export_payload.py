@@ -194,17 +194,21 @@ def test_build_top15_entries_takes_first_15_and_maps_team_short():
 
 
 def test_build_history_entries_maps_transfers_and_chips_and_drops_lineup():
+    # Row order is a real run's true newest-first shape: decision_engine.py
+    # writes transfers, then lineup, then chip, so chip is the NEWEST and
+    # transfers the OLDEST of one run's three rows -- see
+    # payload_module._decision_run_indices.
     history_df = pd.DataFrame([
-        {"gameweek": 3, "decision_type": "transfers", "projected_gain": 1.4, "details": {
-            "transfers_in": [{"player_id": 1, "web_name": "Haaland", "cost": 15.1}],
-            "transfers_out": [{"player_id": 2, "web_name": "Wilson", "cost": 6.5}],
-            "hits_taken": 0,
-        }},
         {"gameweek": 3, "decision_type": "chip", "projected_gain": 0.0, "details": {
             "chip": "wildcard", "reason": "squad overhaul",
         }},
         {"gameweek": 3, "decision_type": "lineup", "projected_gain": 55.0, "details": {
             "squad_ids": [1, 2],
+        }},
+        {"gameweek": 3, "decision_type": "transfers", "projected_gain": 1.4, "details": {
+            "transfers_in": [{"player_id": 1, "web_name": "Haaland", "cost": 15.1}],
+            "transfers_out": [{"player_id": 2, "web_name": "Wilson", "cost": 6.5}],
+            "hits_taken": 0,
         }},
     ])
 
@@ -466,12 +470,21 @@ def test_history_keeps_only_the_latest_transfers_row_per_gameweek():
 
 
 def test_history_keeps_only_the_latest_chip_row_per_gameweek():
+    # Each run's own transfers row included (real shape -- see
+    # _decision_run_indices) so the two chip rows resolve to two DIFFERENT
+    # runs rather than colliding into one.
     entries = payload_module._build_history_entries(_history_df([
         {"gameweek": 2, "decision_type": "chip", "projected_gain": 7.8, "details": {
             "chip": "3xc", "reason": "TC captain xPts 7.8",
         }},
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 0.0, "details": {
+            "transfers_in": [], "transfers_out": [], "hits_taken": 0,
+        }},
         {"gameweek": 2, "decision_type": "chip", "projected_gain": 7.7, "details": {
             "chip": "3xc", "reason": "TC captain xPts 7.7",
+        }},
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 0.0, "details": {
+            "transfers_in": [], "transfers_out": [], "hits_taken": 0,
         }},
     ]))
 
@@ -594,6 +607,116 @@ def test_history_reproduces_the_published_gw1_and_gw2_log():
         {"gameweek": 2, "type": "chip", "chip": "3xc", "reason": "TC captain xPts 7.8"},
         {"gameweek": 1, "type": "initial_squad"},
     ]
+
+
+# --- a chip-explained no-op is authoritative, not noise (2026-09-03) -----
+#
+# Free Hit/Wildcard weeks correctly log an EMPTY transfers row -- neither
+# chip works by incrementally transferring the real squad. The no-op skip
+# above was written before either fired live, on the assumption that an
+# empty transfers row always meant "a re-run recommended nothing, keep
+# looking". Once Free Hit started firing, that assumption produced GW3's
+# real published bug: "Rice, Neave -> Gomez, Wissa (1 hit)" from a stale
+# 2026-09-02 run, days after a later run had the free hit fire instead --
+# the walk-back had no way to tell "boring re-run" from "chip fired" and
+# picked the older, false, superseded plan.
+
+
+def test_history_treats_a_freehit_no_op_as_the_final_answer():
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 3, "decision_type": "chip", "projected_gain": 15.1, "details": {
+            "chip": "freehit", "reason": "beats no-chip by 15.1 xPts",
+        }},
+        {"gameweek": 3, "decision_type": "transfers", "projected_gain": 0.0, "details": {
+            "transfers_in": [], "transfers_out": [], "hits_taken": 0,
+        }},
+        {"gameweek": 3, "decision_type": "transfers", "projected_gain": 7.1, "details": {
+            "transfers_in": [{"web_name": "Gomez"}, {"web_name": "Wissa"}],
+            "transfers_out": [{"web_name": "Rice"}, {"web_name": "Neave"}],
+            "hits_taken": 1,
+        }},
+    ]))
+
+    assert [e["type"] for e in entries] == ["chip"]
+    assert entries[0]["chip"] == "freehit"
+
+
+def test_history_still_finds_a_real_no_chip_run_after_a_freehit_no_op():
+    """The chip-explained no-op must only cover ITS OWN run, not permanently
+    disable the walk-back -- an even later run that dropped the chip and
+    recommended real transfers is the true final answer, and the stale
+    chip must not be shown alongside it either (same fix, same root cause:
+    a chip entry used to be just "the newest chip row", full stop, with no
+    notion that a later, chip-less run could have superseded it)."""
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 3, "decision_type": "transfers", "projected_gain": 7.1, "details": {
+            "transfers_in": [{"web_name": "Wissa"}], "transfers_out": [{"web_name": "Rice"}],
+            "hits_taken": 1,
+        }},
+        {"gameweek": 3, "decision_type": "chip", "projected_gain": 15.1, "details": {
+            "chip": "freehit", "reason": "beats no-chip by 15.1 xPts",
+        }},
+        {"gameweek": 3, "decision_type": "transfers", "projected_gain": 0.0, "details": {
+            "transfers_in": [], "transfers_out": [], "hits_taken": 0,
+        }},
+    ]))
+
+    assert [e["type"] for e in entries] == ["transfers"]
+    assert entries[0]["transfers_in"] == ["Wissa"]
+
+
+def test_history_keeps_a_chip_alongside_the_same_runs_real_transfers():
+    """A chip that does NOT replace the squad build (3xc, bboost) coexists
+    with a normal transfer plan from the SAME run -- this must keep working
+    exactly as it does live for GW2's 3xc."""
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 2, "decision_type": "chip", "projected_gain": 7.8, "details": {
+            "chip": "3xc", "reason": "TC captain xPts 7.8",
+        }},
+        {"gameweek": 2, "decision_type": "transfers", "projected_gain": 6.4, "details": {
+            "transfers_in": [{"web_name": "Rice"}],
+            "transfers_out": [{"web_name": "Gibbs-White"}],
+            "hits_taken": 1,
+        }},
+    ]))
+
+    assert [e["type"] for e in entries] == ["transfers", "chip"]
+
+
+def test_transferred_in_ids_are_empty_on_a_freehit_week():
+    """A Free Hit squad isn't reached by transferring the real one -- there
+    is nothing here that should carry a "+" mark."""
+    history_df = _history_df([
+        {"gameweek": 3, "decision_type": "chip", "projected_gain": 15.1, "details": {
+            "chip": "freehit", "reason": "beats no-chip by 15.1 xPts",
+        }},
+        {"gameweek": 3, "decision_type": "transfers", "projected_gain": 0.0, "details": {
+            "transfers_in": [], "transfers_out": [], "hits_taken": 0,
+        }},
+        {"gameweek": 3, "decision_type": "transfers", "projected_gain": 7.1, "details": {
+            "transfers_in": [{"web_name": "Gomez", "player_id": 249}],
+            "transfers_out": [{"web_name": "Rice", "player_id": 20}],
+            "hits_taken": 1,
+        }},
+    ])
+
+    assert payload_module._transferred_in_ids(history_df, 3) == set()
+
+
+def test_a_no_op_with_no_chip_at_all_still_walks_back():
+    """No chip in the picture at all -- the original 2026-08-30 case must
+    keep working: an empty re-run must not erase real transfers."""
+    entries = payload_module._build_history_entries(_history_df([
+        {"gameweek": 3, "decision_type": "transfers", "projected_gain": 0.0, "details": {
+            "transfers_in": [], "transfers_out": [], "hits_taken": 0,
+        }},
+        {"gameweek": 3, "decision_type": "transfers", "projected_gain": 7.1, "details": {
+            "transfers_in": [{"web_name": "Wissa"}], "transfers_out": [{"web_name": "Rice"}],
+            "hits_taken": 1,
+        }},
+    ]))
+
+    assert entries[0]["transfers_in"] == ["Wissa"]
 
 
 # --- a run file must not leak decisions from later gameweeks (2026-08-30) --

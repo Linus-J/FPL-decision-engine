@@ -203,30 +203,82 @@ def _is_no_op_transfer(row: pd.Series) -> bool:
     return not details.get("transfers_in") and not details.get("transfers_out")
 
 
-def _final_transfers_row(history_df: pd.DataFrame, gw: int) -> pd.Series | None:
-    """The transfers decision a gameweek was actually played on, or None.
+def _decision_run_indices(gw_rows: pd.DataFrame) -> pd.Series:
+    """Which RUN each of one gameweek's rows belongs to, 0 = the most recent.
 
-    ``history_df`` arrives ordered gameweek DESC, created_at DESC, so the
-    first non-no-op row for a gameweek is its last real run before the
-    deadline. Both the published history entry and the squad's
-    ``transferred_in`` marks are derived from this one row, so a "+" on a
-    player and the "-> in" line beneath it cannot name different players.
+    ``decision_engine.py`` writes exactly one ``transfers`` row per run,
+    before its ``lineup`` row and any ``chip`` row -- so counting
+    ``transfers`` rows passed so far, walking newest to oldest (the order
+    ``gw_rows`` already arrives in), recovers run boundaries with no
+    timestamp arithmetic and no assumption about how many rows a run wrote.
+    A transfers row belongs to the run it CLOSES, not the next (older) one,
+    so it is excluded from its own count.
     """
-    rows = history_df[
-        (history_df["gameweek"] == gw) & (history_df["decision_type"] == "transfers")
-    ]
-    for _, row in rows.iterrows():
-        if _is_no_op_transfer(row):
+    is_transfers = gw_rows["decision_type"] == "transfers"
+    return is_transfers.cumsum() - is_transfers.astype(int)
+
+
+def _final_decision_rows(
+    history_df: pd.DataFrame, gw: int
+) -> tuple[pd.Series | None, pd.Series | None]:
+    """(transfers_row, chip_row) for a gameweek's final, self-consistent run.
+
+    Both come from the SAME run (see ``_decision_run_indices``), so a
+    published history entry and the squad's ``transferred_in`` marks can
+    never describe two different actual decisions -- and neither can a
+    transfers entry and the chip entry shown beside it.
+
+    Walks runs newest-first. A run's transfers are authoritative if they are
+    a real plan, OR a no-op that SAME run's own chip explains -- Free
+    Hit/Wildcard correctly log empty transfers (neither reaches its squad by
+    incrementally transferring the real one), and that emptiness is the true
+    final answer, not noise. An unexplained no-op is skipped in favour of an
+    older run's real plan (2026-08-30: a stale re-run after the deadline
+    must not erase the transfers a gameweek actually made).
+
+    Before this (2026-09-03) a no-op was ALWAYS skipped, and the separate
+    chip line was just "the newest chip row for this gameweek", full stop,
+    with no notion of a later run superseding it either. Live symptom: GW3
+    published "Rice, Neave -> Gomez, Wissa (1 hit)" from a stale 2026-09-02
+    run, days after a same-day run had a free hit fire instead -- the
+    walk-back had no way to tell a chip, not a boring re-run, was why the
+    newer row was empty.
+    """
+    gw_rows = history_df[history_df["gameweek"] == gw].reset_index(drop=True)
+    if gw_rows.empty:
+        return None, None
+    run_of = _decision_run_indices(gw_rows)
+    # setdefault, not a dict comprehension: iteration is newest-first, and on
+    # a collision (only reachable if a gameweek somehow has a chip row with
+    # no transfers row at all to anchor a run boundary -- decision_engine.py
+    # always writes one, but this must not silently keep the OLDER row if
+    # that ever changes) the first (newest) one seen must win.
+    chip_row_by_run: dict[int, pd.Series] = {}
+    for pos, row in gw_rows[gw_rows["decision_type"] == "chip"].iterrows():
+        chip_row_by_run.setdefault(run_of[pos], row)
+
+    transfer_rows = gw_rows[gw_rows["decision_type"] == "transfers"]
+    for pos, row in transfer_rows.iterrows():
+        chip_row = chip_row_by_run.get(run_of[pos])
+        if _is_no_op_transfer(row) and chip_row is None:
             continue
-        return row
-    return None
+        return row, chip_row
+
+    # No transfers row at all for this gw (not expected once GW1 is past) --
+    # still surface whatever chip exists rather than silently dropping it.
+    if chip_row_by_run:
+        return None, chip_row_by_run[min(chip_row_by_run)]
+    return None, None
 
 
 def _transferred_in_ids(history_df: pd.DataFrame, gw: int) -> set[int]:
     """Player ids that came in on ``gw``. Empty for GW1, which logs no
-    transfers -- a drafted squad has no arrivals to distinguish."""
-    row = _final_transfers_row(history_df, gw)
-    if row is None:
+    transfers -- a drafted squad has no arrivals to distinguish. Also empty
+    on a chip-explained no-op (2026-09-03): a Free Hit squad isn't reached
+    by incremental transfers from the real one, so there is nothing here to
+    mark "+" on."""
+    row, _ = _final_decision_rows(history_df, gw)
+    if row is None or _is_no_op_transfer(row):
         return set()
     return {
         int(t["player_id"])
@@ -279,13 +331,16 @@ def _build_history_entries(history_df: pd.DataFrame, up_to_gw: int | None = None
     for gw in sorted({int(g) for g in history_df["gameweek"]}, reverse=True):
         rows = history_df[history_df["gameweek"] == gw]
 
-        transfers_row = _final_transfers_row(history_df, gw)
-        if transfers_row is not None:
+        # Both from the SAME run (2026-09-03) -- see _final_decision_rows --
+        # so these two entries can never describe two different decisions.
+        transfers_row, chip_row = _final_decision_rows(history_df, gw)
+        # A chip-explained no-op is authoritative but not an event of its
+        # own -- the chip entry below already says why nothing transferred.
+        if transfers_row is not None and not _is_no_op_transfer(transfers_row):
             entries.append(_transfers_entry(transfers_row))
 
-        chips = rows[rows["decision_type"] == "chip"]
-        if not chips.empty:
-            entries.append(_chip_entry(chips.iloc[0]))
+        if chip_row is not None:
+            entries.append(_chip_entry(chip_row))
 
         drafted = gw == 1 and (rows["decision_type"] == "lineup").any()
         if drafted and not any(e["gameweek"] == gw for e in entries):
