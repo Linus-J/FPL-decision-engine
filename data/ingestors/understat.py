@@ -1,14 +1,14 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
 
 import aiohttp
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session
 from data.ingestors.fbref import _build_name_map, _match_player
-from data.models import PlayerSetPieceRole, PlayerXGStats
+from data.ingestors.setpiece import players_with_published_roles, write_setpiece_roles
+from data.models import PlayerXGStats
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,63 @@ SET_PIECE_TAKER_THRESHOLD = 1.5
 _build_fpl_name_map = _build_name_map
 
 
+def setpiece_role_from_understat(
+    player_id: int,
+    *,
+    xg: float,
+    npxg: float,
+    key_passes_per_game: float,
+    games: int,
+    is_published: bool,
+) -> dict:
+    """One ``write_setpiece_roles`` role dict from a player's season totals.
+
+    Source precedence (2026-09-03). This ingest runs on EVERY weekly run
+    (scripts/run_agent.py -> scripts/run_weekly.py) and, until today, wrote
+    all four role columns unconditionally -- with no equivalent of the
+    deference ``ingest_setpiece_roles`` was given in 0ef8f75. So every week it
+    overwrote the published depth chart with two proxies measured over a
+    handful of played gameweeks:
+
+      * ``is_penalty_taker``/``penalty_xg_per_game`` from realised penalty xG
+        (``xg - npxg``), which says only "has he taken one YET". Two games
+        into 2026-27 that made Szoboszlai -- Liverpool's SECOND-choice taker,
+        who happened to take one -- carry 0.3806 penalty xG per game, against
+        the 0.01138 his depth-chart order implies, while Haaland, Saka,
+        Palmer, Isak, Mateta and ten other published first-choice takers were
+        written back to 0.0. ``load_penalty_duty`` reads that column straight
+        into ``goal_weight``, so at 5 points a goal it handed Szoboszlai
+        roughly +1.85 xPts a game he had not earned and took ~0.36 off
+        Haaland: enough to flip the GW3 captaincy between them.
+      * ``is_set_piece_taker`` from key passes per game, which is a
+        creativity proxy rather than a duty at all, and had written 43
+        published corner/free-kick takers back to False.
+
+    Withholding a key rather than writing a False is the whole mechanism:
+    ``write_setpiece_roles`` updates only the keys it is given, so a withheld
+    one keeps the depth chart's value. ``key_passes_per_game`` is always
+    offered because a taker list has no opinion on it -- the same split the
+    FBref path already makes.
+
+    Realised penalty xG is still the better answer LATER in a season, once
+    it is measured over enough games to beat a pre-season list. Nothing here
+    encodes that crossover; the depth chart simply wins until it is reloaded
+    with a newer one.
+    """
+    role: dict = {
+        "player_id": player_id,
+        "key_passes_per_game": round(key_passes_per_game, 4),
+    }
+    if is_published:
+        return role
+
+    penalty_xg_per_game = (xg - npxg) / games
+    role["is_penalty_taker"] = penalty_xg_per_game >= PENALTY_TAKER_THRESHOLD
+    role["penalty_xg_per_game"] = round(penalty_xg_per_game, 4)
+    role["is_set_piece_taker"] = key_passes_per_game >= SET_PIECE_TAKER_THRESHOLD
+    return role
+
+
 async def _fetch_season_players(
     session: aiohttp.ClientSession, understat_season: str
 ) -> list[dict]:
@@ -59,7 +116,6 @@ async def _fetch_season_players(
 async def ingest_understat_season(understat_season: str, db_season: str) -> None:
     name_map = _build_fpl_name_map()
     inserted_xg = 0
-    inserted_sp = 0
     skipped = 0
 
     connector = aiohttp.TCPConnector(limit=5)
@@ -76,6 +132,11 @@ async def ingest_understat_season(understat_season: str, db_season: str) -> None
         "Understat %s: %d players from season %s", db_season, len(players), understat_season
     )
 
+    # Read BEFORE the loop: one query, and the set must not shift underneath
+    # a partially-written pass.
+    published = players_with_published_roles(db_season)
+
+    roles: list[dict] = []
     db = get_session()
     try:
         for p in players:
@@ -118,42 +179,27 @@ async def ingest_understat_season(understat_season: str, db_season: str) -> None
                 db.execute(stmt)
                 inserted_xg += 1
 
-            penalty_xg_per_game = (xg - npxg) / games
-            is_pen_taker = penalty_xg_per_game >= PENALTY_TAKER_THRESHOLD
-            is_sp_taker = kp_per_gw >= SET_PIECE_TAKER_THRESHOLD
-
-            sp_stmt = (
-                insert(PlayerSetPieceRole)
-                .values(
-                    player_id=db_player_id,
-                    season=db_season,
-                    is_penalty_taker=is_pen_taker,
-                    penalty_xg_per_game=round(penalty_xg_per_game, 4),
-                    is_set_piece_taker=is_sp_taker,
-                    key_passes_per_game=round(kp_per_gw, 4),
-                    updated_at=datetime.utcnow(),
-                )
-                .on_conflict_do_update(
-                    index_elements=["player_id", "season"],
-                    set_={
-                        "is_penalty_taker": is_pen_taker,
-                        "penalty_xg_per_game": round(penalty_xg_per_game, 4),
-                        "is_set_piece_taker": is_sp_taker,
-                        "key_passes_per_game": round(kp_per_gw, 4),
-                        "updated_at": datetime.utcnow(),
-                    },
-                )
-            )
-            db.execute(sp_stmt)
-            inserted_sp += 1
+            roles.append(setpiece_role_from_understat(
+                db_player_id,
+                xg=xg, npxg=npxg, key_passes_per_game=kp_per_gw, games=games,
+                is_published=db_player_id in published,
+            ))
 
         db.commit()
     finally:
         db.close()
 
+    # Written through write_setpiece_roles rather than this module's own
+    # upsert (2026-09-03) so the PARTIAL-update contract applies here too:
+    # the keys setpiece_role_from_understat withheld keep whatever the
+    # published depth chart wrote, instead of being overwritten with a proxy.
+    inserted_sp = write_setpiece_roles(db_season, roles)
+    deferred = sum(1 for r in roles if "is_penalty_taker" not in r)
+
     logger.info(
-        "Understat %s: %d xG rows, %d set-piece roles, %d unmatched",
-        db_season, inserted_xg, inserted_sp, skipped,
+        "Understat %s: %d xG rows, %d set-piece roles, %d unmatched, "
+        "%d deferred to a published depth chart",
+        db_season, inserted_xg, inserted_sp, skipped, deferred,
     )
 
 

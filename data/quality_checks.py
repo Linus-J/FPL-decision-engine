@@ -277,3 +277,45 @@ def check_column_is_not_a_copy(
             )
         ]
     return []
+
+
+def check_setpiece_duty_consistency(
+    mismatches: list[str], published_total: int
+) -> list[QualityIssue]:
+    """Flag ``player_setpiece_roles`` rows whose flags contradict the depth
+    chart they were loaded from.
+
+    Two sources write this table with different knowledge and
+    ``write_setpiece_roles`` merges them PARTIALLY, which is what makes the
+    table useful and also what makes a bad write invisible: an ingest that
+    overwrites one column leaves the rest intact, so the row still looks
+    populated and plausible. That is how, on 2026-09-02, Understat's weekly
+    pass wrote 15 of 20 published first-choice penalty takers back to
+    ``is_penalty_taker = 0, penalty_xg_per_game = 0.0`` while leaving
+    ``penalty_order = 1`` sitting next to it. ``load_penalty_duty`` filters on
+    ``penalty_order IS NOT NULL`` and then reads the value, so it counted
+    those players as on duty and worth nothing -- and nothing raised.
+
+    The invariant is local to a single row and needs no external truth:
+    ``penalty_order = 1`` and ``is_penalty_taker = 0`` cannot both be right
+    about the same player, whichever source wrote which. An error, not a
+    warning -- goal_weight is a first-order projection input, and a wrong
+    penalty prior moves captaincy.
+    """
+    if not mismatches:
+        return []
+    shown = ", ".join(mismatches[:10])
+    more = f" (+{len(mismatches) - 10} more)" if len(mismatches) > 10 else ""
+    return [
+        QualityIssue(
+            check="setpiece_duty_consistency",
+            severity="error",
+            message=(
+                f"{len(mismatches)}/{published_total} published depth-chart "
+                f"rows contradict their own flags: {shown}{more}. An ingest has "
+                f"overwritten the taker list -- re-run "
+                f"scripts/load_setpiece_depth_chart.py and check which source "
+                f"failed to defer to it."
+            ),
+        )
+    ]

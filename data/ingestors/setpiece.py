@@ -267,6 +267,45 @@ def players_with_published_duty(season: str) -> set[int]:
     return {int(r[0]) for r in rows}
 
 
+def players_with_published_roles(season: str) -> set[int]:
+    """Every player whose row came from a PUBLISHED depth chart, on any duty.
+
+    The wider sibling of ``players_with_published_duty`` (2026-09-03). That
+    one answers "whose PENALTY duty is published", which is the only question
+    the FBref path can defer on -- soccerdata 1.9.1 serves no passing tables,
+    so that path never has a set-piece opinion to defer with in the first
+    place.
+
+    ``data/ingestors/understat.py`` does. It derives ``is_set_piece_taker``
+    from key passes per game, which is a creativity proxy and not set-piece
+    duty at all, and it ran every week with no deference of any kind -- so a
+    published corner/free-kick taker who is not especially creative was being
+    written back to False. The depth chart states the duty outright; a proxy
+    must not overwrite it.
+
+    A row counts as published when it carries ANY depth-chart order, because
+    that is what a taker list actually asserts: it names every duty a player
+    holds, so the absence of a free-kick order on a listed player is itself
+    the published claim that he takes no free kicks. Restricting this to
+    ``freekick_order IS NOT NULL OR corner_order IS NOT NULL`` would let the
+    proxy invent set-piece duty for the penalty-only takers -- Haaland, Isak,
+    Solanke -- which is exactly the population it gets most wrong.
+    """
+    db = get_session()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT player_id FROM player_setpiece_roles "
+                "WHERE season = :season AND (penalty_order IS NOT NULL "
+                "OR freekick_order IS NOT NULL OR corner_order IS NOT NULL)"
+            ),
+            {"season": season},
+        ).fetchall()
+    finally:
+        db.close()
+    return {int(r[0]) for r in rows}
+
+
 def ingest_setpiece_roles(  # pragma: no cover - live network + browser only
     season: str,
     *,

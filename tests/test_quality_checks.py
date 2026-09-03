@@ -396,3 +396,46 @@ def test_cold_start_treats_zero_strengths_as_absent(tmp_path, monkeypatch):
     usable = cs.load_current_defence_strength("2026-27")
     assert 1 not in usable, "a placeholder row must read as ABSENT, not as 0 or 1200"
     assert usable[2] == 1255.0, "a real row must still be used"
+
+
+# --- set-piece duty consistency (2026-09-03) ------------------------------
+
+def test_a_contradicted_depth_chart_row_is_an_error():
+    """The live 2026-09-02 state: Understat's weekly pass wrote 15 of 20
+    published first-choice takers back to is_penalty_taker=0 while leaving
+    penalty_order=1 beside it. load_penalty_duty filters on the ORDER and
+    reads the VALUE, so nothing downstream could tell."""
+    from data.quality_checks import check_setpiece_duty_consistency
+
+    issues = check_setpiece_duty_consistency(
+        ["Haaland (order 1, taker=False, xg/g=0.0)"], published_total=20
+    )
+
+    assert len(issues) == 1
+    assert issues[0].check == "setpiece_duty_consistency"
+    assert issues[0].severity == "error", "a wrong penalty prior moves captaincy"
+    assert "Haaland" in issues[0].message
+
+
+def test_a_consistent_depth_chart_passes():
+    from data.quality_checks import check_setpiece_duty_consistency
+
+    assert check_setpiece_duty_consistency([], published_total=20) == []
+
+
+def test_no_depth_chart_loaded_is_not_an_issue():
+    """Pre-season, before any taker list has been loaded, there is nothing to
+    contradict — and failing the gate every week for a correct state is how
+    a gate gets ignored."""
+    from data.quality_checks import check_setpiece_duty_consistency
+
+    assert check_setpiece_duty_consistency([], published_total=0) == []
+
+
+def test_a_long_mismatch_list_is_truncated_but_counted():
+    from data.quality_checks import check_setpiece_duty_consistency
+
+    issues = check_setpiece_duty_consistency([f"P{i}" for i in range(15)], 20)
+
+    assert "15/20" in issues[0].message
+    assert "+5 more" in issues[0].message

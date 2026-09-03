@@ -302,6 +302,56 @@ def run_referential_integrity_checks() -> list:
     return issues
 
 
+def run_setpiece_duty_consistency_check(season: str = _LIVE_SEASON) -> list:
+    """Do the published depth-chart rows still agree with their own flags?
+
+    Runs against the LIVE season only: a published taker list is a
+    current-season artefact, and finished seasons carry whatever their
+    contemporaneous ingest inferred.
+    """
+    from sqlalchemy import text
+
+    from data.db import get_session
+    from data.ingestors.setpiece import _PENALTY_ORDER_SHARE
+    from data.quality_checks import check_setpiece_duty_consistency
+
+    _PRICED_PENALTY_DEPTH = len(_PENALTY_ORDER_SHARE)
+
+    db = get_session()
+    try:
+        published_total = db.execute(
+            text(
+                "SELECT COUNT(*) FROM player_setpiece_roles "
+                "WHERE season = :s AND penalty_order IS NOT NULL"
+            ),
+            {"s": season},
+        ).scalar() or 0
+        rows = db.execute(
+            text(
+                "SELECT p.web_name, r.penalty_order, r.is_penalty_taker, "
+                "       r.penalty_xg_per_game "
+                "FROM player_setpiece_roles r JOIN players p ON p.id = r.player_id "
+                "WHERE r.season = :s AND r.penalty_order IS NOT NULL "
+                "  AND ((r.penalty_order = 1) <> (r.is_penalty_taker = 1) "
+                # A zero value is only a contradiction within the depth the
+                # model actually prices. penalty_xg_for_order returns 0.0 for
+                # order 4 and beyond BY DESIGN -- _PENALTY_ORDER_SHARE runs
+                # out at three -- so a fourth-choice taker carrying 0.0 is the
+                # correct answer, not an overwritten one.
+                "       OR (r.penalty_order <= :depth "
+                "           AND r.penalty_xg_per_game = 0.0))"
+            ),
+            {"s": season, "depth": _PRICED_PENALTY_DEPTH},
+        ).fetchall()
+    finally:
+        db.close()
+    mismatches = [
+        f"{name} (order {order}, taker={bool(taker)}, xg/g={xg})"
+        for name, order, taker, xg in rows
+    ]
+    return check_setpiece_duty_consistency(mismatches, int(published_total))
+
+
 def run_projection_sanity_checks() -> list:
     """Are the numbers plausible at all?
 
@@ -460,6 +510,7 @@ def main() -> int:
     issues += run_dead_column_checks()
     issues += run_copied_column_checks()
     issues += run_referential_integrity_checks()
+    issues += run_setpiece_duty_consistency_check()
     issues += run_projection_sanity_checks()
     issues += run_odds_feature_liveness_check()
     issues += run_xg_liveness_check()
