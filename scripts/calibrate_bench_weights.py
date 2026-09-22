@@ -144,3 +144,39 @@ def collect_raw(seasons, start_gw: int, end_gw: int) -> pd.DataFrame:
             df["derive_bench_weights"] = derive
             frames.append(df)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--seasons", nargs="+", default=list(DEFAULT_SEASONS))
+    p.add_argument("--start-gw", type=int, default=6)
+    p.add_argument("--end-gw", type=int, default=38)
+    p.add_argument(
+        "--raw-out", type=Path,
+        default=Path("results/bench_weight_backtest_raw.csv"),
+    )
+    p.add_argument(
+        "--out", type=Path, default=Path("results/bench_weight_calibration.csv"),
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _parse_args(argv)
+
+    raw = collect_raw(args.seasons, args.start_gw, args.end_gw)
+    args.raw_out.parent.mkdir(parents=True, exist_ok=True)
+    raw.to_csv(args.raw_out, index=False)
+    logger.info("Per-(season, gameweek, flag) rows written to %s", args.raw_out)
+
+    summary = summarize(raw, args.seasons)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    summary.to_csv(args.out, index=False)
+    logger.info("Summary written to %s", args.out)
+    print(summary.to_string(index=False))
+
+    logger.info(recommend(summary, args.seasons))
+
+
+if __name__ == "__main__":
+    main()

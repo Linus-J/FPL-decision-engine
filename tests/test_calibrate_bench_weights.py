@@ -165,3 +165,34 @@ def test_collect_raw_passes_the_backtest_config_baseline(monkeypatch):
     baseline = calib.bt._BACKTEST_CONFIG
     assert off_cfg == dataclasses.replace(baseline, derive_bench_weights_per_solve=False)
     assert on_cfg == dataclasses.replace(baseline, derive_bench_weights_per_solve=True)
+
+
+def test_main_writes_both_csvs_and_logs_a_recommendation(monkeypatch, tmp_path, caplog):
+    def fake_rebuild(season, start_gw, end_gw, config=None, **kwargs):
+        bump = 5.0 if config.derive_bench_weights_per_solve else 0.0
+        return pd.DataFrame([
+            {
+                "gameweek": gw, "actual_pts": 50.0 + bump, "predicted_xpts": 40.0,
+                "total_cost": 100.0, "n_clubs_at_cap": 0,
+            }
+            for gw in (6, 7)
+        ])
+
+    monkeypatch.setattr(calib.bt, "run_rebuild_backtest", fake_rebuild)
+
+    raw_out = tmp_path / "raw.csv"
+    summary_out = tmp_path / "summary.csv"
+    with caplog.at_level("INFO"):
+        calib.main([
+            "--seasons", "2024-25", "2025-26",
+            "--start-gw", "6", "--end-gw", "7",
+            "--raw-out", str(raw_out), "--out", str(summary_out),
+        ])
+
+    assert raw_out.exists()
+    assert summary_out.exists()
+    raw = pd.read_csv(raw_out)
+    assert len(raw) == 8  # 2 seasons x 2 flags x 2 gameweeks
+    summary = pd.read_csv(summary_out)
+    assert list(summary["season"]) == ["2024-25", "2025-26", "pooled"]
+    assert any("RECOMMENDATION" in rec for rec in caplog.messages)
