@@ -30,6 +30,7 @@ logging.basicConfig(
 )
 
 import pandas as pd
+from scipy.stats import wilcoxon
 
 import scripts.backtest as bt
 
@@ -50,3 +51,39 @@ def _paired_diffs(raw: pd.DataFrame, season: str | None = None) -> pd.Series:
     on = subset[subset["derive_bench_weights"]][["season", "gameweek", "actual_pts"]]
     merged = off.merge(on, on=["season", "gameweek"], suffixes=("_off", "_on"))
     return merged["actual_pts_on"] - merged["actual_pts_off"]
+
+
+def _wilcoxon_or_nan(diffs: pd.Series) -> tuple[float, float]:
+    if len(diffs) < 2 or (diffs == diffs.iloc[0]).all():
+        return float("nan"), float("nan")
+    try:
+        result = wilcoxon(diffs)
+    except ValueError:
+        return float("nan"), float("nan")
+    return float(result.statistic), float(result.pvalue)
+
+
+def _season_row(raw: pd.DataFrame, season: str | None) -> dict:
+    subset = raw if season is None else raw[raw["season"] == season]
+    off = subset[~subset["derive_bench_weights"]]["actual_pts"]
+    on = subset[subset["derive_bench_weights"]]["actual_pts"]
+    diffs = _paired_diffs(raw, season=season)
+    stat, p = _wilcoxon_or_nan(diffs)
+    return {
+        "season": season if season is not None else "pooled",
+        "off_mean_actual_pts": float(off.mean()) if len(off) else float("nan"),
+        "on_mean_actual_pts": float(on.mean()) if len(on) else float("nan"),
+        "diff_mean": float(diffs.mean()) if len(diffs) else float("nan"),
+        "wilcoxon_stat": stat,
+        "wilcoxon_p": p,
+        "n_gws": int(len(diffs)),
+    }
+
+
+def summarize(raw: pd.DataFrame, seasons) -> pd.DataFrame:
+    """One row per season plus a final pooled row (spec: pooling mirrors the
+    aggregate approach `b03a985` already used on this harness, so a weak or
+    non-replicating result surfaces the same way it did there)."""
+    rows = [_season_row(raw, season) for season in seasons]
+    rows.append(_season_row(raw, None))
+    return pd.DataFrame(rows)
