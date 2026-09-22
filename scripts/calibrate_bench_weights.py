@@ -87,3 +87,31 @@ def summarize(raw: pd.DataFrame, seasons) -> pd.DataFrame:
     rows = [_season_row(raw, season) for season in seasons]
     rows.append(_season_row(raw, None))
     return pd.DataFrame(rows)
+
+
+def recommend(summary: pd.DataFrame, seasons) -> str:
+    """The pre-committed bar (design doc, Decision criterion): flip only if
+    "on" beats "off" on mean actual pts/GW in EVERY season individually, and
+    the pooled paired Wilcoxon test gives p < 0.05. Never a judgement call."""
+    per_season = summary[summary["season"].isin(seasons)]
+    wins_every_season = bool(
+        (per_season["on_mean_actual_pts"] > per_season["off_mean_actual_pts"]).all()
+    )
+    pooled = summary[summary["season"] == "pooled"].iloc[0]
+    pooled_significant = bool(pooled["wilcoxon_p"] < 0.05)
+
+    if wins_every_season and pooled_significant:
+        return (
+            f"RECOMMENDATION: flip derive_bench_weights_per_solve to True. "
+            f"Beat static weights in every season checked "
+            f"({', '.join(seasons)}); pooled Wilcoxon p={pooled['wilcoxon_p']:.4f}."
+        )
+    reasons = []
+    if not wins_every_season:
+        reasons.append("did not beat static weights in every season")
+    if not pooled_significant:
+        reasons.append(f"pooled Wilcoxon p={pooled['wilcoxon_p']:.4f} is not < 0.05")
+    return (
+        "RECOMMENDATION: leave off derive_bench_weights_per_solve. "
+        + "; ".join(reasons) + "."
+    )

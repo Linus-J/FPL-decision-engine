@@ -84,3 +84,42 @@ def test_summarize_handles_a_season_with_no_rows():
     row = summary[summary["season"] == "2024-25"].iloc[0]
     assert row["n_gws"] == 0
     assert pd.isna(row["wilcoxon_p"])
+
+
+def _summary_row(season, off_mean, on_mean, p):
+    return {
+        "season": season, "off_mean_actual_pts": off_mean,
+        "on_mean_actual_pts": on_mean, "diff_mean": on_mean - off_mean,
+        "wilcoxon_stat": 0.0, "wilcoxon_p": p, "n_gws": 33,
+    }
+
+
+def test_recommend_flips_only_when_both_seasons_win_and_pooled_is_significant():
+    summary = pd.DataFrame([
+        _summary_row("2024-25", 50.0, 51.0, 0.2),
+        _summary_row("2025-26", 48.0, 50.0, 0.2),
+        _summary_row("pooled", 49.0, 50.5, 0.01),
+    ])
+    rec = calib.recommend(summary, seasons=["2024-25", "2025-26"])
+    assert "flip" in rec.lower()
+    assert "leave off" not in rec.lower()
+
+
+def test_recommend_holds_off_when_pooled_p_is_not_significant():
+    summary = pd.DataFrame([
+        _summary_row("2024-25", 50.0, 51.0, 0.2),
+        _summary_row("2025-26", 48.0, 50.0, 0.2),
+        _summary_row("pooled", 49.0, 50.5, 0.19),
+    ])
+    rec = calib.recommend(summary, seasons=["2024-25", "2025-26"])
+    assert "leave off" in rec.lower()
+
+
+def test_recommend_holds_off_when_one_season_loses():
+    summary = pd.DataFrame([
+        _summary_row("2024-25", 50.0, 49.0, 0.2),
+        _summary_row("2025-26", 48.0, 50.0, 0.2),
+        _summary_row("pooled", 49.0, 49.5, 0.01),
+    ])
+    rec = calib.recommend(summary, seasons=["2024-25", "2025-26"])
+    assert "leave off" in rec.lower()
