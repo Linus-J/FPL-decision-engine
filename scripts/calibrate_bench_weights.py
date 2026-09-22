@@ -115,3 +115,32 @@ def recommend(summary: pd.DataFrame, seasons) -> str:
         "RECOMMENDATION: leave off derive_bench_weights_per_solve. "
         + "; ".join(reasons) + "."
     )
+
+
+def collect_raw(seasons, start_gw: int, end_gw: int) -> pd.DataFrame:
+    """One independent `run_rebuild_backtest` call per (season, flag) cell.
+
+    Unlike the `mu_candidates` sweep in `run_rebuild_backtest`, these cannot
+    share one pool: the flag changes `generate_squad_pool`'s own per-candidate
+    solves, so the pool itself differs between the off and on arms.
+    """
+    frames = []
+    for season in seasons:
+        for derive in (False, True):
+            cfg = dataclasses.replace(
+                bt._BACKTEST_CONFIG, derive_bench_weights_per_solve=derive
+            )
+            logger.info(
+                "Running rebuild backtest season=%s derive_bench_weights=%s "
+                "GW%d-%d ...", season, derive, start_gw, end_gw,
+            )
+            df = bt.run_rebuild_backtest(
+                season=season, start_gw=start_gw, end_gw=end_gw, config=cfg
+            )
+            if df.empty:
+                continue
+            df = df.copy()
+            df["season"] = season
+            df["derive_bench_weights"] = derive
+            frames.append(df)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()

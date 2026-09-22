@@ -123,3 +123,45 @@ def test_recommend_holds_off_when_one_season_loses():
     ])
     rec = calib.recommend(summary, seasons=["2024-25", "2025-26"])
     assert "leave off" in rec.lower()
+
+
+def test_collect_raw_runs_four_independent_cells_and_tags_them(monkeypatch):
+    seen_configs = []
+
+    def fake_rebuild(season, start_gw, end_gw, config=None, **kwargs):
+        seen_configs.append((season, config.derive_bench_weights_per_solve))
+        return pd.DataFrame([
+            {
+                "gameweek": 6, "actual_pts": 50.0, "predicted_xpts": 40.0,
+                "total_cost": 100.0, "n_clubs_at_cap": 0,
+            },
+        ])
+
+    monkeypatch.setattr(calib.bt, "run_rebuild_backtest", fake_rebuild)
+
+    raw = calib.collect_raw(["2024-25", "2025-26"], start_gw=6, end_gw=6)
+
+    assert seen_configs == [
+        ("2024-25", False), ("2024-25", True),
+        ("2025-26", False), ("2025-26", True),
+    ], "one off cell and one on cell per season, off called before on"
+    assert set(raw["season"]) == {"2024-25", "2025-26"}
+    assert set(raw["derive_bench_weights"]) == {False, True}
+    assert len(raw) == 4
+
+
+def test_collect_raw_passes_the_backtest_config_baseline(monkeypatch):
+    """Only the flag should differ from `_BACKTEST_CONFIG` -- risk_level,
+    mu_baseline, mu_range stay pinned to the backtest's stable baseline."""
+    seen = []
+    monkeypatch.setattr(
+        calib.bt, "run_rebuild_backtest",
+        lambda season, start_gw, end_gw, config=None, **k: (
+            seen.append(config), pd.DataFrame()
+        )[1],
+    )
+    calib.collect_raw(["2025-26"], start_gw=6, end_gw=6)
+    off_cfg, on_cfg = seen
+    baseline = calib.bt._BACKTEST_CONFIG
+    assert off_cfg == dataclasses.replace(baseline, derive_bench_weights_per_solve=False)
+    assert on_cfg == dataclasses.replace(baseline, derive_bench_weights_per_solve=True)
