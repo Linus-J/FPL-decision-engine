@@ -2,6 +2,12 @@
   "schema_version": 1,
   "runs": [
     {
+      "id": "gw6",
+      "gameweek": 6,
+      "label": "GW6 \u2014 10 Oct 2026",
+      "generated_at": "2026-10-09T13:10:09.045773+00:00"
+    },
+    {
       "id": "gw5",
       "gameweek": 5,
       "label": "GW5 \u2014 18 Sep 2026",
