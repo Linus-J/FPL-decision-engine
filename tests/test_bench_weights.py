@@ -39,17 +39,17 @@ def test_asking_for_more_slots_than_players_is_not_an_error():
 
 
 def test_reproduces_the_shipped_constants_on_the_xi_they_came_from():
-    """Ten outfield starters at the documented mean P(start) of 0.93 should
-    land near (0.53, 0.15, 0.03) — the numbers this replaces."""
-    weights = derive_slot_weights([0.93] * 10)
+    """Ten outfield starters at the documented mean P(start) of 0.93 (blank
+    0.07) should land near (0.53, 0.15, 0.03) — the numbers this replaces."""
+    weights = derive_slot_weights([0.07] * 10)
     assert weights[0] == pytest.approx(0.53, abs=0.03)
     assert weights[1] == pytest.approx(0.15, abs=0.03)
     assert weights[2] == pytest.approx(0.03, abs=0.02)
 
 
 def test_a_fragile_xi_buys_more_insurance_than_a_nailed_on_one():
-    fragile = derive_slot_weights([0.78] * 10)
-    nailed = derive_slot_weights([0.97] * 10)
+    fragile = derive_slot_weights([0.22] * 10)
+    nailed = derive_slot_weights([0.03] * 10)
     assert fragile[0] > nailed[0]
     assert fragile[1] > nailed[1]
 
@@ -62,8 +62,8 @@ def test_weights_are_strictly_decreasing_so_the_solver_orders_the_bench():
 
 
 def test_the_reserve_keeper_is_worth_the_first_choice_keepers_blank_chance():
-    assert derive_gk_weight(0.97) == pytest.approx(0.03)
-    assert derive_gk_weight(0.80) == pytest.approx(0.20)
+    assert derive_gk_weight(0.03) == pytest.approx(0.03)
+    assert derive_gk_weight(0.20) == pytest.approx(0.20)
 
 
 def test_an_empty_xi_falls_back_to_zero_rather_than_raising():
@@ -158,11 +158,11 @@ def test_a_squad_member_missing_from_the_frame_falls_back_rather_than_vanishing(
     """A departed player can be in the saved squad and absent from the merge
     entirely. Ten outfielders must still be priced as ten, not as nine."""
     from config.strategy import OPTIMISER
-    from optimiser.bench_weights import FALLBACK_START_PROBABILITY, bench_config_for_xi
+    from optimiser.bench_weights import FALLBACK_BLANK_PROBABILITY, bench_config_for_xi
 
     xi = list(range(1, 12))
     positions = {pid: ("GKP" if pid == 1 else "MID") for pid in xi}
-    probs = {pid: FALLBACK_START_PROBABILITY for pid in xi}
+    probs = {pid: FALLBACK_BLANK_PROBABILITY for pid in xi}
 
     complete = bench_config_for_xi(OPTIMISER, xi, probs, positions)
     del probs[5]
@@ -183,15 +183,15 @@ def test_the_primitives_refuse_a_non_finite_input():
 
 
 def test_a_probability_outside_zero_to_one_is_clamped_not_negated():
-    """`1 - p` for p > 1 is a negative blank chance, which makes the
-    Poisson-binomial convolution produce weights outside [0, 1] and the ILP
-    nonsense. Clamp rather than trust the upstream column."""
+    """An out-of-range blank chance makes the Poisson-binomial convolution
+    produce weights outside [0, 1] and the ILP nonsense. Clamp rather than
+    trust the upstream column."""
     from config.strategy import OPTIMISER
     from optimiser.bench_weights import bench_config_for_xi
 
     xi = list(range(1, 12))
     positions = {pid: ("GKP" if pid == 1 else "MID") for pid in xi}
-    probs = {pid: 0.9 for pid in xi}
+    probs = {pid: 0.1 for pid in xi}
     probs[5] = 1.4
     out = bench_config_for_xi(OPTIMISER, xi, probs, positions)
     assert all(0.0 <= w <= 1.0 for w in out.bench_slot_weights)

@@ -84,14 +84,29 @@ def at_least_k_probabilities(p_blank: list[float], k_max: int) -> list[float]:
 
     out: list[float] = []
     for k in range(1, k_max + 1):
-        out.append(float(sum(dist[k:])) if k < len(dist) else 0.0)
+        # A tail sum is a probability and belongs in [0, 1] by construction,
+        # but floating-point summation can drift a few ULPs past 1.0 when a
+        # per-player blank chance is itself exactly (or clamped to) 1.0 --
+        # observed as 1.0000000000000004 with an 11-player XI. Clamped here
+        # rather than left to whatever reads the weight next.
+        value = float(sum(dist[k:])) if k < len(dist) else 0.0
+        out.append(min(1.0, max(0.0, value)))
     return out
 
 
 def derive_slot_weights(
-    start_probabilities: list[float], n_slots: int = DEFAULT_SLOTS
+    blank_probabilities: list[float], n_slots: int = DEFAULT_SLOTS
 ) -> tuple[float, ...]:
-    """Outfield bench slot weights from the chosen XI's start probabilities.
+    """Outfield bench slot weights from the chosen XI's blank probabilities.
+
+    ``blank_probabilities`` means P(0 minutes) per starter — the actual FPL
+    autosub trigger — not P(<60 minutes). Feeding this ``1 - P(60+)`` instead
+    (as this function did until 2026-09-22) folds in a 1-59 minute cameo as if
+    it were a blank, which it is not: measured 2x too high for nailed-on
+    players on the live 2026-27 frame. Callers without a real P(0 minutes)
+    figure (e.g. the cold-start frame, which has no minutes-model bands) still
+    pass ``1 - start_probability`` as their best available approximation —
+    that conflation is now the CALLER's decision, not this function's.
 
     Returns strictly decreasing weights, which is what lets
     ``_bench_objective`` skip an explicit ordering constraint: with decreasing
@@ -102,22 +117,25 @@ def derive_slot_weights(
     ``(nan, nan, nan)``, and PuLP then raised ``PulpError`` — not a
     ``RuntimeError``, so ``generate_squad_pool``'s handler did not catch it.
     """
-    if not start_probabilities:
+    if not blank_probabilities:
         return tuple([0.0] * n_slots)
-    blanks = [1.0 - _finite(p, "a starting XI") for p in start_probabilities]
+    blanks = [_finite(p, "a starting XI") for p in blank_probabilities]
     return tuple(at_least_k_probabilities(blanks, n_slots))
 
 
-def derive_gk_weight(keeper_start_probability: float) -> float:
-    """The reserve keeper plays only if the first choice does not — one keeper,
-    one chance, no queue to inherit from.
+def derive_gk_weight(keeper_blank_probability: float) -> float:
+    """The reserve keeper plays only if the first choice blanks (0 minutes) —
+    one keeper, one chance, no queue to inherit from.
 
-    Raises ``ValueError`` on a non-finite input. This is the quieter of the two
-    NaN failures and so the one worth being loud about: ``max(0.0, 1.0 - nan)``
-    returned **0.0**, which does not propagate the poison — it silently prices
-    the bench keeper at nothing.
+    Takes P(0 minutes) directly, for the same reason ``derive_slot_weights``
+    now does (see its docstring, 2026-09-22).
+
+    Raises ``ValueError`` on a non-finite input. Clamped to ``[0, 1]`` rather
+    than trusting the input outright: an out-of-range upstream value used to
+    reach here as ``1 - p`` for ``p`` already clamped by the caller, but a
+    direct blank probability has no such built-in ceiling.
     """
-    return max(0.0, 1.0 - _finite(keeper_start_probability, "the first-choice keeper"))
+    return min(1.0, max(0.0, _finite(keeper_blank_probability, "the first-choice keeper")))
 
 
 def _finite(value: float, what: str) -> float:
@@ -128,36 +146,39 @@ def _finite(value: float, what: str) -> float:
     return out
 
 
-def _start_probability(
-    start_probabilities: Mapping[int, float], player_id: int
+FALLBACK_BLANK_PROBABILITY = 1.0 - FALLBACK_START_PROBABILITY
+
+
+def _blank_probability(
+    blank_probabilities: Mapping[int, float], player_id: int
 ) -> float:
-    """One squad member's start probability, sanitised to a usable number.
+    """One squad member's blank probability, sanitised to a usable number.
 
     Two distinct holes, and only one of them is obvious. A player MISSING from
     the mapping (transferred out, departed) hits the ``get`` default; a player
-    PRESENT with a NaN does not — ``{1: nan}.get(1, 0.9)`` is ``nan``, and a
+    PRESENT with a NaN does not — ``{1: nan}.get(1, 0.1)`` is ``nan``, and a
     ``players.merge(..., how="left")`` leaves every unmatched id present with
-    exactly that. Both end up on ``FALLBACK_START_PROBABILITY`` here, which is
+    exactly that. Both end up on ``FALLBACK_BLANK_PROBABILITY`` here, which is
     the single place either can.
     """
-    raw = start_probabilities.get(player_id, FALLBACK_START_PROBABILITY)
+    raw = blank_probabilities.get(player_id, FALLBACK_BLANK_PROBABILITY)
     try:
         value = float(raw)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         value = math.nan
     if not math.isfinite(value):
         logger.warning(
-            "Bench weights: player %s has no usable start probability (%r); "
+            "Bench weights: player %s has no usable blank probability (%r); "
             "assuming %.2f",
-            player_id, raw, FALLBACK_START_PROBABILITY,
+            player_id, raw, FALLBACK_BLANK_PROBABILITY,
         )
-        return FALLBACK_START_PROBABILITY
+        return FALLBACK_BLANK_PROBABILITY
     if not 0.0 <= value <= 1.0:
-        # 1 - p for p > 1 is a negative blank chance, which makes the
-        # Poisson-binomial convolution produce weights outside [0, 1] and the
-        # ILP's bench term nonsense. Clamping is a repair, so it is logged.
+        # A negative or >1 blank chance makes the Poisson-binomial convolution
+        # produce weights outside [0, 1] and the ILP's bench term nonsense.
+        # Clamping is a repair, so it is logged.
         logger.warning(
-            "Bench weights: player %s has an out-of-range start probability "
+            "Bench weights: player %s has an out-of-range blank probability "
             "(%.4f); clamping",
             player_id, value,
         )
@@ -165,17 +186,40 @@ def _start_probability(
     return value
 
 
+def blank_probability_map(players: pd.DataFrame) -> dict[int, float]:
+    """Per-player P(0 minutes), preferring the real thing over the old proxy.
+
+    Reads the ``blank_probability`` column (``assemble.py``'s p0, straight
+    from the minutes model's own bands) when present. Falls back to
+    ``1 - start_probability`` (P(60+ minutes)) otherwise — every bench-weight
+    consumer's behaviour before 2026-09-22, and still the best available
+    figure for a frame with no minutes-model bands to draw p0 from, such as
+    the cold start's ``start_probability`` (which already means bare P(appear)
+    there, not P(60+)). The fallback OVERSTATES the true blank chance by
+    folding in a 1-59 minute cameo — measured 2x too high for nailed-on
+    players on the live 2026-27 frame — so it is a deliberately inferior
+    stand-in, not an equivalent choice.
+    """
+    if "blank_probability" in players.columns:
+        blank = players["blank_probability"].astype(float)
+    else:
+        blank = 1.0 - players["start_probability"].astype(float)
+    return dict(zip(players["id"], blank, strict=True))
+
+
 def bench_config_for_xi(
     cfg: OptimiserConfig,
     xi_ids: list[int],
-    start_probabilities: Mapping[int, float],
+    blank_probabilities: Mapping[int, float],
     positions_by_id: Mapping[int, str],
 ) -> OptimiserConfig:
     """``cfg`` with the bench weights this XI implies.
 
     The single derivation point for both shapes described in the module
-    docstring, and so the single place a missing or NaN start probability is
-    handled — see ``_start_probability``.
+    docstring, and so the single place a missing or NaN blank probability is
+    handled — see ``_blank_probability``. ``blank_probabilities`` should be
+    real P(0 minutes) figures (``blank_probability_map`` builds them); pass
+    ``1 - start_probability`` yourself only where no better number exists.
 
     An XI with no keeper in it falls back rather than raising: that means the
     caller handed us something that is not a legal XI, which is a caller bug,
@@ -183,12 +227,12 @@ def bench_config_for_xi(
     decision run over the bench's fourth-most-important coefficient.
     """
     outfield = [
-        _start_probability(start_probabilities, pid)
+        _blank_probability(blank_probabilities, pid)
         for pid in xi_ids
         if positions_by_id.get(pid) != "GKP"
     ]
     keepers = [
-        _start_probability(start_probabilities, pid)
+        _blank_probability(blank_probabilities, pid)
         for pid in xi_ids
         if positions_by_id.get(pid) == "GKP"
     ]
@@ -196,13 +240,13 @@ def bench_config_for_xi(
         logger.warning(
             "Bench weights: the XI has no goalkeeper in it; pricing the "
             "reserve keeper off %.2f",
-            FALLBACK_START_PROBABILITY,
+            FALLBACK_BLANK_PROBABILITY,
         )
     return dataclasses.replace(
         cfg,
         bench_slot_weights=derive_slot_weights(outfield),
         bench_gk_weight=derive_gk_weight(
-            keepers[0] if keepers else FALLBACK_START_PROBABILITY
+            keepers[0] if keepers else FALLBACK_BLANK_PROBABILITY
         ),
     )
 
@@ -277,7 +321,7 @@ def derive_bench_config(
     out = bench_config_for_xi(
         cfg,
         [int(pid) for pid in xi.starting_xi["id"]],
-        dict(zip(squad["id"], squad["start_probability"], strict=True)),
+        blank_probability_map(squad),
         dict(zip(squad["id"], squad["position"], strict=True)),
     )
     logger.info(

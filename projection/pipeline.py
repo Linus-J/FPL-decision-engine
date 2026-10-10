@@ -126,6 +126,15 @@ def _apply_injury_severity_discount(
         .astype(int)
         .map(lambda s: _INJURY_SEVERITY_RETENTION.get(s, 0.05))
     )
+    if "blank_probability" in projections_df.columns:
+        # The mass shaved off start_probability becomes additional blank
+        # probability (p1 held fixed), same reasoning as
+        # optimiser/rotation_risk.py's cap -- an injury discount is a
+        # judgement about playing at all, not about cameo-vs-60-minute mix.
+        start_drop = projections_df["start_probability"] * (1.0 - retention)
+        projections_df["blank_probability"] = (
+            projections_df["blank_probability"] + start_drop
+        ).clip(upper=1.0)
     for col in ("xpts", "xpts_mean", "xpts_var", "start_probability"):
         if col in projections_df.columns:
             projections_df[col] = projections_df[col] * retention
@@ -368,6 +377,10 @@ def run_projections(
         if unavailable:
             mask = projections_df["player_id"].isin(unavailable)
             projections_df.loc[mask, ["xpts", "xpts_mean", "xpts_var", "start_probability"]] = 0.0
+            if "blank_probability" in projections_df.columns:
+                # Certain not to start -- and, if fielded at all, certain to
+                # blank -- so P(0 minutes) is 1.0, not the column's default.
+                projections_df.loc[mask, "blank_probability"] = 1.0
         # Injury-severity discount (2026-07-30) — after the hard-unavailable
         # zeroing above (so an i/u/s player stays at exactly 0, not
         # re-scaled by their own severity on top of it) and before curse
@@ -447,6 +460,10 @@ def persist_projections(df: pd.DataFrame) -> None:
                     xpts_mean=float(row.get("xpts_mean", row["xpts"])),
                     xpts_var=float(row.get("xpts_var", 0.0)),
                     start_probability=float(row["start_probability"]),
+                    blank_probability=float(
+                        row.get("blank_probability", 1.0 - row["start_probability"])
+                        or 0.0
+                    ),
                     cs_probability=float(row.get("cs_probability", 0.0) or 0.0),
                     created_at=row.get("created_at") or created_at,
                 )
@@ -494,6 +511,7 @@ def get_latest_projections(gw: int | None = None, horizon: int = 1) -> pd.DataFr
                 pp.xpts_mean,
                 pp.xpts_var,
                 pp.start_probability,
+                pp.blank_probability,
                 pp.cs_probability,
                 pp.created_at,
                 p.web_name,

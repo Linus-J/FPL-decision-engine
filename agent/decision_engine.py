@@ -769,8 +769,11 @@ def _run_decision_cycle(
         return {"error": "no_projections"}
 
     players = _load_players()
+    _proj_cols = ["player_id", "start_probability"]
+    if "blank_probability" in projections.columns:
+        _proj_cols.append("blank_probability")
     players = players.merge(
-        projections[projections["gameweek"] == next_gw][["player_id", "start_probability"]],
+        projections[projections["gameweek"] == next_gw][_proj_cols],
         left_on="id", right_on="player_id", how="left",
     ).drop(columns=["player_id"], errors="ignore")
 

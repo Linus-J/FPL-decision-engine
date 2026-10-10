@@ -521,6 +521,12 @@ class PlayerProjection(Base):
     xpts_mean: Mapped[float] = mapped_column(Float, default=0.0)
     xpts_var: Mapped[float] = mapped_column(Float, default=0.0)
     start_probability: Mapped[float] = mapped_column(Float, default=0.0)
+    # P(0 minutes) -- the real FPL autosub trigger, distinct from
+    # 1 - start_probability (which also counts a 1-59 minute cameo as a
+    # "blank" even though it does not promote a bench player). Added
+    # 2026-09-22 alongside optimiser/bench_weights.py's switch to pricing
+    # bench slots off this instead of the P(60+)-derived approximation.
+    blank_probability: Mapped[float] = mapped_column(Float, default=0.0)
     cs_probability: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

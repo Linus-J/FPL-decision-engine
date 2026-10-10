@@ -71,7 +71,16 @@ def apply_rotation_risk(
         ratio = (cap / current.where(current > 0.0, other=1.0)).clip(upper=1.0)
         for col in scaled_cols:
             out.loc[mask, col] = out.loc[mask, col] * ratio
-        out.loc[mask, "start_probability"] = current.clip(upper=cap)
+        capped = current.clip(upper=cap)
+        if "blank_probability" in out.columns:
+            # The mass the cap shaves off start_probability becomes
+            # additional blank probability (p1 held fixed): the override is a
+            # judgement about competition for a starting place, not about
+            # cameo-vs-60-minute mix.
+            out.loc[mask, "blank_probability"] = (
+                out.loc[mask, "blank_probability"].astype(float) + (current - capped)
+            ).clip(upper=1.0)
+        out.loc[mask, "start_probability"] = capped
     return out
 
 

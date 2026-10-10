@@ -10,6 +10,7 @@ from optimiser.bench_weights import (
     bench_config_for_xi,
     bench_gk_weight_for_week,
     bench_slot_weight_for_week,
+    blank_probability_map,
 )
 from optimiser.captaincy import scenario_based_captain
 from optimiser.scoring import lambda_mu_for_risk_level, risk_adjusted_score
@@ -904,7 +905,7 @@ def optimise_squad(
             derived = bench_config_for_xi(
                 cfg,
                 [int(pid) for pid in solution.starting_xi["id"]],
-                dict(zip(players["id"], players["start_probability"], strict=True)),
+                blank_probability_map(players),
                 dict(zip(df["id"], df["position"], strict=True)),
             )
             logger.info(

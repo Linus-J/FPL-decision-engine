@@ -816,7 +816,11 @@ def assemble_gw_projections(
     ``[target_gw, target_gw + horizon)`` — columns ``player_id``, ``gameweek``,
     ``xpts``, ``xpts_mean``, ``xpts_var``, ``start_probability`` — the same
     shape ``_build_gw_projections`` already emits, so it drops in without
-    changing the optimiser's read side.
+    changing the optimiser's read side. Also carries ``blank_probability``
+    (the minutes model's own P(0 minutes), i.e. p0) -- unlike
+    ``start_probability`` (P(60+), i.e. p2), this is the number that actually
+    matches FPL's autosub trigger, and is what
+    ``optimiser/bench_weights.py`` prices bench slots against when present.
 
     ``persist_samples`` (P3-1, requires ``season``): writes each fixture's raw
     per-scenario draws to ``ProjectionSample`` instead of discarding them
@@ -988,7 +992,8 @@ def assemble_gw_projections(
             for pid, arr in samples.items():
                 mean = float(arr.mean())
                 var = float(arr.var(ddof=1)) if n_scenarios > 1 else 0.0
-                p2 = float(bands.get(pid, (0.5, 0.0, 0.5))[2])
+                band = bands.get(pid, (0.5, 0.0, 0.5))
+                p0, p2 = float(band[0]), float(band[2])
                 cs_p = (cs_home if pid in home_id_set else cs_away) * p2
                 if pid in gw_row_by_pid:
                     prev = gw_row_by_pid[pid]
@@ -996,6 +1001,10 @@ def assemble_gw_projections(
                     prev["xpts_mean"] += mean
                     prev["xpts_var"] += var
                     prev["start_probability"] = 1.0 - (1.0 - prev["start_probability"]) * (1.0 - p2)
+                    # A DGW player blanks the GAMEWEEK only if he blanks BOTH
+                    # fixtures (independent) -- unlike start_probability just
+                    # above, this is a P(all), not a P(at least one).
+                    prev["blank_probability"] *= p0
                     # A double gameweek gives two chances at a clean sheet;
                     # combined as P(at least one), matching how
                     # start_probability is merged just above.
@@ -1004,7 +1013,8 @@ def assemble_gw_projections(
                     gw_row_by_pid[pid] = {
                         "player_id": pid, "gameweek": gw,
                         "xpts": mean, "xpts_mean": mean, "xpts_var": var,
-                        "start_probability": p2, "cs_probability": cs_p,
+                        "start_probability": p2, "blank_probability": p0,
+                        "cs_probability": cs_p,
                     }
                 if collect_samples:
                     sample_rows.extend(

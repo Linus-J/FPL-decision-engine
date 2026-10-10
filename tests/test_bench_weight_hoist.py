@@ -63,14 +63,16 @@ def _projections(players: pd.DataFrame, gws=(1,)) -> pd.DataFrame:
 
 
 def test_the_hoist_derives_from_the_incumbent_xi():
-    """The whole squad sits at 0.75, so whichever legal XI is chosen the ten
-    outfielders are ten 0.75s and the answer is pinned."""
+    """The whole squad sits at start_probability 0.75 (blank 0.25, no
+    blank_probability column so the fallback applies), so whichever legal XI
+    is chosen the ten outfielders are ten 0.25 blanks and the answer is
+    pinned."""
     players = _legal_fifteen(0.75)
     cfg = dataclasses.replace(OPTIMISER, derive_bench_weights_per_solve=True)
     out = derive_bench_config(
         cfg, players["id"].tolist(), _projections(players), players, gw=1
     )
-    assert out.bench_slot_weights == pytest.approx(derive_slot_weights([0.75] * 10))
+    assert out.bench_slot_weights == pytest.approx(derive_slot_weights([0.25] * 10))
     assert out.bench_gk_weight == pytest.approx(0.25)
 
 
@@ -193,5 +195,5 @@ def test_the_transfer_ilp_and_the_squad_ilp_are_handed_the_same_bench_weights(
     # trivially share if the hoist had not run at all.
     assert seen["transfers"].bench_slot_weights != OPTIMISER.bench_slot_weights
     assert seen["transfers"].bench_slot_weights == pytest.approx(
-        derive_slot_weights([0.75] * 10)
+        derive_slot_weights([0.25] * 10)
     )
