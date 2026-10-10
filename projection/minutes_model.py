@@ -318,14 +318,18 @@ def apply_availability_override(
 
 # Retention of the ML-predicted playing mass (P1+P2) given a confirmed
 # consecutive-zero-minutes streak from real, already-played history (see
-# _trailing_dnp_streak). 1 confirmed blank -> real uncertainty (could be
-# rotation, a minor knock, or the start of a longer injury) so only half the
-# playing mass survives; 2+ -> heavily discounted, since a player out for
-# multiple straight matches is statistically unlikely to be a safe near-term
-# pick. Untuned starting values pending backtesting, same convention as
-# other heuristic constants introduced this session.
-_DNP_STREAK_RETENTION = {0: 1.0, 1: 0.5}
-_DNP_STREAK_RETENTION_2PLUS = 0.15
+# _trailing_dnp_streak).
+#
+# Measured 2026-10-10 (user's review of Joao Pedro's GW6 bench spot): the
+# original untuned 0.5 / 0.15 double-counted a blank the rolling-minutes
+# features had already priced in. Walk-forward over 111 held-out gameweeks
+# (2023-24 GW3 to 2026-27 GW5, 63,239 player-gameweeks, train() strictly
+# before each gameweek, fast=True), every season's own optimum was 0.80-0.85
+# for one blank and 0.75-0.90 for 2+. At (0.85, 0.80) the served log loss
+# goes 0.5248 -> 0.4855 (95% CI of the change [-0.0425, -0.0364], resampling
+# gameweeks), better in 111 of 111 gameweeks and in every season.
+_DNP_STREAK_RETENTION = {0: 1.0, 1: 0.85}
+_DNP_STREAK_RETENTION_2PLUS = 0.8
 
 
 def apply_recent_absence_override(

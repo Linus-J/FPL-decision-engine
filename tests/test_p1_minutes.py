@@ -87,19 +87,24 @@ def test_apply_recent_absence_override_no_streak_unchanged():
     assert mm.apply_recent_absence_override(0.1, 0.2, 0.7, 0) == (0.1, 0.2, 0.7)
 
 
-def test_apply_recent_absence_override_one_blank_halves_playing_mass():
+def test_apply_recent_absence_override_one_blank_keeps_most_playing_mass():
+    """Measured 2026-10-10 (walk-forward, 111 held-out gameweeks, 2023-24 to
+    2026-27): the old 0.5 doubled up on a blank the rolling-minutes features
+    already priced in. Each season's own optimum was 0.80-0.85."""
     p0, p1, p2 = mm.apply_recent_absence_override(0.1, 0.2, 0.7, 1)
-    assert p1 == pytest.approx(0.1)
-    assert p2 == pytest.approx(0.35)
+    assert p1 == pytest.approx(0.2 * 0.85)
+    assert p2 == pytest.approx(0.7 * 0.85)
     assert sum((p0, p1, p2)) == pytest.approx(1.0)
 
 
-def test_apply_recent_absence_override_two_plus_blanks_heavily_discounts():
+def test_apply_recent_absence_override_two_plus_blanks_is_a_light_discount():
+    """Same walk: the old 0.15 cost 0.068 log loss on 2+-streak rows. The
+    model already gives them a mean P(60+) of 0.035 before any override (the
+    Ekitike case is caught upstream); each season's optimum was 0.75-0.90."""
     p0, p1, p2 = mm.apply_recent_absence_override(0.1, 0.2, 0.7, 2)
-    assert p2 == pytest.approx(0.7 * mm._DNP_STREAK_RETENTION_2PLUS)
-    assert p0 > 0.8  # the real Ekitiké case: should be treated as very unlikely to start
-    # a longer streak (e.g. 5 straight blanks) is discounted exactly as hard,
-    # not progressively harder -- 2+ is already the floor.
+    assert p2 == pytest.approx(0.7 * 0.8)
+    assert sum((p0, p1, p2)) == pytest.approx(1.0)
+    # a longer streak is discounted exactly as hard, not progressively harder
     assert mm.apply_recent_absence_override(0.1, 0.2, 0.7, 5) == (p0, p1, p2)
 
 
