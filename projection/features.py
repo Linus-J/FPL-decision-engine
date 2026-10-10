@@ -451,6 +451,171 @@ def add_odds_features(df: pd.DataFrame, odds: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
+def load_live_fixture_difficulty(
+    fixture_context: pd.DataFrame, season: str
+) -> pd.DataFrame:
+    """Per-fixture FDR for the LIVE serving horizon (item 5 / A9 follow-up).
+
+    ``load_fixture_difficulty`` above is keyed on ``player_gw_stats``, which
+    has no row for a fixture that has not been played yet — so it cannot
+    serve GW5-GW8 of a live horizon. This reads ``team_season_strength``
+    directly against ``fixture_context`` (``player_id``, ``gameweek``,
+    ``team_id_season``, ``opponent_team_id``, ``was_home`` — the same shape
+    ``_build_live_fixture_context`` and the backtest's own later stat rows
+    both produce), so it works for any fixture already on the calendar.
+
+    Pass the WHOLE horizon in one call, not one gameweek at a time:
+    ``next_3gw_avg_opp_defence``/``_attack`` read a player's LATER rows in
+    THIS SAME frame, and a gameweek missing from it cannot feed another
+    gameweek's lookahead. Missing entirely (no strengths published, or the
+    player is past the frame's last gameweek) is left ``NaN`` — the existing
+    ``add_fdr_features`` fallback (median, or 1200 if the whole column is
+    NaN) takes over unchanged, so a horizon this cannot fully cover degrades
+    exactly like a played fixture whose strengths are unpublished.
+
+    Returns the same 9 base columns ``load_fixture_difficulty`` returns
+    (NOT the two ratio columns) — ``add_fdr_features`` computes
+    ``attack_vs_defence``/``defence_vs_attack`` itself after merging."""
+    value_cols = [
+        "is_home", "is_bgw", "opp_defence_strength", "opp_attack_strength",
+        "own_attack_strength", "own_defence_strength", "own_overall_strength",
+        "next_3gw_avg_opp_defence", "next_3gw_avg_opp_attack",
+    ]
+    columns = [*_FIXTURE_KEYS, *value_cols]
+    if fixture_context.empty:
+        return pd.DataFrame(columns=columns)
+
+    db = get_session()
+    try:
+        strength = pd.read_sql(
+            text(
+                "SELECT team_id, strength_attack_home, strength_attack_away, "
+                "strength_defence_home, strength_defence_away, "
+                "strength_overall_home, strength_overall_away "
+                "FROM team_season_strength WHERE season = :season"
+            ),
+            db.bind, params={"season": season},
+        )
+        bgw = pd.read_sql(
+            text("SELECT id AS gameweek, is_bgw FROM gameweeks WHERE season = :season"),
+            db.bind, params={"season": season},
+        )
+    finally:
+        db.close()
+
+    out = fixture_context[
+        ["player_id", "gameweek", "team_id_season", "opponent_team_id", "was_home"]
+    ].copy()
+    out["season"] = season
+    out["was_home"] = out["was_home"].astype(bool)
+    out["is_home"] = out["was_home"].astype(int)
+
+    own = strength.rename(columns={"team_id": "team_id_season"})
+    opp = strength.rename(columns={"team_id": "opponent_team_id"})
+    out = out.merge(own, on="team_id_season", how="left")
+    out = out.merge(opp, on="opponent_team_id", how="left", suffixes=("", "_opp"))
+    out = out.merge(bgw, on="gameweek", how="left")
+    out["is_bgw"] = out["is_bgw"].fillna(0).astype(int)
+
+    out["own_attack_strength"] = out["strength_attack_home"].where(
+        out["was_home"], out["strength_attack_away"]
+    )
+    out["own_defence_strength"] = out["strength_defence_home"].where(
+        out["was_home"], out["strength_defence_away"]
+    )
+    out["own_overall_strength"] = out["strength_overall_home"].where(
+        out["was_home"], out["strength_overall_away"]
+    )
+    out["opp_defence_strength"] = out["strength_defence_away_opp"].where(
+        out["was_home"], out["strength_defence_home_opp"]
+    )
+    out["opp_attack_strength"] = out["strength_attack_away_opp"].where(
+        out["was_home"], out["strength_attack_home_opp"]
+    )
+
+    # Forward lookahead: THIS player's own later rows in the same frame,
+    # strictly after this gameweek and within 3 of it -- mirrors
+    # ``load_fixture_difficulty``'s ``s2.gameweek > s.gameweek AND
+    # s2.gameweek <= s.gameweek + 3`` self-join exactly, just done in pandas
+    # because there is no table to self-join against here.
+    lookahead = out[["player_id", "gameweek", "opp_defence_strength", "opp_attack_strength"]]
+    fwd_defence = []
+    fwd_attack = []
+    for pid, gw in out[["player_id", "gameweek"]].itertuples(index=False):
+        future = lookahead[
+            (lookahead["player_id"] == pid)
+            & (lookahead["gameweek"] > gw)
+            & (lookahead["gameweek"] <= gw + 3)
+        ]
+        fwd_defence.append(future["opp_defence_strength"].mean())
+        fwd_attack.append(future["opp_attack_strength"].mean())
+    out["next_3gw_avg_opp_defence"] = fwd_defence
+    out["next_3gw_avg_opp_attack"] = fwd_attack
+
+    return out[columns]
+
+
+def load_live_fixture_odds(
+    fixture_context: pd.DataFrame, match_odds: pd.DataFrame, season: str
+) -> pd.DataFrame:
+    """Per-fixture clean-sheet odds for the LIVE serving horizon, from the
+    same raw de-vigged 1X2 + O/U2.5 frame ``assemble_gw_projections`` already
+    takes as ``match_odds`` (``load_match_odds`` / ``_load_live_match_odds`` —
+    identical shape on the live and backtest paths). Converts through the
+    same ``team_goals_from_odds`` fit the P10 xPts engine uses, so a clean
+    sheet here means exactly what it means there: ``exp(-lambda)`` of the
+    opposing side's Poisson goal rate.
+
+    A fixture beyond the priced window (odds do not exist for it) is left out
+    of the returned frame entirely; ``add_odds_features``'s existing
+    fillna(0.2 / 0.2 / 0.5) takes over unchanged, same as it already does for
+    the whole horizon today."""
+    columns = [*_FIXTURE_KEYS, *ODDS_FEATURE_COLS]
+    if fixture_context.empty or match_odds.empty:
+        return pd.DataFrame(columns=columns)
+
+    from projection.team_goals import team_goals_from_odds
+
+    odds = match_odds.copy()
+    lambdas = odds.apply(
+        lambda r: team_goals_from_odds(
+            float(r["home_win_prob"]), float(r["draw_prob"]),
+            float(r["away_win_prob"]), float(r.get("over25_prob")),
+        ),
+        axis=1, result_type="expand",
+    )
+    odds["lambda_home"], odds["lambda_away"] = lambdas[0], lambdas[1]
+    odds["home_cs_prob"] = np.exp(-odds["lambda_away"])
+    odds["away_cs_prob"] = np.exp(-odds["lambda_home"])
+
+    out = fixture_context[
+        ["player_id", "gameweek", "team_id_season", "opponent_team_id", "was_home"]
+    ].copy()
+    out["was_home"] = out["was_home"].astype(bool)
+    home_side = odds.rename(columns={
+        "home_team_id": "team_id_season", "away_team_id": "opponent_team_id",
+    })
+    away_side = odds.rename(columns={
+        "away_team_id": "team_id_season", "home_team_id": "opponent_team_id",
+    })
+    merged = pd.concat([
+        out[out["was_home"]].merge(
+            home_side[["gameweek", "team_id_season", "opponent_team_id",
+                       "home_cs_prob", "away_cs_prob", "over25_prob"]],
+            on=["gameweek", "team_id_season", "opponent_team_id"], how="inner",
+        ).rename(columns={"home_cs_prob": "my_cs_prob", "away_cs_prob": "opp_cs_prob"}),
+        out[~out["was_home"]].merge(
+            away_side[["gameweek", "team_id_season", "opponent_team_id",
+                       "home_cs_prob", "away_cs_prob", "over25_prob"]],
+            on=["gameweek", "team_id_season", "opponent_team_id"], how="inner",
+        ).rename(columns={"away_cs_prob": "my_cs_prob", "home_cs_prob": "opp_cs_prob"}),
+    ], ignore_index=True)
+    if merged.empty:
+        return pd.DataFrame(columns=columns)
+    merged["season"] = season
+    return merged[columns]
+
+
 def load_midweek_flags(target_gw: int) -> dict[int, float]:
     from data.ingestors.midweek import get_team_midweek_flags
     flags = get_team_midweek_flags(target_gw)

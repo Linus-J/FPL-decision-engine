@@ -131,6 +131,17 @@ def hermetic(monkeypatch):
     monkeypatch.setattr(mm, "load_fixture_difficulty", lambda: _empty_keyed())
     monkeypatch.setattr(mm, "load_fixture_odds", lambda: _empty_keyed(
         "my_cs_prob", "opp_cs_prob", "over25_prob"))
+    # The live FDR/odds readers hit the database directly (there is no
+    # ``team_matches``-style single load point to stub upstream of them) --
+    # stub them here too so this fixture stays fully hermetic even for tests
+    # that pass ``fixture_context``/``match_odds`` through to
+    # ``predict_minutes_bands_by_gameweek``.
+    monkeypatch.setattr(mm, "load_live_fixture_difficulty", lambda *a, **k: _empty_keyed(
+        "is_home", "is_bgw", "opp_defence_strength", "opp_attack_strength",
+        "own_attack_strength", "own_defence_strength", "own_overall_strength",
+        "next_3gw_avg_opp_defence", "next_3gw_avg_opp_attack"))
+    monkeypatch.setattr(mm, "load_live_fixture_odds", lambda *a, **k: _empty_keyed(
+        "my_cs_prob", "opp_cs_prob", "over25_prob"))
     monkeypatch.setattr(mm, "load_player_enrichment", lambda: pd.DataFrame([
         {
             "player_id": pid, "season": SEASON, "gameweek": gw,
@@ -222,6 +233,73 @@ def test_only_the_calendar_features_vary_across_the_horizon(hermetic):
     assert len(x[frozen].drop_duplicates()) == len(TEAMS)
     # ...and the calendar block genuinely moves
     assert x["days_since_last_match"].nunique() == len(set(REST_BY_GW.values()))
+
+
+def test_fdr_and_odds_vary_across_the_horizon_given_a_fixture_context(hermetic, monkeypatch):
+    """Item 5 / the FDR-odds-serve-freeze fix. Without ``fixture_context`` /
+    ``match_odds``, FDR and odds are frozen at the as-of row's value (the
+    previous test pins exactly that). Given them, they must vary per
+    gameweek same as congestion already does."""
+    fdr_by_gw = {
+        TARGET_GW: 1000.0, TARGET_GW + 1: 1200.0, TARGET_GW + 2: 1400.0,
+    }
+    cs_by_gw = {
+        TARGET_GW: 0.10, TARGET_GW + 1: 0.30, TARGET_GW + 2: 0.50,
+    }
+
+    def _fake_fdr(fixture_context, season):
+        rows = []
+        for gw in fixture_context["gameweek"].unique():
+            for pid in fixture_context.loc[
+                fixture_context["gameweek"] == gw, "player_id"
+            ].unique():
+                rows.append({
+                    "player_id": pid, "gameweek": gw, "season": season,
+                    "opponent_team_id": 99, "opp_defence_strength": fdr_by_gw[gw],
+                })
+        return pd.DataFrame(rows)
+
+    def _fake_odds(fixture_context, match_odds, season):
+        rows = []
+        for gw in fixture_context["gameweek"].unique():
+            for pid in fixture_context.loc[
+                fixture_context["gameweek"] == gw, "player_id"
+            ].unique():
+                rows.append({
+                    "player_id": pid, "gameweek": gw, "season": season,
+                    "opponent_team_id": 99, "my_cs_prob": cs_by_gw[gw],
+                    "opp_cs_prob": 0.2, "over25_prob": 0.5,
+                })
+        return pd.DataFrame(rows)
+
+    monkeypatch.setattr(mm, "load_live_fixture_difficulty", _fake_fdr)
+    monkeypatch.setattr(mm, "load_live_fixture_odds", _fake_odds)
+
+    fixture_context = pd.DataFrame([
+        {"player_id": pid, "gameweek": gw, "team_id_season": team,
+         "opponent_team_id": 99, "was_home": True}
+        for pid, team in TEAMS.items()
+        for gw in REST_BY_GW
+    ])
+    match_odds = _match_odds()
+
+    model = _RecordingModel()
+    mm.predict_minutes_bands_by_gameweek(
+        _played(), model, list(REST_BY_GW), season=SEASON,
+        fixture_context=fixture_context, match_odds=match_odds,
+    )
+    x = model.seen[0]
+    assert x["opp_defence_strength"].nunique() == len(fdr_by_gw)
+    assert x["my_cs_prob"].nunique() == len(cs_by_gw)
+    # ``predict_proba`` only ever sees ``FEATURE_COLS`` (no player_id/gameweek
+    # to key on) -- but the frame is built one gameweek-block at a time, in
+    # ``target_gws`` order, each block exactly ``len(TEAMS)`` rows long, so
+    # position alone recovers which gameweek a row belongs to.
+    n = len(TEAMS)
+    for i, (gw, expected) in enumerate(fdr_by_gw.items()):
+        block = x.iloc[i * n:(i + 1) * n]
+        assert block["opp_defence_strength"].unique().tolist() == [expected], f"gameweek {gw}"
+        assert block["my_cs_prob"].unique().tolist() == [cs_by_gw[gw]], f"gameweek {gw}"
 
 
 def test_the_scalar_api_still_answers_for_the_next_match_only(hermetic):

@@ -35,7 +35,7 @@ def _by_gameweek(bands: dict):
     which gameweek a band came from, so the same bands are repeated across the
     horizon -- exactly the behaviour A8 removed from production, kept here
     deliberately so these tests keep isolating the DGW/persistence logic."""
-    def _stub(history, model, target_gws, season=None):
+    def _stub(history, model, target_gws, season=None, fixture_context=None, match_odds=None):
         return {
             (pid, int(gw)): band
             for gw in target_gws

@@ -29,6 +29,8 @@ from projection.features import (
     assert_rate_only,
     load_fixture_difficulty,
     load_fixture_odds,
+    load_live_fixture_difficulty,
+    load_live_fixture_odds,
     load_player_enrichment,
 )
 
@@ -642,6 +644,8 @@ def predict_minutes_bands_by_gameweek(
     model: Pipeline | None,
     target_gws: Sequence[int],
     season: str | None = None,
+    fixture_context: pd.DataFrame | None = None,
+    match_odds: pd.DataFrame | None = None,
 ) -> dict[tuple[int, int], tuple[float, float, float]]:
     """Per (player, gameweek) → (P(0 min), P(1–59), P(60+)), for each gameweek
     in ``target_gws``.
@@ -655,16 +659,20 @@ def predict_minutes_bands_by_gameweek(
     per-gameweek answer; the scalar one is kept for callers that genuinely want
     "next match".
 
-    **The train/serve asymmetry, stated rather than hidden.** Only the
-    gameweek-keyed calendar features are recomputed per gameweek — the
-    congestion block, which comes from ``team_matches`` and is known in advance
-    for every fixture already scheduled. Everything history-derived (the
-    rolling minutes/points/starts averages, the DNP streak, the red-card
-    suspension flag, price and ownership, the FDR and odds merges) is FROZEN at
-    its as-of ``target_gws[0]`` value and broadcast across the horizon. At
-    training time every row used those rolling features as-of its OWN gameweek,
-    so GW5-GW8 are served from strictly staler inputs than the model was fitted
-    on.
+    **The train/serve asymmetry, narrowed but not eliminated.** The calendar
+    features recomputed per gameweek are congestion (always, from
+    ``team_matches``, known in advance for every scheduled fixture) and now
+    FDR/odds too, WHEN ``fixture_context``/``match_odds`` are supplied — the
+    live horizon's real per-gameweek opponent, home/away and priced clean-sheet
+    probability (``item 5`` / the FDR-odds-serve-freeze fix; see
+    ``.superpowers/sdd/fdr-odds-serve-freeze.md``). Without them (the
+    backtest path, and any caller that hasn't been updated), FDR/odds stay
+    FROZEN at the as-of row's value and broadcast across the horizon, same as
+    before. Everything history-derived (rolling minutes/points/starts
+    averages, DNP streak, red-card suspension flag, price and ownership) is
+    ALWAYS frozen at its as-of ``target_gws[0]`` value — at training time every
+    row used those as-of its OWN gameweek, so GW5-GW8 are served from strictly
+    staler inputs than the model was fitted on.
 
     That asymmetry is unavoidable and must not be "fixed" by forecasting the
     rolling features: GW5's rolling average is a function of GW4's outcome,
@@ -694,13 +702,58 @@ def predict_minutes_bands_by_gameweek(
     season = season or str(asof["season"].max())
 
     congestion = load_congestion()
+
+    # Real per-gameweek fixture context for the horizon, when the caller has
+    # it (the live path always does — ``_build_live_fixture_context`` — the
+    # backtest path does not pass this yet). DGW dedup to one row per
+    # (player, gameweek): the same simplification ``assemble_gw_projections``
+    # already applies elsewhere (P12).
+    live_fixtures = None
+    live_fdr = None
+    live_odds = None
+    if fixture_context is not None and not fixture_context.empty:
+        live_fixtures = (
+            fixture_context[fixture_context["gameweek"].isin(target_gws)]
+            .drop_duplicates(subset=["player_id", "gameweek"], keep="first")
+        )
+        if not live_fixtures.empty:
+            live_fdr = load_live_fixture_difficulty(live_fixtures, season)
+            if match_odds is not None and not match_odds.empty:
+                live_odds = load_live_fixture_odds(live_fixtures, match_odds, season)
+
     frames = []
     for gw in target_gws:
         frame = asof.copy()
         frame["gameweek"] = gw
         frame["season"] = season
         frame = frame.drop(columns=CONGESTION_FEATURE_COLS, errors="ignore")
-        frames.append(add_congestion_features(frame, congestion))
+        frame = add_congestion_features(frame, congestion)
+
+        if live_fixtures is not None:
+            gw_fixtures = live_fixtures.loc[
+                live_fixtures["gameweek"] == gw,
+                ["player_id", "team_id_season", "opponent_team_id", "was_home"],
+            ]
+            if not gw_fixtures.empty:
+                # Drop the as-of row's stale fixture context before merging the
+                # real one in — a player missing from this gameweek's fixture
+                # list (blank gameweek) is left with NaN keys, which simply
+                # fails the FDR/odds merge below and falls through to their
+                # existing median/1200/0.2 fallback, same as an unpublished
+                # fixture always has.
+                frame = frame.drop(
+                    columns=["team_id_season", "opponent_team_id", "was_home"],
+                    errors="ignore",
+                )
+                frame = frame.merge(gw_fixtures, on="player_id", how="left")
+                if live_fdr is not None:
+                    frame = frame.drop(columns=FDR_FEATURE_COLS, errors="ignore")
+                    frame = add_fdr_features(frame, live_fdr)
+                if live_odds is not None:
+                    frame = frame.drop(columns=ODDS_FEATURE_COLS, errors="ignore")
+                    frame = add_odds_features(frame, live_odds)
+
+        frames.append(frame)
     horizon = pd.concat(frames, ignore_index=True)
 
     scored = _predict_bands(horizon, model)

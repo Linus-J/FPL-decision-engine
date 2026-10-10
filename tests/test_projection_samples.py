@@ -71,7 +71,7 @@ def _by_gameweek(bands: dict):
     """Adapt a player-keyed stub to A8's (player_id, gameweek) contract --
     the same bands repeated across the horizon, so these tests keep isolating
     persistence and scenario offsets rather than the minutes model."""
-    def _stub(history, model, target_gws, season=None):
+    def _stub(history, model, target_gws, season=None, fixture_context=None, match_odds=None):
         return {
             (pid, int(gw)): band
             for gw in target_gws

@@ -871,8 +871,13 @@ def assemble_gw_projections(
     # were built for. The rolling half of the feature vector is still frozen
     # as-of target_gw -- see predict_minutes_bands_by_gameweek's docstring for
     # why that asymmetry is the honest shape rather than an oversight.
+    # ``all_stats`` (not ``history``) carries the real per-gameweek fixture
+    # calendar for the horizon -- passing it as ``fixture_context`` lets FDR
+    # and odds vary per gameweek too, instead of freezing at ``history``'s
+    # last played opponent (item 5 / the FDR-odds-serve-freeze fix).
     bands_by_gw = predict_minutes_bands_by_gameweek(
-        history, minutes_model, target_gws, season=season
+        history, minutes_model, target_gws, season=season,
+        fixture_context=all_stats, match_odds=match_odds,
     )
     # P12: dedupe on the fixture's own identity, NOT just (player_id, gameweek)
     # -- a genuine double-gameweek player has TWO real rows here (same
