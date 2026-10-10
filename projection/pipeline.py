@@ -346,6 +346,7 @@ def run_projections(
     match_odds = _load_live_match_odds(season, target_gws)
     defcon_events = assemble.load_defcon_events(season)
     defcon_field_shares = assemble.compute_defcon_field_shares(season)
+    all_players = _get_all_players()
 
     projections_df = assemble.assemble_gw_projections(
         history=history,
@@ -367,10 +368,12 @@ def run_projections(
         # matches. Lean on last season's per-match rates until this one has
         # enough of its own to speak for itself.
         prior_rates=assemble.load_prior_season_rates(prior_season_of(season)),
+        # Today's flags, not the last played deadline's -- see
+        # predict_minutes_bands_by_gameweek.
+        current_availability=all_players.rename(columns={"id": "player_id"}),
     )
 
     if not projections_df.empty:
-        all_players = _get_all_players()
         unavailable = set(
             all_players.loc[all_players["status"].isin(["i", "u", "s"]), "id"].astype(int)
         )

@@ -646,9 +646,15 @@ def predict_minutes_bands_by_gameweek(
     season: str | None = None,
     fixture_context: pd.DataFrame | None = None,
     match_odds: pd.DataFrame | None = None,
+    current_availability: pd.DataFrame | None = None,
 ) -> dict[tuple[int, int], tuple[float, float, float]]:
     """Per (player, gameweek) → (P(0 min), P(1–59), P(60+)), for each gameweek
     in ``target_gws``.
+
+    ``current_availability`` (``player_id``, ``status``,
+    ``chance_of_playing_next_round``) replaces the as-of row's flags, which
+    are otherwise a copy of the snapshot taken before the LAST played
+    gameweek's deadline -- see the comment where it is applied.
 
     ``predict_minutes_bands`` above answers "what will this player do next?"
     with ONE number, and ``assemble_gw_projections`` then read that same number
@@ -700,6 +706,20 @@ def predict_minutes_bands_by_gameweek(
     # ``season`` is None on the backtest path, which walks one season at a time
     # -- the frame's own latest season is that season.
     season = season or str(asof["season"].max())
+
+    # Real bug found 2026-10-10 (user's own review of the GW6 bench): the
+    # as-of row is a copy of the last PLAYED row, so its status/chance were
+    # the snapshot from before THAT gameweek's deadline. Joao Pedro was 'd'
+    # 75% before GW5 and 'a' 100% before GW6, and GW6-GW10 were still scaled
+    # by 0.75. Live callers pass today's flags; the backtest passes nothing
+    # (its history is constant 'a', so there is nothing to refresh).
+    if current_availability is not None and not current_availability.empty:
+        avail_cols = ["status", "chance_of_playing_next_round"]
+        now = current_availability.set_index("player_id")[avail_cols]
+        known = asof["player_id"].isin(now.index)
+        asof = asof.copy()
+        for col in avail_cols:
+            asof.loc[known, col] = asof.loc[known, "player_id"].map(now[col])
 
     congestion = load_congestion()
 

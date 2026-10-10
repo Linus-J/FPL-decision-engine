@@ -358,3 +358,63 @@ def test_a_double_gameweek_still_combines_to_p_at_least_one(hermetic):
     single = out[out["player_id"] == 2].iloc[0]
     assert dgw["start_probability"] == pytest.approx(1.0 - (1.0 - p) ** 2)
     assert single["start_probability"] == pytest.approx(p)
+
+
+# --- availability is read NOW, not at the last played deadline -------------
+
+def _flagged_doubtful_last_deadline() -> pd.DataFrame:
+    """Player 1 was 'd' at 75% before the last played gameweek's deadline --
+    the point-in-time snapshot ``load_all_stats`` joins onto that row."""
+    played = _played()
+    last = (played["player_id"] == 1) & (played["gameweek"] == HISTORY_GWS[-1])
+    played.loc[last, "status"] = "d"
+    played.loc[last, "chance_of_playing_next_round"] = 75
+    return played
+
+
+def _availability(**by_pid: tuple[str, int | None]) -> pd.DataFrame:
+    return pd.DataFrame([
+        {"player_id": pid, "status": status, "chance_of_playing_next_round": cop}
+        for pid, (status, cop) in ((int(k[1:]), v) for k, v in by_pid.items())
+    ])
+
+
+def test_a_recovered_player_is_not_scaled_by_last_deadlines_doubt(hermetic):
+    """Real defect, 2026-27 GW6: Joao Pedro was 'd' 75% before the GW5
+    deadline, then cleared to 'a' 100% before GW6. The as-of row is a copy of
+    his GW5 row, so the 75% scaling was still applied to GW6-GW10."""
+    bands = mm.predict_minutes_bands_by_gameweek(
+        _flagged_doubtful_last_deadline(), _RestSensitiveModel(), [TARGET_GW],
+        season=SEASON, current_availability=_availability(p1=("a", 100)),
+    )
+    assert bands[(1, TARGET_GW)][2] == pytest.approx(REST_BY_GW[TARGET_GW] / 14.0)
+
+
+def test_a_newly_doubtful_player_is_scaled_by_todays_chance(hermetic):
+    """The other direction: fit at the last deadline, 'd' 50% now."""
+    bands = mm.predict_minutes_bands_by_gameweek(
+        _played(), _RestSensitiveModel(), [TARGET_GW],
+        season=SEASON, current_availability=_availability(p2=("d", 50)),
+    )
+    assert bands[(2, TARGET_GW)][2] == pytest.approx(0.5 * REST_BY_GW[TARGET_GW] / 14.0)
+
+
+def test_a_player_missing_from_current_availability_keeps_the_asof_flag(hermetic):
+    bands = mm.predict_minutes_bands_by_gameweek(
+        _flagged_doubtful_last_deadline(), _RestSensitiveModel(), [TARGET_GW],
+        season=SEASON, current_availability=_availability(p2=("a", 100)),
+    )
+    assert bands[(1, TARGET_GW)][2] == pytest.approx(0.75 * REST_BY_GW[TARGET_GW] / 14.0)
+
+
+def test_assemble_passes_current_availability_through(hermetic):
+    out = assemble.assemble_gw_projections(
+        history=_flagged_doubtful_last_deadline(), all_stats=_horizon_fixtures(),
+        minutes_model=_RestSensitiveModel(),
+        target_gw=TARGET_GW, horizon=1, match_odds=_match_odds(),
+        defcon_events=pd.DataFrame(), defcon_field_shares={"DEF": {}, "MID_FWD": {}},
+        n_scenarios=4, seed=1, season=SEASON,
+        current_availability=_availability(p1=("a", 100)),
+    )
+    p1 = out[out["player_id"] == 1].iloc[0]
+    assert p1["start_probability"] == pytest.approx(REST_BY_GW[TARGET_GW] / 14.0)

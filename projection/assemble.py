@@ -805,6 +805,7 @@ def assemble_gw_projections(
     season: str | None = None,
     strength_rel: Mapping[int, Mapping[str, float]] | None = None,
     prior_rates: pd.DataFrame | None = None,
+    current_availability: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """P10: replaces ``points_model.predict_batch`` as ``_build_gw_projections``'s
     xPts source. ``all_stats`` (unfiltered, ALL gameweeks) supplies fixture
@@ -882,6 +883,7 @@ def assemble_gw_projections(
     bands_by_gw = predict_minutes_bands_by_gameweek(
         history, minutes_model, target_gws, season=season,
         fixture_context=all_stats, match_odds=match_odds,
+        current_availability=current_availability,
     )
     # P12: dedupe on the fixture's own identity, NOT just (player_id, gameweek)
     # -- a genuine double-gameweek player has TWO real rows here (same
