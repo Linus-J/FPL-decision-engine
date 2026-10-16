@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gameweek": 6,
   "label": "GW6 \u2014 10 Oct 2026",
-  "generated_at": "2026-10-10T01:26:12.275723+00:00",
+  "generated_at": "2026-10-16T13:55:56.739969+00:00",
   "squad": [
     {
       "player_id": 1,
@@ -28,7 +28,7 @@
       "web_name": "Gabriel",
       "position": "DEF",
       "team_short": "ARS",
-      "now_cost": 8.0,
+      "now_cost": 7.9,
       "is_starting": true,
       "is_captain": false,
       "is_vice_captain": false,
@@ -66,11 +66,11 @@
       "web_name": "Jo\u00e3o Pedro",
       "position": "FWD",
       "team_short": "CHE",
-      "now_cost": 7.7,
-      "is_starting": false,
+      "now_cost": 7.8,
+      "is_starting": true,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": 4,
+      "bench_order": null,
       "transferred_in": false,
       "xpts": {
         "p10": 0.0,
@@ -86,35 +86,16 @@
       "position": "DEF",
       "team_short": "COV",
       "now_cost": 4.0,
-      "is_starting": true,
+      "is_starting": false,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": null,
+      "bench_order": 2,
       "transferred_in": false,
       "xpts": {
         "p10": 0.0,
         "median": 4.0,
         "mean": 4.953333333333333,
         "p90": 11.099999999999994,
-        "approx": false
-      }
-    },
-    {
-      "player_id": 864,
-      "web_name": "Rudoni",
-      "position": "MID",
-      "team_short": "COV",
-      "now_cost": 4.9,
-      "is_starting": true,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": null,
-      "transferred_in": true,
-      "xpts": {
-        "p10": 0.0,
-        "median": 3.0,
-        "mean": 5.6066666666666665,
-        "p90": 15.0,
         "approx": false
       }
     },
@@ -138,40 +119,21 @@
       }
     },
     {
-      "player_id": 375,
-      "web_name": "Barry",
-      "position": "FWD",
-      "team_short": "EVE",
-      "now_cost": 5.7,
+      "player_id": 911,
+      "web_name": "Davis",
+      "position": "DEF",
+      "team_short": "IPS",
+      "now_cost": 4.0,
       "is_starting": true,
       "is_captain": false,
       "is_vice_captain": false,
       "bench_order": null,
       "transferred_in": true,
       "xpts": {
-        "p10": 2.0,
-        "median": 2.0,
-        "mean": 5.873333333333333,
-        "p90": 13.0,
-        "approx": false
-      }
-    },
-    {
-      "player_id": 464,
-      "web_name": "Virgil",
-      "position": "DEF",
-      "team_short": "LIV",
-      "now_cost": 6.5,
-      "is_starting": false,
-      "is_captain": false,
-      "is_vice_captain": false,
-      "bench_order": 3,
-      "transferred_in": false,
-      "xpts": {
         "p10": 0.0,
-        "median": 2.0,
-        "mean": 3.5533333333333332,
-        "p90": 9.0,
+        "median": 4.0,
+        "mean": 5.0,
+        "p90": 12.0,
         "approx": false
       }
     },
@@ -203,7 +165,7 @@
       "is_starting": false,
       "is_captain": false,
       "is_vice_captain": false,
-      "bench_order": 2,
+      "bench_order": 3,
       "transferred_in": false,
       "xpts": {
         "p10": 0.0,
@@ -240,7 +202,7 @@
       "now_cost": 8.0,
       "is_starting": true,
       "is_captain": false,
-      "is_vice_captain": true,
+      "is_vice_captain": false,
       "bench_order": null,
       "transferred_in": false,
       "xpts": {
@@ -248,6 +210,25 @@
         "median": 6.0,
         "mean": 6.653333333333333,
         "p90": 15.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 635,
+      "web_name": "Anderson",
+      "position": "MID",
+      "team_short": "MCI",
+      "now_cost": 6.3,
+      "is_starting": false,
+      "is_captain": false,
+      "is_vice_captain": false,
+      "bench_order": 4,
+      "transferred_in": false,
+      "xpts": {
+        "p10": 1.0,
+        "median": 3.0,
+        "mean": 3.28,
+        "p90": 7.0,
         "approx": false
       }
     },
@@ -267,6 +248,25 @@
         "median": 0.0,
         "mean": 0.03333333333333333,
         "p90": 0.0,
+        "approx": false
+      }
+    },
+    {
+      "player_id": 953,
+      "web_name": "Gonzalo",
+      "position": "FWD",
+      "team_short": "FUL",
+      "now_cost": 6.1,
+      "is_starting": true,
+      "is_captain": false,
+      "is_vice_captain": true,
+      "bench_order": null,
+      "transferred_in": true,
+      "xpts": {
+        "p10": 1.0,
+        "median": 5.0,
+        "mean": 5.906666666666666,
+        "p90": 13.0,
         "approx": false
       }
     },
