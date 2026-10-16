@@ -492,15 +492,15 @@
       "gameweek": 6,
       "type": "transfers",
       "transfers_in": [
-        "Rudoni",
-        "Barry"
+        "Davis",
+        "Gonzalo"
       ],
       "transfers_out": [
-        "Anderson",
+        "Virgil",
         "Obi"
       ],
       "hits_taken": 1,
-      "net_xpts_gain": 6.590281196775152
+      "net_xpts_gain": 10.331146349920857
     },
     {
       "gameweek": 5,
