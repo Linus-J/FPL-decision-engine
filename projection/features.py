@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
+from config.strategy import HISTORICAL_CLOSING_ODDS_IN_MODEL
 from data.db import get_session
 
 # What identifies ONE fixture for one player. ``opponent_team_id`` is the part
@@ -72,6 +73,45 @@ def _merge_on_fixture(
     return df.merge(right, on=_FIXTURE_KEYS, how="left")
 
 
+# Team strength as it stood at each gameweek's deadline, one row per
+# (season, gameweek, team). The latest team_strength_snapshots row before the
+# deadline wins; a season with no snapshots (every backfilled season) falls back
+# to team_season_strength. That fallback is not point-in-time, and it is the
+# only place it is still read for historical rows.
+_STRENGTH_ASOF_CTE = """
+WITH strength_asof AS (
+    SELECT gw.season, gw.gameweek, ids.team_id,
+           COALESCE(snap.strength_overall_home, tss.strength_overall_home) AS strength_overall_home,
+           COALESCE(snap.strength_overall_away, tss.strength_overall_away) AS strength_overall_away,
+           COALESCE(snap.strength_attack_home, tss.strength_attack_home) AS strength_attack_home,
+           COALESCE(snap.strength_attack_away, tss.strength_attack_away) AS strength_attack_away,
+           COALESCE(snap.strength_defence_home, tss.strength_defence_home) AS strength_defence_home,
+           COALESCE(snap.strength_defence_away, tss.strength_defence_away) AS strength_defence_away
+    -- Every gameweek a stat row refers to, with its deadline when the calendar
+    -- has one. Keying on player_gw_stats rather than gameweeks means a season
+    -- whose calendar is incomplete still resolves the rows the joins need.
+    FROM (
+        SELECT DISTINCT s.season, s.gameweek, g.deadline_time
+        FROM player_gw_stats s
+        LEFT JOIN gameweeks g ON g.id = s.gameweek AND g.season = s.season
+    ) gw
+    JOIN (
+        SELECT season, team_id FROM team_season_strength
+        UNION
+        SELECT season, team_id FROM team_strength_snapshots
+    ) ids ON ids.season = gw.season
+    LEFT JOIN team_season_strength tss
+        ON tss.season = gw.season AND tss.team_id = ids.team_id
+    LEFT JOIN team_strength_snapshots snap ON snap.id = (
+        SELECT s.id FROM team_strength_snapshots s
+        WHERE s.season = gw.season AND s.team_id = ids.team_id
+          AND s.snapshot_ts < gw.deadline_time
+        ORDER BY s.snapshot_ts DESC LIMIT 1
+    )
+)
+"""
+
+
 def load_fixture_difficulty(season: str | None = None) -> pd.DataFrame:
     """Per player-GW FDR from the point-in-time fixture context stored on the
     stat row (team_id_season / opponent_team_id / was_home) and the per-season
@@ -83,7 +123,7 @@ def load_fixture_difficulty(season: str | None = None) -> pd.DataFrame:
     try:
         season_filter = "AND s.season = :season" if season else ""
         params = {"season": season} if season else {}
-        query = text(f"""
+        query = text(f"""{_STRENGTH_ASOF_CTE}
             SELECT
                 s.player_id,
                 s.gameweek,
@@ -106,8 +146,9 @@ def load_fixture_difficulty(season: str | None = None) -> pd.DataFrame:
                     SELECT AVG({_usable("CASE WHEN s2.was_home THEN t2.strength_defence_away "
                                         "ELSE t2.strength_defence_home END")})
                     FROM player_gw_stats s2
-                    JOIN team_season_strength t2
-                        ON t2.season = s2.season AND t2.team_id = s2.opponent_team_id
+                    JOIN strength_asof t2
+                        ON t2.season = s2.season AND t2.gameweek = s.gameweek
+                        AND t2.team_id = s2.opponent_team_id
                     WHERE s2.player_id = s.player_id AND s2.season = s.season
                         AND s2.gameweek > s.gameweek AND s2.gameweek <= s.gameweek + 3
                 ), 1200) AS next_3gw_avg_opp_defence,
@@ -115,16 +156,19 @@ def load_fixture_difficulty(season: str | None = None) -> pd.DataFrame:
                     SELECT AVG({_usable("CASE WHEN s2.was_home THEN t2.strength_attack_away "
                                         "ELSE t2.strength_attack_home END")})
                     FROM player_gw_stats s2
-                    JOIN team_season_strength t2
-                        ON t2.season = s2.season AND t2.team_id = s2.opponent_team_id
+                    JOIN strength_asof t2
+                        ON t2.season = s2.season AND t2.gameweek = s.gameweek
+                        AND t2.team_id = s2.opponent_team_id
                     WHERE s2.player_id = s.player_id AND s2.season = s.season
                         AND s2.gameweek > s.gameweek AND s2.gameweek <= s.gameweek + 3
                 ), 1200) AS next_3gw_avg_opp_attack
             FROM player_gw_stats s
-            LEFT JOIN team_season_strength tss_own
-                ON tss_own.season = s.season AND tss_own.team_id = s.team_id_season
-            LEFT JOIN team_season_strength tss_opp
-                ON tss_opp.season = s.season AND tss_opp.team_id = s.opponent_team_id
+            LEFT JOIN strength_asof tss_own
+                ON tss_own.season = s.season AND tss_own.gameweek = s.gameweek
+                AND tss_own.team_id = s.team_id_season
+            LEFT JOIN strength_asof tss_opp
+                ON tss_opp.season = s.season AND tss_opp.gameweek = s.gameweek
+                AND tss_opp.team_id = s.opponent_team_id
             LEFT JOIN gameweeks g ON g.id = s.gameweek AND g.season = s.season
             WHERE 1 = 1 {season_filter}
         """)
@@ -183,7 +227,10 @@ def load_player_enrichment(season: str | None = None) -> pd.DataFrame:
     The dynamic fields (transfers/ownership → price_momentum, transfer_velocity)
     are read from the snapshot as-of the gameweek deadline, NOT the mutable
     players.* row broadcast onto every historical row (Phase-1 leak L3). The
-    set-piece role fields are per-(player, season) and safe. injury_severity is
+    set-piece duty is read as-of the deadline from ``player_setpiece_snapshots``.
+    Those exist only from the first 2026-27 ingest, so historical rows read the
+    zero default (docs/engine-audit-2026-10-17.md, finding 2). key passes stay
+    on ``player_setpiece_roles``, which is not snapshotted. injury_severity is
     not point-in-time-recoverable historically → 0.
     """
     db = get_session()
@@ -198,7 +245,7 @@ def load_player_enrichment(season: str | None = None) -> pd.DataFrame:
                 COALESCE(sp.is_penalty_taker, 0) AS is_penalty_taker,
                 COALESCE(sp.penalty_xg_per_game, 0.0) AS penalty_xg_per_game,
                 COALESCE(sp.is_set_piece_taker, 0) AS is_set_piece_taker,
-                COALESCE(sp.key_passes_per_game, 0.0) AS key_passes_per_game,
+                COALESCE(kp.key_passes_per_game, 0.0) AS key_passes_per_game,
                 0 AS injury_severity,
                 COALESCE(ps.transfers_in_event, 0) AS transfers_in_event,
                 COALESCE(ps.transfers_out_event, 0) AS transfers_out_event,
@@ -212,8 +259,16 @@ def load_player_enrichment(season: str | None = None) -> pd.DataFrame:
                     AND ps2.snapshot_ts < g.deadline_time
                 ORDER BY ps2.snapshot_ts DESC LIMIT 1
             )
-            LEFT JOIN player_setpiece_roles sp
-                ON sp.player_id = s.player_id AND sp.season = s.season
+            LEFT JOIN player_setpiece_snapshots sp ON sp.id = (
+                SELECT sp2.id FROM player_setpiece_snapshots sp2
+                WHERE sp2.player_id = s.player_id AND sp2.season = s.season
+                    AND sp2.snapshot_ts < g.deadline_time
+                ORDER BY sp2.snapshot_ts DESC LIMIT 1
+            )
+            -- key passes come from the Understat ingest, which writes the roles
+            -- table only; it is not snapshotted, so it stays on that table.
+            LEFT JOIN player_setpiece_roles kp
+                ON kp.player_id = s.player_id AND kp.season = s.season
             WHERE 1 = 1 {season_filter}
         """)
         df = pd.read_sql(query, db.bind, params=params)
@@ -335,8 +390,10 @@ def load_fixture_odds(season: str | None = None) -> pd.DataFrame:
     the old ``fixtures``-table join, which used the player's *current* club and
     latest odds against historical rows (Phase-1 finding L4). The odds row is
     matched on ``(season, gameweek)`` and the season-correct home/away team pair,
-    and only counts when ``fetched_at < deadline(season, gw)`` — proving the
-    closing odds were stamped at the deadline, not kickoff (finding C2). Missing
+    and only counts when ``fetched_at < deadline(season, gw)``. For historical
+    rows that stamp is a label, not a fact: the prices are closing lines struck
+    at kickoff (finding C2 in docs/engine-audit-2026-10-17.md). Those rows are
+    therefore ignored unless ``HISTORICAL_CLOSING_ODDS_IN_MODEL`` is set. Missing
     odds default to 0.2 CS / 0.5 over-2.5 via ``add_odds_features``.
 
     **Live seasons fall back to ``fixture_odds``.** ``historical_fixture_odds``
@@ -351,12 +408,19 @@ def load_fixture_odds(season: str | None = None) -> pd.DataFrame:
     The live leg applies the same as-of discipline as
     ``load_live_odds_asof``: the latest snapshot per fixture stamped at or
     before that gameweek's deadline, never after. Historical wins where both
-    exist — it is the settled closing line.
+    exist, but only when the closing-line flag is on.
     """
     db = get_session()
     try:
         season_filter = "AND s.season = :season" if season else ""
         params = {"season": season} if season else {}
+        # Closing lines are excluded unless the flag says otherwise: with the
+        # source replaced by an empty set, every historical row takes the
+        # defaults below, exactly as a missing bookmaker price would.
+        historical_odds = (
+            "historical_fixture_odds" if HISTORICAL_CLOSING_ODDS_IN_MODEL
+            else "(SELECT * FROM historical_fixture_odds WHERE 1 = 0)"
+        )
         query = text(f"""
             WITH live AS (
                 SELECT fo.fixture_id, fo.home_cs_prob, fo.away_cs_prob,
@@ -388,7 +452,7 @@ def load_fixture_odds(season: str | None = None) -> pd.DataFrame:
                 COALESCE(o.over25_prob, l.over25_prob, 0.5) AS over25_prob
             FROM player_gw_stats s
             LEFT JOIN gameweeks g ON g.id = s.gameweek AND g.season = s.season
-            LEFT JOIN historical_fixture_odds o
+            LEFT JOIN {historical_odds} o
                 ON o.season = s.season AND o.gameweek = s.gameweek
                 AND (
                     (s.was_home = 1 AND o.home_team_id = s.team_id_season

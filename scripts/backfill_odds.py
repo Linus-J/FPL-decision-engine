@@ -85,6 +85,10 @@ FD_TEAM_ALIASES = {
 }
 
 DEADLINE_EPSILON = timedelta(minutes=1)   # fetched_at = deadline − ε (< deadline)
+# Written on every row so a reader can tell these apart from live odds. They are
+# closing lines, struck at kickoff, so they are NOT knowable at the deadline
+# they are stamped with. See docs/engine-audit-2026-10-17.md, finding 1.
+ODDS_SOURCE = "football-data-closing"
 
 
 def implied_prob(decimal_odds: float) -> float:
@@ -218,6 +222,7 @@ def build_odds_rows(
             "home_cs_prob": home_cs,
             "away_cs_prob": away_cs,
             "fetched_at": deadlines[gw] - DEADLINE_EPSILON,
+            "source": ODDS_SOURCE,
         })
     return rows, skipped
 
@@ -235,7 +240,7 @@ def write_odds_rows(rows: list[dict]) -> int:
                     index_elements=["season", "gameweek", "home_team_id", "away_team_id"],
                     set_={k: row[k] for k in (
                         "home_win_prob", "draw_prob", "away_win_prob", "over25_prob",
-                        "btts_prob", "home_cs_prob", "away_cs_prob", "fetched_at",
+                        "btts_prob", "home_cs_prob", "away_cs_prob", "fetched_at", "source",
                     )},
                 )
             )

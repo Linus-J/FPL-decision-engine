@@ -153,7 +153,8 @@ def _seed_historical(Local, odds_fetched_at):
         s.close()
 
 
-def test_historical_odds_read_home_and_away(session):
+def test_historical_odds_read_home_and_away(session, monkeypatch):
+    monkeypatch.setattr(features, "HISTORICAL_CLOSING_ODDS_IN_MODEL", True)
     _seed_historical(session, datetime(2024, 8, 10, 11, 29))  # before deadline
     df = features.load_fixture_odds("2024-25").set_index("player_id")
     # home player: my_cs = home_cs, opp_cs = away_cs
@@ -163,6 +164,17 @@ def test_historical_odds_read_home_and_away(session):
     assert df.loc[200, "my_cs_prob"] == 0.20
     assert df.loc[200, "opp_cs_prob"] == 0.35
     assert df.loc[100, "over25_prob"] == 0.55
+
+
+def test_closing_lines_are_ignored_by_default(session):
+    """Finding 1 (docs/engine-audit-2026-10-17.md): closing lines are struck at
+    kickoff, after the deadline they are stamped with. With the default flag
+    they must not reach the features even when stamped before the deadline."""
+    assert features.HISTORICAL_CLOSING_ODDS_IN_MODEL is False
+    _seed_historical(session, datetime(2024, 8, 10, 11, 29))
+    df = features.load_fixture_odds("2024-25").set_index("player_id")
+    assert df.loc[100, "my_cs_prob"] == 0.2
+    assert df.loc[100, "over25_prob"] == 0.5
 
 
 def test_historical_odds_after_deadline_excluded_C2(session):
@@ -255,9 +267,11 @@ def test_live_odds_after_the_deadline_never_reach_the_features(session):
     assert df.loc[100, "my_cs_prob"] == 0.41, "post-deadline odds leaked in"
 
 
-def test_historical_odds_win_where_both_sources_exist(session):
+def test_historical_odds_win_where_both_sources_exist(session, monkeypatch):
     """Settled closing lines beat a live snapshot, and -- more importantly --
-    a row must not be double-counted into two different values."""
+    a row must not be double-counted into two different values. Only with the
+    closing-line flag on: by default those lines are not read at all."""
+    monkeypatch.setattr(features, "HISTORICAL_CLOSING_ODDS_IN_MODEL", True)
     _seed_historical(session, datetime(2024, 8, 10, 11, 29))
     s = session()
     try:

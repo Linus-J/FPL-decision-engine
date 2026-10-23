@@ -21,6 +21,7 @@ from data.ingestors.fpl_api import run_full_ingest
 from data.ingestors.injury_parser import run_injury_parser
 from data.ingestors.odds_api import ingest_odds_sync, log_odds_coverage
 from data.ingestors.understat import run_understat_ingest
+from data.run_manifest import manifest_context, record_run
 from optimiser.chips import Chip
 
 
@@ -67,8 +68,9 @@ def main() -> None:
     # alters existing ones, so this is safe to run every week.
     init_db()
 
+    archive_path = None
     try:
-        asyncio.run(run_full_ingest(args.season))
+        archive_path = asyncio.run(run_full_ingest(args.season))
     except Exception as exc:
         logging.getLogger().warning("Full FPL ingest skipped: %s", exc)
 
@@ -94,10 +96,15 @@ def main() -> None:
     except Exception as exc:
         logging.getLogger().warning("Injury parser skipped: %s", exc)
 
-    decision = decision_engine.run(
-        season=args.season,
-        force_chip=force_chip,
-    )
+    # Recorded before the decision is made, so every decision row carries the
+    # id of the run that wrote it. A null archive_path means this run decided
+    # without a raw copy of its inputs (the ingest above was skipped).
+    manifest_id = record_run("decision", season=args.season, archive_path=archive_path)
+    with manifest_context(manifest_id):
+        decision = decision_engine.run(
+            season=args.season,
+            force_chip=force_chip,
+        )
 
     if "error" in decision:
         logging.getLogger().error("Decision engine error: %s", decision["error"])

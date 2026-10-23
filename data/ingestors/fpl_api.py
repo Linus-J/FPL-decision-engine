@@ -1,11 +1,13 @@
 import asyncio
 import logging
 from datetime import datetime
+from pathlib import Path
 
 import aiohttp
 from sqlalchemy.dialects.sqlite import insert
 
 from config.settings import settings
+from data.archive import write_input_archive
 from data.db import get_session
 from data.ingestors.setpiece import ingest_fpl_setpiece_roles
 from data.models import (
@@ -19,6 +21,7 @@ from data.models import (
     PlayerStateSnapshot,
     Team,
     TeamSeasonStrength,
+    TeamStrengthSnapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,10 +153,12 @@ def upsert_teams(bootstrap: dict, season: str = "2026-27") -> None:
     # season-scoped table under the current season.
     db = get_session()
     placeholders = 0
+    captured_at = datetime.utcnow()
     try:
         for t in bootstrap["teams"]:
             row = {col: t[col] for col in _STRENGTH_COLS}
-            if _is_placeholder_strength(row):
+            is_placeholder = _is_placeholder_strength(row)
+            if is_placeholder:
                 placeholders += 1
             stmt = (
                 insert(TeamSeasonStrength)
@@ -164,6 +169,16 @@ def upsert_teams(bootstrap: dict, season: str = "2026-27") -> None:
                 )
             )
             db.execute(stmt)
+            # The overwrite above discards what was true before this sync. The
+            # append keeps it, so a past deadline can be read back as it stood.
+            db.execute(
+                insert(TeamStrengthSnapshot)
+                .values(
+                    season=season, team_id=t["id"], code=t.get("code"),
+                    snapshot_ts=captured_at, is_placeholder=is_placeholder, **row,
+                )
+                .on_conflict_do_nothing(index_elements=["season", "team_id", "snapshot_ts"])
+            )
         db.commit()
         logger.info("Upserted %d team_season_strength rows for %s", len(bootstrap["teams"]), season)
         if placeholders:
@@ -782,10 +797,13 @@ async def ingest_entry_history(season: str, entry_id: int) -> None:
     upsert_entry_gameweeks(history, season, entry_id)
 
 
-async def run_full_ingest(season: str = "2026-27") -> None:
+async def run_full_ingest(season: str = "2026-27") -> Path | None:
+    """Refresh the database from FPL. Returns the raw input archive directory
+    this run was made from (see ``data/archive.py``)."""
     logger.info("Starting full FPL ingest for season %s", season)
 
     bootstrap = await fetch_bootstrap()
+    captured_at = datetime.utcnow()
     upsert_teams(bootstrap, season)
     upsert_gameweeks(bootstrap, season)
     upsert_players(bootstrap)
@@ -797,6 +815,15 @@ async def run_full_ingest(season: str = "2026-27") -> None:
     write_player_snapshots(bootstrap, datetime.utcnow(), season)
 
     raw_fixtures = await fetch_fixtures()
+    # Raw copy before anything is derived from it. The tables upserted above are
+    # overwritten on the next sync; this is the only record of what FPL said.
+    archive_path = write_input_archive(
+        season,
+        captured_at,
+        {"bootstrap": bootstrap, "fixtures": raw_fixtures},
+        gameweek_context=_snapshot_gameweek_context(bootstrap),
+    )
+    logger.info("Archived raw FPL inputs to %s", archive_path)
     upsert_fixtures(raw_fixtures, season)
 
     # Ground truth for what the entry actually did -- which chips were played
@@ -840,6 +867,7 @@ async def run_full_ingest(season: str = "2026-27") -> None:
     await asyncio.gather(*tasks)
 
     logger.info("Full FPL ingest complete — %d players processed", len(tasks))
+    return archive_path
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from dashboard.fpl_public import get_picks
+from data.replay import replay_active
 from projection.pipeline import _get_current_and_next_gw, get_latest_projections
 
 logger = logging.getLogger(__name__)
@@ -152,7 +153,9 @@ def get_current_squad(db: Session, team_id: int) -> pd.DataFrame:
     # picks take over again.
     _, next_gw = _get_current_and_next_gw()
     gw_used = next_gw
-    payload: dict = get_picks(team_id, next_gw) or {}
+    # A replay runs in the past. The public endpoint would return the team as
+    # it is now, so the squad comes from the rewound decision log instead.
+    payload: dict = {} if replay_active() else (get_picks(team_id, next_gw) or {})
 
     fallback_total: float | None = None
     if payload.get("picks"):

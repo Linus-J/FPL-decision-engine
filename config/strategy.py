@@ -20,6 +20,14 @@ from dataclasses import dataclass, replace
 # had been pairing a forward with a defender).
 POSITION_ORDER = {"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
 
+# Whether the football-data.co.uk CLOSING lines in historical_fixture_odds may
+# feed the model. They are struck at kickoff, which is after the deadline they
+# are stamped with, so they carry information no live reader had at the
+# deadline. False: those rows are ignored, and the strength-based fallback in
+# projection/team_goals.py stands in. Set True only to reproduce a result that
+# was produced with the closing lines. See docs/engine-audit-2026-10-17.md.
+HISTORICAL_CLOSING_ODDS_IN_MODEL = False
+
 
 @dataclass(frozen=True)
 class ScoringRules:

@@ -39,7 +39,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.sqlite import insert
 
 from data.db import get_session
-from data.models import PlayerSetPieceRole
+from data.models import PlayerSetPieceRole, PlayerSetPieceSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -624,6 +624,9 @@ def ingest_fpl_setpiece_roles(bootstrap: Mapping, season: str) -> tuple[int, int
     retirements = retirement_roles(players_with_published_roles(season), listed)
 
     written = write_setpiece_roles(season, roles + retirements)
+    # Append every state FPL published, retirements included, so the duty a
+    # past gameweek was decided on can be read back as-of its deadline.
+    write_setpiece_snapshots(season, roles + retirements, datetime.utcnow())
     takers = sum(1 for r in roles if r["is_penalty_taker"])
     logger.info(
         "FPL set-piece orders %s: %d roles written (%d first-choice penalty "
@@ -631,3 +634,40 @@ def ingest_fpl_setpiece_roles(bootstrap: Mapping, season: str) -> tuple[int, int
         season, written, takers, len(retirements),
     )
     return written, len(retirements)
+
+
+_SNAPSHOT_COLUMNS = (
+    "penalty_order", "freekick_order", "corner_order",
+    "is_penalty_taker", "penalty_xg_per_game", "is_set_piece_taker", "source",
+)
+
+
+def write_setpiece_snapshots(season: str, roles: Iterable[Mapping], captured_at: datetime) -> int:
+    """Append one snapshot per resolved role. Returns the number of roles given.
+
+    Unlike ``write_setpiece_roles`` this never updates: each capture is kept.
+    Re-running with the same timestamp is a no-op, so a retried ingest cannot
+    duplicate a capture.
+    """
+    rows = [r for r in roles if r.get("player_id")]
+    if not rows:
+        return 0
+    db = get_session()
+    try:
+        for role in rows:
+            values = {k: role[k] for k in _SNAPSHOT_COLUMNS if k in role}
+            stmt = (
+                insert(PlayerSetPieceSnapshot)
+                .values(
+                    player_id=int(role["player_id"]),
+                    season=season,
+                    snapshot_ts=captured_at,
+                    **values,
+                )
+                .on_conflict_do_nothing(index_elements=["player_id", "season", "snapshot_ts"])
+            )
+            db.execute(stmt)
+        db.commit()
+        return len(rows)
+    finally:
+        db.close()

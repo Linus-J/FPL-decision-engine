@@ -20,6 +20,7 @@ from data.db import get_session
 from data.ingestors.ownership import load_latest_ownership
 from data.models import ChipComparisonLog, DecisionLog, SimDecisionLog, SimManager
 from data.overrides import apply_team_overrides, load_p_leave_overrides, log_rumoured_squad_members
+from data.run_manifest import current_manifest_id
 from optimiser.bench_boost import (
     bb_horizon_and_index,
     bench_boost_bar,
@@ -287,6 +288,7 @@ def _record_decision(
                 details=json.dumps(details),
                 projected_gain=projected_gain,
                 created_at=datetime.utcnow(),
+                manifest_id=current_manifest_id(),
             )
         else:
             entry = DecisionLog(
@@ -296,6 +298,7 @@ def _record_decision(
                 projected_gain=projected_gain,
                 dry_run=dry_run,
                 created_at=datetime.utcnow(),
+                manifest_id=current_manifest_id(),
             )
         db.add(entry)
         db.commit()

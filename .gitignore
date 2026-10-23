@@ -96,3 +96,6 @@ backups/
 # Private dev documentation — design notes, reviews, plans, checklists.
 # Public docs are the README and the top-level .md files beside it.
 docs/
+
+# Raw FPL input archive (data/archive.py): large, replayable, not source
+archive/

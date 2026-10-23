@@ -32,7 +32,7 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.dialects.sqlite import insert
 
-from config.strategy import DEFCON, SCORING
+from config.strategy import DEFCON, HISTORICAL_CLOSING_ODDS_IN_MODEL, SCORING
 from data.db import get_session
 from data.models import ProjectionSample
 from projection import bonus as bonus_mod
@@ -280,7 +280,13 @@ def compute_defcon_field_shares(season: str) -> dict[str, dict[str, float]]:
 def load_match_odds(season: str) -> pd.DataFrame:
     """Raw de-vigged 1X2 + O/U2.5 per fixture (``historical_fixture_odds``,
     T6) — the ``team_goals_from_odds`` input. Loaded once per season (a few
-    hundred rows), not per gameweek."""
+    hundred rows), not per gameweek. Empty unless HISTORICAL_CLOSING_ODDS_IN_MODEL
+    is set (see config/strategy.py); callers then use the strength-based fallback."""
+    if not HISTORICAL_CLOSING_ODDS_IN_MODEL:
+        return pd.DataFrame(columns=[
+            "season", "gameweek", "home_team_id", "away_team_id",
+            "home_win_prob", "draw_prob", "away_win_prob", "over25_prob",
+        ])
     db = get_session()
     try:
         return pd.read_sql(

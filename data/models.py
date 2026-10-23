@@ -503,6 +503,11 @@ class HistoricalFixtureOdds(Base):
     home_cs_prob: Mapped[float] = mapped_column(Float, default=0.0)
     away_cs_prob: Mapped[float] = mapped_column(Float, default=0.0)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # Where the prices came from. football-data.co.uk rows are CLOSING lines
+    # struck at kickoff, which is after the deadline they are stamped with --
+    # so they are not knowable at the deadline. Nullable because rows written
+    # before this column existed are unlabelled, not known to be live.
+    source: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class PlayerProjection(Base):
@@ -678,6 +683,9 @@ class DecisionLog(Base):
     actual_outcome: Mapped[float | None] = mapped_column(Float, nullable=True)
     dry_run: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # The run that wrote this row (see RunManifest). NULL for rows written
+    # before manifests existed.
+    manifest_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class SimManager(Base):
@@ -738,6 +746,7 @@ class SimDecisionLog(Base):
     projected_gain: Mapped[float] = mapped_column(Float, default=0.0)
     actual_outcome: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    manifest_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ChipComparisonLog(Base):
@@ -894,3 +903,92 @@ class EntryGameweek(Base):
     transfers_cost: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     points: Mapped[int | None] = mapped_column(Integer, nullable=True)
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class RunManifest(Base):
+    """One row per decision, backtest or simulation batch: the code, the
+    strategy configuration and the archived inputs that produced its results.
+
+    Written before the run's results are recorded, and never updated. A
+    result that cannot be matched to a manifest row was not produced by any
+    run this database knows about. ``config_json`` is the full strategy
+    configuration in force, so a parameter change is visible in the record
+    rather than only in the code diff.
+    """
+
+    __tablename__ = "run_manifest"
+    __table_args__ = (Index("ix_run_manifest_kind_created", "kind", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    kind: Mapped[str] = mapped_column(String, nullable=False)  # decision | backtest | simulation
+    season: Mapped[str] = mapped_column(String(7), nullable=False)
+    gameweek: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    git_sha: Mapped[str | None] = mapped_column(String, nullable=True)
+    git_dirty: Mapped[bool] = mapped_column(Boolean, default=False)
+    config_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_json: Mapped[str] = mapped_column(String, nullable=False)
+    seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    archive_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    output_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    notes: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class TeamStrengthSnapshot(Base):
+    """Append-only team strengths, one row per team per ingest.
+
+    ``team_season_strength`` is overwritten on every sync, so the values a
+    past gameweek was decided on are lost. This table keeps them. Read it
+    as-of a deadline, never as "latest". ``is_placeholder`` marks the zeroed
+    strengths FPL publishes before it has rated a team: they are stored
+    as-is, and flagged so no consumer mistakes them for data.
+    """
+
+    __tablename__ = "team_strength_snapshots"
+    __table_args__ = (
+        UniqueConstraint("season", "team_id", "snapshot_ts", name="uq_team_strength_snapshot"),
+        Index("ix_team_strength_snapshot_ts", "season", "snapshot_ts"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    season: Mapped[str] = mapped_column(String(7), nullable=False)
+    team_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_ts: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    strength_overall_home: Mapped[int] = mapped_column(Integer, default=0)
+    strength_overall_away: Mapped[int] = mapped_column(Integer, default=0)
+    strength_attack_home: Mapped[int] = mapped_column(Integer, default=0)
+    strength_attack_away: Mapped[int] = mapped_column(Integer, default=0)
+    strength_defence_home: Mapped[int] = mapped_column(Integer, default=0)
+    strength_defence_away: Mapped[int] = mapped_column(Integer, default=0)
+    is_placeholder: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class PlayerSetPieceSnapshot(Base):
+    """Append-only set-piece duty, one row per player per ingest.
+
+    ``player_setpiece_roles`` holds one row per (player, season) and is
+    updated in place, so the duty a past gameweek was decided on cannot be
+    recovered from it. This table keeps every state FPL published, including
+    the retirement of a duty (all orders NULL). Read as-of a deadline.
+    """
+
+    __tablename__ = "player_setpiece_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "player_id", "season", "snapshot_ts", name="uq_setpiece_snapshot"
+        ),
+        Index("ix_setpiece_snapshot_ts", "season", "snapshot_ts"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.id"), nullable=False)
+    season: Mapped[str] = mapped_column(String(7), nullable=False)
+    snapshot_ts: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    penalty_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    freekick_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    corner_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_penalty_taker: Mapped[bool] = mapped_column(Boolean, default=False)
+    penalty_xg_per_game: Mapped[float] = mapped_column(Float, default=0.0)
+    is_set_piece_taker: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String, default="")

@@ -18,7 +18,8 @@ import pandas as pd
 from sqlalchemy import text
 
 from config.strategy import OPTIMISER, SQUAD, TRANSFERS, OptimiserConfig
-from data.db import get_session
+from data.db import get_session, init_db
+from data.run_manifest import manifest_context, record_run, strategy_config
 from optimiser.chips import Chip, recommend_chip
 from optimiser.squad import (
     STARTING_MAX,
@@ -1219,13 +1220,32 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     runner = run_naive_xi_backtest if args.naive_xi else run_backtest
-    results = runner(
+    # Record the configuration the backtest actually ran with, which is
+    # _BACKTEST_CONFIG (risk and mu pinned), not the live OPTIMISER default.
+    # Creates the run_manifest table on a database that predates it. Every entry
+    # point that records a manifest must do this, or the first record fails.
+    init_db()
+    config = strategy_config()
+    config["OPTIMISER"] = dataclasses.asdict(_BACKTEST_CONFIG)
+    manifest_id = record_run(
+        "backtest",
         season=args.season,
-        start_gw=args.start_gw,
-        end_gw=args.end_gw,
-        horizon=args.horizon,
-        score_2627=args.score_2627,
+        seed=42,  # run_backtest's default seed, used for every scenario draw
+        output_path=args.out,
+        notes=(
+            f"gw {args.start_gw}-{args.end_gw}, horizon={args.horizon}, "
+            f"naive_xi={args.naive_xi}, score_2627={args.score_2627}"
+        ),
+        config=config,
     )
+    with manifest_context(manifest_id):
+        results = runner(
+            season=args.season,
+            start_gw=args.start_gw,
+            end_gw=args.end_gw,
+            horizon=args.horizon,
+            score_2627=args.score_2627,
+        )
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         results.to_csv(args.out, index=False)
